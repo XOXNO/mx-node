@@ -32,7 +32,7 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use mxnode_build::{build_artifact, build_ldflags, clone_shallow};
 use mxnode_core::Tag;
-use mxnode_toolchain::ensure_go;
+use mxnode_toolchain::bootstrap;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -225,9 +225,12 @@ impl SourceBuildAcquirer {
 #[async_trait]
 impl BinaryAcquirer for SourceBuildAcquirer {
     async fn acquire(&self, artifact: Artifact, tag: &Tag) -> Result<PathBuf, AcquireError> {
-        // Validate Go up-front so we don't wait through a clone before
-        // discovering the operator hasn't installed it.
-        ensure_go(&self.min_go_version)
+        // Bootstrap the toolchain up-front so we don't wait through a
+        // clone before discovering the operator's host doesn't have
+        // git/go. `bootstrap` auto-installs apt deps + Go on Linux
+        // (matching the bash flow), short-circuits to a detect on
+        // subsequent calls in the same process via OnceLock.
+        bootstrap(&self.min_go_version)
             .map_err(|e| AcquireError::Toolchain(e.to_string()))?;
 
         // Use a per-artifact + per-tag clone dir so concurrent
