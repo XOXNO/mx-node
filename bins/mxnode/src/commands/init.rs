@@ -2,7 +2,7 @@
 //! interactive prompts (or `--no-prompt` flags). Tokens are loaded from
 //! `--token-file` only and never logged.
 
-use std::io::{IsTerminal, Write};
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use mxnode_config::{user_config_path, xdg_config_home};
@@ -116,50 +116,106 @@ impl AnswersBuilder {
     }
 
     fn interactive(args: &InitArgs) -> Result<Answers, CliError> {
+        use dialoguer::{theme::ColorfulTheme, Input, Select};
+
         println!("mxnode init — let's set up your config.");
         println!("This writes {}.\n", display_target());
+        println!("(Use ↑/↓ + Enter on selection prompts; Ctrl+C cancels.)\n");
 
+        let theme = ColorfulTheme::default();
         let (default_home, default_user) = platform_defaults();
         let user_label = match mxnode_core::Platform::current() {
             mxnode_core::Platform::Macos => "Operator user (launchd runs as you)",
             _ => "Custom user (systemd User=)",
         };
-        let network = pick_network(args.network)?;
-        let custom_user = prompt_default(
-            user_label,
-            args.user.as_deref().unwrap_or(&default_user),
-        )?;
-        let custom_home = prompt_default(
-            "Custom home directory",
-            &args
-                .home
-                .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| default_home.display().to_string()),
-        )?;
-        let key_dir = prompt_default(
-            "Validator key location",
-            &format!("{custom_home}/VALIDATOR_KEYS"),
-        )?;
-        let github_org = prompt_default("GitHub org (use a fork?)", "multiversx")?;
-        let name_template = prompt_default(
-            "Node display-name template",
-            "mx-chain-{env}-validator-{index}",
-        )?;
-        let artifact = prompt_default("Artifact source [source/release/auto]", "source")?;
-        let artifact_source: ArtifactSource = artifact.parse().map_err(|_| {
-            CliError::new(
-                "invalid artifact_source",
-                "expected source|release|auto",
-                "rerun init and choose one of the listed values",
+
+        // 1. Network — radio Select instead of free-form text. Network
+        //    affects everything downstream so getting it right matters
+        //    more than typing speed.
+        let network = match args.network {
+            Some(n) => network_arg_to_env(n),
+            None => {
+                let items = ["mainnet", "testnet", "devnet"];
+                let default_idx = 0;
+                let pick = Select::with_theme(&theme)
+                    .with_prompt("Network")
+                    .items(&items)
+                    .default(default_idx)
+                    .interact()
+                    .map_err(prompt_err)?;
+                match pick {
+                    1 => Environment::Testnet,
+                    2 => Environment::Devnet,
+                    _ => Environment::Mainnet,
+                }
+            }
+        };
+
+        // 2. Operator identity — text inputs with sensible defaults.
+        let custom_user: String = Input::with_theme(&theme)
+            .with_prompt(user_label)
+            .default(args.user.clone().unwrap_or(default_user))
+            .interact_text()
+            .map_err(prompt_err)?;
+        let custom_home_str: String = Input::with_theme(&theme)
+            .with_prompt("Custom home directory")
+            .default(
+                args.home
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| default_home.display().to_string()),
             )
-        })?;
+            .interact_text()
+            .map_err(prompt_err)?;
+        let key_dir_str: String = Input::with_theme(&theme)
+            .with_prompt("Validator key location")
+            .default(format!("{custom_home_str}/VALIDATOR_KEYS"))
+            .interact_text()
+            .map_err(prompt_err)?;
+
+        // 3. GitHub org — defaults to upstream; operators on a fork
+        //    type their org name here.
+        let github_org: String = Input::with_theme(&theme)
+            .with_prompt("GitHub org (your fork or `multiversx`)")
+            .default("multiversx".to_string())
+            .interact_text()
+            .map_err(prompt_err)?;
+
+        // 4. Node base name — operators usually want `<brand>-<index>`
+        //    (e.g. `truststaking-0`, `truststaking-1`). We ask for the
+        //    base, then synthesize the template the orchestrator wants.
+        //    Power users who need an `{env}` placeholder can edit
+        //    config.toml after — covered in the trailing message.
+        let env_label = network.as_str();
+        let default_base = format!("{env_label}-validator");
+        let base_name: String = Input::with_theme(&theme)
+            .with_prompt("Node base name (will become <name>-0, <name>-1, ...)")
+            .default(default_base)
+            .interact_text()
+            .map_err(prompt_err)?;
+        let name_template = format!("{}-{{index}}", base_name.trim());
+
+        // 5. Artifact source — radio Select. `source` is the
+        //    historical default; release-mode is a power-user pick
+        //    where pre-built binaries exist for the chosen tag.
+        let sources = ["source (build with go)", "release (download zip)", "auto"];
+        let pick = Select::with_theme(&theme)
+            .with_prompt("Artifact source")
+            .items(&sources)
+            .default(0)
+            .interact()
+            .map_err(prompt_err)?;
+        let artifact_source = match pick {
+            1 => ArtifactSource::Release,
+            2 => ArtifactSource::Auto,
+            _ => ArtifactSource::Source,
+        };
 
         Ok(Answers {
             network,
             custom_user,
-            custom_home: PathBuf::from(custom_home),
-            key_dir: PathBuf::from(key_dir),
+            custom_home: PathBuf::from(custom_home_str),
+            key_dir: PathBuf::from(key_dir_str),
             github_org,
             name_template,
             artifact_source,
@@ -167,18 +223,15 @@ impl AnswersBuilder {
     }
 }
 
-fn pick_network(arg: Option<NetworkArg>) -> Result<Environment, CliError> {
-    if let Some(n) = arg {
-        return Ok(network_arg_to_env(n));
-    }
-    let raw = prompt_default("Network [mainnet/testnet/devnet]", "mainnet")?;
-    raw.parse::<Environment>().map_err(|_| {
-        CliError::new(
-            "invalid network",
-            format!("got {raw:?}; expected mainnet|testnet|devnet"),
-            "rerun init and answer with one of the listed values",
-        )
-    })
+/// Map a `dialoguer::Error` (Ctrl+C, EOF on stdin, terminal lost,
+/// terminal can't render dialoguer's escape sequences) into our
+/// 3-line CLI error shape.
+fn prompt_err(e: dialoguer::Error) -> CliError {
+    CliError::new(
+        "init prompt cancelled or stdin closed",
+        e.to_string(),
+        "rerun `mxnode init` interactively, or use --no-prompt with explicit flags",
+    )
 }
 
 fn network_arg_to_env(arg: NetworkArg) -> Environment {
@@ -187,17 +240,6 @@ fn network_arg_to_env(arg: NetworkArg) -> Environment {
         NetworkArg::Testnet => Environment::Testnet,
         NetworkArg::Devnet => Environment::Devnet,
     }
-}
-
-fn prompt_default(label: &str, default: &str) -> Result<String, CliError> {
-    let stdout = std::io::stdout();
-    let mut handle = stdout.lock();
-    write!(handle, "? {label} ({default}) ▸ ").map_err(|e| io_err("stdout", e))?;
-    handle.flush().map_err(|e| io_err("stdout", e))?;
-    let mut line = String::new();
-    std::io::stdin().read_line(&mut line).map_err(|e| io_err("stdin", e))?;
-    let trimmed = line.trim();
-    Ok(if trimmed.is_empty() { default.to_string() } else { trimmed.to_string() })
 }
 
 fn read_token(path: Option<&Path>) -> Result<Option<String>, CliError> {
@@ -388,13 +430,6 @@ fn write_config(target: &Path, body: &str, global: &GlobalArgs) -> Result<(), Cl
     Ok(())
 }
 
-fn io_err(what: &str, e: std::io::Error) -> CliError {
-    CliError::new(
-        format!("io error on {what}"),
-        e.to_string(),
-        "rerun in a terminal with stdin/stdout connected, or pass --no-prompt",
-    )
-}
 
 fn display_target() -> String {
     xdg_config_home()
