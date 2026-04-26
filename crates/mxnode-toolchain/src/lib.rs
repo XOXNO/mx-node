@@ -221,13 +221,45 @@ pub fn install_go(version: &str) -> Result<GoInstall, ToolchainError> {
 
     update_profile_for_go()?;
 
+    // CRITICAL: also extend the *current* process's PATH so any
+    // subprocess spawned during this same `mxnode` invocation
+    // (e.g. `go build`, `go install`, `git clone --filter=blob:none`)
+    // inherits the new Go binary. `~/.profile` updates only apply
+    // to *future* shells — the running orchestrator never sees them.
+    update_current_process_env_for_go();
+
     eprintln!("✓ go {version} installed at /usr/local/go");
     eprintln!(
-        "  ~/.profile updated. New shells get go on PATH automatically;\n  \
-         current shell needs `source ~/.profile` if you want `go version` to work there."
+        "  ~/.profile updated for future shells.\n  \
+         current process PATH extended; subsequent `go` invocations work."
     );
 
     detect_go()
+}
+
+/// Extend the current process's PATH + GOPATH env so spawned
+/// subprocesses (Command::new("go"), Command::new("git")) find the
+/// freshly-installed Go without waiting for a shell restart.
+fn update_current_process_env_for_go() {
+    let go_bin = "/usr/local/go/bin";
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    if !current_path.split(':').any(|p| p == go_bin) {
+        let new_path = if current_path.is_empty() {
+            go_bin.to_string()
+        } else {
+            format!("{go_bin}:{current_path}")
+        };
+        std::env::set_var("PATH", new_path);
+    }
+    // Mirror bash's GOPATH=$HOME/go default. Only set if not already
+    // exported, so the operator's environment overrides win.
+    if std::env::var_os("GOPATH").is_none() {
+        if let Some(home) = std::env::var_os("HOME") {
+            let mut gopath = std::path::PathBuf::from(home);
+            gopath.push("go");
+            std::env::set_var("GOPATH", gopath);
+        }
+    }
 }
 
 /// Append the bash `~/.profile` exports if not already present. We
