@@ -1,16 +1,38 @@
-//! Walk every `config/prefs.toml` + `config/config.toml` under a fleet of
-//! node workdirs and surface keys whose values are **identical across
-//! all nodes** — the operator's intentional tweaks that should live in a
-//! single `[overrides.prefs]` / `[overrides.config]` section instead of
-//! being repeated N times across N node directories.
+//! Walk every `config/prefs.toml` under a fleet of node workdirs and
+//! surface keys whose values are identical across all nodes — the
+//! operator's intentional tweaks that should live in a single
+//! `[overrides.prefs]` section instead of being repeated N times.
 //!
-//! Per-node keys (`NodeDisplayName`, `DestinationShardAsObserver`) are
-//! deliberately excluded so they don't collapse into a single override
-//! and stomp the per-node values during the next install/upgrade.
+//! ## Why prefs.toml only (not config.toml)
 //!
-//! Array-of-tables (`[[Observers]]`, `[[Antiflood.WebServer.…]]`) are
-//! also skipped — merging arrays semantically across operators with
-//! different ordering choices is a foot-gun, not a convenience.
+//! `prefs.toml` is small (~50 lines) and operator-meaningful: things
+//! like `FullArchive`, `PreferredConnections`, the per-node
+//! `NodeDisplayName`. Operators frequently hand-tune it across the
+//! fleet, so rolling identical values into one place is real value.
+//!
+//! `config.toml` is the opposite shape: ~3000 lines, the vast
+//! majority being upstream defaults from `mx-chain-{env}-config`. If
+//! we naively collapse "values identical across all nodes" we end up
+//! pulling in *every upstream default* (because every node clones the
+//! same config repo), producing a 600+ line `[overrides.config]`
+//! section that's both useless and actively harmful — it'd freeze the
+//! operator on those values across upstream config-repo updates.
+//!
+//! The well-known `config.toml` tweaks the bash flow applied
+//! per-node (e.g. `[DbLookupExtensions] Enabled = true` for
+//! observers, `[HardwareRequirements] CPUFlags = []` on ARM hosts)
+//! are already handled by the install/upgrade orchestrator from
+//! first principles, so they don't need to round-trip through
+//! `[overrides.config]` either.
+//!
+//! Per-node prefs keys (`NodeDisplayName`, `DestinationShardAsObserver`)
+//! are deliberately excluded so they don't collapse into a single
+//! override and stomp the per-node values during the next install or
+//! upgrade.
+//!
+//! Array-of-tables (`[[Observers]]`, `[[Antiflood.WebServer.…]]`)
+//! are also skipped — merging arrays semantically across operators
+//! with different ordering choices is a foot-gun, not a convenience.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -28,47 +50,33 @@ pub struct CommonSettings {
     /// Dotted-path → value pairs that were identical across every
     /// node's `prefs.toml` (excluding the per-node identity keys).
     pub prefs: BTreeMap<String, toml::Value>,
-    /// Same for `config.toml`.
-    pub config: BTreeMap<String, toml::Value>,
-    /// How many keys differed across nodes — informational, surfaced
-    /// in the migrate summary so the operator knows there's per-node
-    /// drift the migration didn't roll up.
+    /// How many prefs keys differed across nodes — informational,
+    /// surfaced in the migrate summary so the operator knows there's
+    /// per-node drift the migration didn't roll up.
     pub differing_prefs_keys: usize,
-    pub differing_config_keys: usize,
-    /// Number of node workdirs we actually read from. < 2 means the
-    /// detector returned the file's content as-is (1-node "common" is
-    /// just that node's settings).
+    /// Number of node workdirs we actually read prefs.toml from.
+    /// < 2 means the detector returned the file's content as-is
+    /// (1-node "common" is just that node's settings).
     pub nodes_scanned: usize,
 }
 
-/// Scan every `<workdir>/config/{prefs,config}.toml` and return the
-/// keys whose values are identical across all parsed files. Files that
-/// fail to read or parse are silently skipped — the operator is
-/// migrating, not running clean tests.
+/// Scan every `<workdir>/config/prefs.toml` and return the keys whose
+/// values are identical across all parsed files. Files that fail to
+/// read or parse are silently skipped — the operator is migrating,
+/// not running clean tests.
+///
+/// We deliberately do NOT scan `config.toml` here — see the module
+/// docstring for why (it would pull in 600+ upstream defaults).
 pub fn detect<P: AsRef<Path>>(workdirs: &[P]) -> CommonSettings {
-    let prefs_paths: Vec<_> = workdirs
+    let prefs_docs: Vec<toml::Value> = workdirs
         .iter()
         .map(|w| w.as_ref().join("config/prefs.toml"))
-        .collect();
-    let config_paths: Vec<_> = workdirs
-        .iter()
-        .map(|w| w.as_ref().join("config/config.toml"))
-        .collect();
-    let prefs_docs: Vec<toml::Value> = prefs_paths
-        .iter()
-        .filter_map(|p| read_toml(p))
-        .collect();
-    let config_docs: Vec<toml::Value> = config_paths
-        .iter()
-        .filter_map(|p| read_toml(p))
+        .filter_map(|p| read_toml(&p))
         .collect();
     let (prefs, prefs_diff) = common_keys(&prefs_docs, PER_NODE_PREFS);
-    let (config, config_diff) = common_keys(&config_docs, &[]);
     CommonSettings {
         prefs,
-        config,
         differing_prefs_keys: prefs_diff,
-        differing_config_keys: config_diff,
         nodes_scanned: workdirs.len(),
     }
 }
