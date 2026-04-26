@@ -1,4 +1,17 @@
 [toolchain]
 channel = "1.94.1"
 components = ["rustfmt", "clippy"]
+# Targets we cross-compile to via cargo-zigbuild in the release
+# pipeline. Listing them here makes rustup auto-install them
+# whenever the 1.94.1 toolchain is materialised, which matters
+# in CI: the dtolnay/rust-toolchain action installs targets
+# against `stable` (1.95.0+), but the moment cargo runs in this
+# directory it switches to 1.94.1 per this file — without these
+# targets being declared, the cross-compile fails with
+# "can't find crate for `core`".
+targets = [
+    "x86_64-unknown-linux-musl",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+]
 profile = "minimal"

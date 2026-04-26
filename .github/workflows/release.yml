@@ -94,7 +94,20 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
+          # Targets are also declared in rust-toolchain.toml; this
+          # mirror exists so the `stable` toolchain dtolnay installs
+          # carries them too. The actual build runs under 1.94.1
+          # (per rust-toolchain.toml) which auto-installs targets
+          # the first time rustup materialises that channel.
           targets: ${{ matrix.target }}
+
+      - name: Materialise pinned toolchain + targets
+        # Triggers rustup to install 1.94.1 (per rust-toolchain.toml)
+        # WITH the targets declared there. Without this, the first
+        # cargo invocation would silently install 1.94.1 minus the
+        # cross targets and the build would explode with
+        # "can't find crate for `core`".
+        run: rustup show active-toolchain || rustup show
 
       - uses: Swatinem/rust-cache@v2
         with:
