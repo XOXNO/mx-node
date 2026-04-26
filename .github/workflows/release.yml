@@ -99,7 +99,12 @@ jobs:
         if: matrix.cross == 'zig'
         uses: mlugg/setup-zig@v1
         with:
-          version: 0.16.0
+          # Pinned to a long-published, fully-mirrored version. 0.16.0
+          # was unreachable on every mirror at v0.1.0 release time
+          # (404 / 503 across machengine, hryx, nekos, linus,
+          # liujiacai, ziglang.org). 0.13.0 has been mirror-stable
+          # since 2024-08 and is what cargo-zigbuild's CI also uses.
+          version: 0.13.0
 
       - name: Install cargo-zigbuild (musl cross only)
         if: matrix.cross == 'zig'
