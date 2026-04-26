@@ -1,0 +1,221 @@
+name: release
+
+# Triggers:
+#   - push of a `v*` tag (`git tag v0.1.0 && git push --tags`) — the
+#     normal release path.
+#   - manual `workflow_dispatch` with a tag input — useful for
+#     re-running a build after fixing a release-time issue without
+#     bumping the version.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Version tag (e.g. v0.1.0). Must already exist as a git tag.'
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Strip debuginfo aggressively — the release profile already does
+  # `strip = "symbols"` but cargo-zigbuild can leave more behind.
+  RUSTFLAGS: '-C strip=symbols'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      # Four targets, each on the runner that's native (or close to
+      # native) for that target so we don't fight cross-toolchains.
+      # Linux musl uses zigbuild from an Ubuntu host because zig is
+      # the cleanest way to produce a fully-static musl binary that
+      # drops on any glibc-2.x distro without dependency surgery.
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-14
+            cross: 'no'
+          - target: x86_64-apple-darwin
+            os: macos-13
+            cross: 'no'
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: 'zig'
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: 'zig'
+    steps:
+      # Resolve the release tag once, into the per-job env. Every
+      # downstream shell step reads `$RELEASE_TAG` — never substitutes
+      # `${{ github.event.inputs.tag }}` directly into a shell line,
+      # which would let a maliciously-crafted dispatch input inject
+      # commands. See:
+      # https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
+      - name: Resolve release tag (build job)
+        id: tag
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          # Prefer the workflow-dispatch input; fall back to the tag
+          # that was pushed.
+          TAG="${INPUT_TAG:-$REF_NAME}"
+          if [ -z "$TAG" ]; then
+            echo "no tag resolved — push a v* tag or pass `tag` input" >&2
+            exit 1
+          fi
+          # Allowlist the tag shape — must look like a semver tag.
+          # Anything else is rejected up front so we never expand a
+          # hostile string into an archive name or shell command.
+          case "$TAG" in
+            v[0-9]*) ;;
+            *)
+              echo "rejecting tag '$TAG' — must start with v + digit" >&2
+              exit 1
+              ;;
+          esac
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Per-target cache — Linux and macOS targets warm up
+          # different artifact sets.
+          key: ${{ matrix.target }}
+
+      - name: Install zig (musl cross only)
+        if: matrix.cross == 'zig'
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.16.0
+
+      - name: Install cargo-zigbuild (musl cross only)
+        if: matrix.cross == 'zig'
+        run: cargo install --locked cargo-zigbuild
+
+      - name: Build (zigbuild, musl)
+        if: matrix.cross == 'zig'
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo zigbuild --release --target "$TARGET" --bin mxnode
+
+      - name: Build (native)
+        if: matrix.cross == 'no'
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo build --release --target "$TARGET" --bin mxnode
+
+      - name: Sanity check (binary exists + is the right ELF/Mach-O)
+        env:
+          TARGET: ${{ matrix.target }}
+        shell: bash
+        run: |
+          BIN="target/${TARGET}/release/mxnode"
+          ls -lh "$BIN"
+          file "$BIN"
+          [ -x "$BIN" ]
+
+      - name: Package
+        id: package
+        env:
+          TARGET: ${{ matrix.target }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # $RELEASE_TAG and $TARGET are both controlled — the tag is
+          # allowlisted to ^v[0-9].* above, the target comes from the
+          # matrix (workflow author).
+          BIN="target/${TARGET}/release/mxnode"
+          DIST=dist
+          ARCHIVE="mxnode-${RELEASE_TAG}-${TARGET}.tar.gz"
+
+          mkdir -p "$DIST"
+          STAGE=$(mktemp -d)
+          cp "$BIN" "$STAGE/mxnode"
+          [ -f README.md ] && cp README.md "$STAGE/"
+          [ -f LICENSE ] && cp LICENSE "$STAGE/"
+          tar -czf "$DIST/$ARCHIVE" -C "$STAGE" .
+          rm -rf "$STAGE"
+
+          # Per-archive sha256, joined into SHA256SUMS in the publish job.
+          (cd "$DIST" && shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256" 2>/dev/null \
+            || sha256sum "$ARCHIVE" > "$ARCHIVE.sha256")
+          ls -lh "$DIST"
+          echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mxnode-${{ matrix.target }}
+          path: dist/*
+          retention-days: 14
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      # Required by softprops/action-gh-release to attach assets +
+      # write release notes.
+      contents: write
+    steps:
+      - name: Resolve release tag (publish job)
+        id: tag
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          TAG="${INPUT_TAG:-$REF_NAME}"
+          case "$TAG" in
+            v[0-9]*) ;;
+            *)
+              echo "rejecting tag '$TAG' — must start with v + digit" >&2
+              exit 1
+              ;;
+          esac
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+
+      - name: Download every per-target artifact
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Stage release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # Flatten — each `mxnode-<target>` artifact dir contains
+          # one .tar.gz + one .sha256 stub.
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.sha256' \) \
+            -exec cp -v {} dist/ \;
+          # Combine the per-archive .sha256 stubs into one
+          # SHA256SUMS file the install script can curl directly.
+          (cd dist && cat *.sha256 > SHA256SUMS && rm *.sha256)
+          ls -lh dist
+
+      - name: Create / update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
