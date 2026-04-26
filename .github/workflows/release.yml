@@ -27,7 +27,13 @@ permissions:
 jobs:
   build:
     name: build ${{ matrix.target }}
-    runs-on: ${{ matrix.os }}
+    # Self-hosted runner gate: only run on the canonical repo so a
+    # malicious fork can't dispatch this workflow against
+    # `[self-hosted, …]` and execute arbitrary code on the runner.
+    # Tag-push and manual-dispatch already require write access in
+    # the canonical repo, so this is belt-and-braces.
+    if: github.repository_owner == 'XOXNO'
+    runs-on: ${{ matrix.runs-on }}
     strategy:
       fail-fast: false
       # Four targets, each on the runner that's native (or close to
@@ -37,18 +43,27 @@ jobs:
       # drops on any glibc-2.x distro without dependency surgery.
       matrix:
         include:
+          # macOS targets: GitHub-hosted runners, native build per
+          # arch (so we never have to mess with the SDK for cross).
           - target: aarch64-apple-darwin
-            os: macos-14
+            runs-on: macos-14
             cross: 'no'
           - target: x86_64-apple-darwin
-            os: macos-13
+            runs-on: macos-13
             cross: 'no'
+          # Linux x86_64: the self-hosted XOXNO Hetzner runner.
+          # Building natively for the very platform we deploy on
+          # eliminates the zig + mirror-roulette failure mode that
+          # took out the Ubuntu-hosted job. We still produce a musl-
+          # static binary (works on any glibc-2.x distro) by
+          # depending on apt-installed `musl-tools`.
           - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
-            cross: 'zig'
-          - target: aarch64-unknown-linux-musl
-            os: ubuntu-latest
-            cross: 'zig'
+            runs-on: [self-hosted, Linux, X64]
+            cross: 'apt-musl'
+          # aarch64 Linux: deliberately dropped from the matrix.
+          # Add it back if/when an operator deploys to AWS Graviton
+          # / ARM Hetzner / Pi — until then it'd be a maintenance
+          # burden with no consumer.
     steps:
       # Resolve the release tag once, into the per-job env. Every
       # downstream shell step reads `$RELEASE_TAG` — never substitutes
@@ -95,26 +110,23 @@ jobs:
           # different artifact sets.
           key: ${{ matrix.target }}
 
-      - name: Install zig (musl cross only)
-        if: matrix.cross == 'zig'
-        uses: mlugg/setup-zig@v1
-        with:
-          # Pinned to a long-published, fully-mirrored version. 0.16.0
-          # was unreachable on every mirror at v0.1.0 release time
-          # (404 / 503 across machengine, hryx, nekos, linus,
-          # liujiacai, ziglang.org). 0.13.0 has been mirror-stable
-          # since 2024-08 and is what cargo-zigbuild's CI also uses.
-          version: 0.13.0
+      - name: Install musl-tools (Linux musl native build)
+        if: matrix.cross == 'apt-musl'
+        # Self-hosted runner — assume passwordless sudo for
+        # apt-get (standard on the actions/runner setup script).
+        # `musl-tools` provides `musl-gcc`, the C compiler ring's
+        # curve25519.c needs when targeting *-unknown-linux-musl.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
 
-      - name: Install cargo-zigbuild (musl cross only)
-        if: matrix.cross == 'zig'
-        run: cargo install --locked cargo-zigbuild
-
-      - name: Build (zigbuild, musl)
-        if: matrix.cross == 'zig'
+      - name: Build (native musl)
+        if: matrix.cross == 'apt-musl'
         env:
           TARGET: ${{ matrix.target }}
-        run: cargo zigbuild --release --target "$TARGET" --bin mxnode
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          AR_x86_64_unknown_linux_musl: ar
+        run: cargo build --release --target "$TARGET" --bin mxnode
 
       - name: Build (native)
         if: matrix.cross == 'no'
