@@ -1,0 +1,25 @@
+[package]
+name = "mxnode-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Terminal dashboard (ratatui) for mxnode — live multi-node fleet view."
+
+[dependencies]
+mxnode-core = { workspace = true }
+mxnode-rpc  = { workspace = true }
+ratatui     = { workspace = true }
+crossterm   = { workspace = true }
+tokio       = { workspace = true }
+tracing     = { workspace = true }
+thiserror   = { workspace = true }
+serde_json  = { workspace = true }
+time        = { workspace = true }
+tokio-tungstenite = { workspace = true }
+prost       = { workspace = true }
+futures-util = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

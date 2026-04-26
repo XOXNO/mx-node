@@ -1,0 +1,77 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/mxnode-core",
+    "crates/mxnode-config",
+    "crates/mxnode-state",
+    "crates/mxnode-github",
+    "crates/mxnode-rpc",
+    "crates/mxnode-systemd",
+    "crates/mxnode-toolchain",
+    "crates/mxnode-build",
+    "crates/mxnode-tui",
+    "bins/mxnode",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.94"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/mihaieremia/mx-node"
+authors = ["Mihai Eremia"]
+
+[workspace.dependencies]
+# Internal crates
+mxnode-core      = { path = "crates/mxnode-core" }
+mxnode-config    = { path = "crates/mxnode-config" }
+mxnode-state     = { path = "crates/mxnode-state" }
+mxnode-github    = { path = "crates/mxnode-github" }
+mxnode-rpc       = { path = "crates/mxnode-rpc" }
+mxnode-systemd   = { path = "crates/mxnode-systemd" }
+mxnode-toolchain = { path = "crates/mxnode-toolchain" }
+mxnode-build     = { path = "crates/mxnode-build" }
+mxnode-tui       = { path = "crates/mxnode-tui" }
+
+# Foundational
+anyhow       = "1.0"
+thiserror    = "2.0"
+serde        = { version = "1.0", features = ["derive"] }
+serde_json   = "1.0"
+toml         = "0.8"
+toml_edit    = "0.22"
+tracing      = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# CLI / config
+clap   = { version = "4.5", features = ["derive", "env", "wrap_help"] }
+figment = { version = "0.10", features = ["toml", "env"] }
+dirs   = "5.0"
+
+# I/O
+tokio   = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "io-util", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip", "stream"] }
+fs2     = "0.4"
+tempfile = "3"
+
+# Domain
+semver = "1.0"
+time   = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
+
+# Unix-specifics (used in mxnode-state for kill(pid,0) and process birth time)
+libc = "0.2"
+
+# TUI
+ratatui   = { version = "0.29", default-features = false, features = ["crossterm"] }
+crossterm = "0.28"
+
+# WebSocket + protobuf for live log streaming
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect"] }
+prost     = "0.13"
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

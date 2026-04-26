@@ -1,0 +1,18 @@
+[package]
+name = "mxnode-build"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Git clone + Go build wrappers used by the source-build acquirer."
+
+[dependencies]
+mxnode-core      = { workspace = true }
+mxnode-toolchain = { workspace = true }
+thiserror        = { workspace = true }
+tokio            = { workspace = true }
+tracing          = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

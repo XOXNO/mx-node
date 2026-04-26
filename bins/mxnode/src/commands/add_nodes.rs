@@ -1,0 +1,186 @@
+//! `mxnode add-nodes [--count N --role R]`: extend an existing install.
+//!
+//! Refuses on observers-squad / multikey-squad installs (matches the bash
+//! `add_node` which exits when `.squad_install` is present). Operators
+//! who want a mixed host run `mxnode cleanup` + a fresh install.
+
+use mxnode_core::{InstallKind, NodeIndex, Role, Shard};
+use mxnode_state::StateStore;
+
+use crate::cli::{AddNodesArgs, GlobalArgs, RoleArg};
+use crate::errors::CliError;
+use crate::events::global_op;
+use crate::orchestrator::acquirer_factory::build_acquirer;
+use crate::orchestrator::install::{
+    install_units, persist_state, run_install, ConfigEdits, InstallPlan, NodeSpec,
+};
+use crate::orchestrator::runtime::{CliErrorExt, Runtime};
+
+use super::install::{emit_success, install_err};
+
+#[tokio::main(flavor = "current_thread")]
+pub async fn run(args: AddNodesArgs, global: &GlobalArgs) -> Result<(), CliError> {
+    let runtime = Runtime::from_global(global)?;
+    let store = StateStore::new(&runtime.paths.state);
+    let mut state = store
+        .load()
+        .map_err(|e| {
+            CliError::new(
+                "failed to read state.toml",
+                e.to_string(),
+                "run `mxnode adopt` first",
+            )
+            .json_if(global.json)
+        })?
+        .ok_or_else(|| {
+            CliError::new(
+                "no state.toml on this host",
+                format!("expected {}", store.state_path().display()),
+                "run `mxnode install` first",
+            )
+            .json_if(global.json)
+        })?;
+
+    let install = state.install.clone().ok_or_else(|| {
+        CliError::new(
+            "state.toml has no [install] section",
+            "expected an existing install",
+            "run `mxnode install` first, or `mxnode adopt` if the host already has units",
+        )
+        .json_if(global.json)
+    })?;
+
+    if matches!(
+        install.kind,
+        InstallKind::ObserversSquad | InstallKind::MultikeySquad,
+    ) {
+        return Err(CliError::new(
+            "cannot add nodes to an observers-squad or multikey-squad",
+            format!(
+                "this install is `{}`; the bash refuses for the same reason",
+                install.kind,
+            ),
+            "run `mxnode cleanup` and reinstall as `mxnode install` (mixed not yet supported)",
+        )
+        .json_if(global.json));
+    }
+
+    let environment = install.environment;
+    let count = args.count.max(1);
+    let role = match args.role.unwrap_or(RoleArg::Validator) {
+        RoleArg::Validator => Role::Validator,
+        RoleArg::Observer => Role::Observer,
+        RoleArg::Multikey => Role::Multikey,
+    };
+
+    // Compute the next-N indices.
+    let highest_existing = state
+        .nodes
+        .iter()
+        .map(|n| n.index.get())
+        .max()
+        .unwrap_or(0);
+    let start = if state.nodes.is_empty() { 0 } else { highest_existing + 1 };
+    let nodes: Vec<NodeSpec> = (0..count)
+        .map(|i| NodeSpec {
+            index: NodeIndex::new(start + i),
+            role,
+            shard: Shard::Auto,
+            display_name: String::new(),
+        })
+        .collect();
+
+    let binary_tag = install
+        .versions
+        .binary_tag
+        .clone()
+        .ok_or_else(|| {
+            CliError::new(
+                "state.install.versions.binary_tag is unset",
+                "cannot extend without knowing the deployed tag",
+                "run `mxnode rebuild-state` to refresh, or pass an explicit override in config",
+            )
+            .json_if(global.json)
+        })?;
+    let config_tag = install
+        .versions
+        .config_tag
+        .clone()
+        .or_else(|| {
+            // Fall back to overrides if state lost the tag for some
+            // reason (legacy installs imported via migrate-from-bash).
+            runtime
+                .loaded
+                .config
+                .overrides
+                .configver()
+                .and_then(|s| s.parse().ok())
+        })
+        .ok_or_else(|| {
+            CliError::new(
+                "no config_tag recorded",
+                "cannot extend without the deployed config repo tag",
+                "set [overrides].configver in config and rerun",
+            )
+            .json_if(global.json)
+        })?;
+
+    let plan = InstallPlan {
+        paths: &runtime.paths,
+        environment,
+        github_org: &runtime.loaded.config.network.github_org,
+        binary_tag: binary_tag.clone(),
+        config_tag: config_tag.clone(),
+        proxy_tag: install.versions.proxy_tag.clone(),
+        node_count: count,
+        kind: install.kind,
+        nodes,
+        api_port_base: runtime.loaded.config.node.api_port_base,
+        log_level: &runtime.loaded.config.node.log_level,
+        limit_nofile: runtime.loaded.config.node.limit_nofile,
+        restart_sec: runtime.loaded.config.node.restart_sec,
+        custom_user: &runtime.loaded.config.paths.custom_user,
+        extra_flags: &runtime.loaded.config.node.extra_flags,
+        name_template: &runtime.loaded.config.node.name_template,
+        config_edits: match install.kind {
+            InstallKind::Validators | InstallKind::Mixed => ConfigEdits::Validator,
+            _ => ConfigEdits::Observer,
+        },
+        // add-nodes never installs/replaces the proxy.
+        install_proxy: false,
+        prefs_overrides: &runtime.loaded.config.overrides.prefs,
+        config_overrides: &runtime.loaded.config.overrides.config,
+    };
+
+    let acquirer = build_acquirer(&runtime);
+    global_op(
+        "add-nodes",
+        &format!("{count} {role} on {environment}", role = role),
+    );
+    let outcome = run_install(plan, acquirer)
+        .await
+        .map_err(|e| install_err(e, global))?;
+
+    install_units(&outcome.unit_files, true)
+        .await
+        .map_err(|e| install_err(e, global))?;
+
+    // Merge the new nodes into the existing state.
+    let mut merged = state.clone();
+    let new_install = outcome
+        .state
+        .install
+        .as_ref()
+        .expect("install populated by orchestrator")
+        .clone();
+    merged.nodes.extend(outcome.state.nodes.clone());
+    if let Some(install_mut) = merged.install.as_mut() {
+        install_mut.node_count = install_mut.node_count.saturating_add(count);
+        install_mut.binaries = new_install.binaries;
+    }
+    state = merged;
+
+    let state_path = persist_state(&runtime.paths, &state).map_err(|e| install_err(e, global))?;
+
+    emit_success(global, &outcome, &state_path)
+}

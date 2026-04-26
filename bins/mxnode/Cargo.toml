@@ -1,0 +1,39 @@
+[package]
+name = "mxnode"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MultiversX node operator CLI."
+
+[[bin]]
+name = "mxnode"
+path = "src/main.rs"
+
+[dependencies]
+mxnode-core      = { workspace = true }
+mxnode-config    = { workspace = true }
+mxnode-state     = { workspace = true }
+mxnode-github    = { workspace = true }
+mxnode-rpc       = { workspace = true }
+mxnode-systemd   = { workspace = true }
+mxnode-toolchain = { workspace = true }
+mxnode-build     = { workspace = true }
+mxnode-tui       = { workspace = true }
+
+clap        = { workspace = true }
+anyhow      = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+thiserror   = { workspace = true }
+toml        = { workspace = true }
+tokio       = { workspace = true }
+tracing     = { workspace = true }
+tracing-subscriber = { workspace = true }
+tempfile    = { workspace = true }
+dirs        = { workspace = true }
+time        = { workspace = true }
+toml_edit   = { workspace = true }
+async-trait = "0.1"
+

@@ -1,0 +1,21 @@
+[package]
+name = "mxnode-config"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Layered config resolver (defaults → file → flags) for mxnode."
+
+[dependencies]
+mxnode-core = { workspace = true }
+figment     = { workspace = true }
+serde       = { workspace = true }
+toml        = { workspace = true }
+toml_edit   = { workspace = true }
+thiserror   = { workspace = true }
+dirs        = { workspace = true }
+tracing     = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

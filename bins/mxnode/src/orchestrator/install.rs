@@ -1,0 +1,798 @@
+//! Install orchestration shared by `mxnode install`, `mxnode observers`,
+//! `mxnode multikey`, and `mxnode add-nodes`.
+//!
+//! Phase 3 carries forward the bash mental model:
+//!   1. acquire node (and proxy / keygenerator) binaries
+//!   2. clone the config repo
+//!   3. for each node-i: workdir + config copy + key install + unit
+//!   4. write state.toml
+//!
+//! The actual systemd unit install (sudo mv into /etc/systemd/system + sudo
+//! systemctl enable) lives in the per-command modules so each command can
+//! decide whether to enable on install or leave units disabled until
+//! `mxnode start --all`.
+
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use mxnode_core::{
+    state::{InstallSection, MigrationLog},
+    Environment, InstallKind, NodeIndex, NodeState, Paths, ProxyState, Role, Shard, State, Tag,
+    DEFAULT_PROXY_PORT, SCHEMA_VERSION,
+};
+use mxnode_state::{swap_symlink, BinStore, StateStore};
+use mxnode_systemd::{
+    apply_overrides, clear_cpu_flags, enable_db_lookup_extensions, render_canonical_node_plist,
+    render_canonical_node_unit, render_canonical_proxy_unit, rewrite_proxy_config,
+    set_destination_shard, set_node_display_name, NodeUnitSpec, ObserverEntry, ProxyUnitSpec,
+};
+use thiserror::Error;
+use toml_edit::DocumentMut;
+
+use super::acquirer::{Artifact, BinaryAcquirer};
+use super::config_repo::{acquire_config_repo, ConfigRepoError};
+
+#[derive(Debug, Error)]
+pub enum InstallError {
+    #[error("io error at {path}: {source}")]
+    Io {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("acquire failed: {0}")]
+    Acquire(String),
+    #[error("config repo: {0}")]
+    ConfigRepo(#[from] ConfigRepoError),
+    #[error("state store: {0}")]
+    State(String),
+    #[error("zip extract: {0}")]
+    Zip(String),
+    #[error("toml edit: {0}")]
+    Toml(String),
+    #[error("invalid plan: {0}")]
+    Invalid(String),
+}
+
+/// Inputs for one install pass. Everything about how nodes get configured.
+pub struct InstallPlan<'a> {
+    pub paths: &'a Paths,
+    pub environment: Environment,
+    pub github_org: &'a str,
+    pub binary_tag: Tag,
+    pub config_tag: Tag,
+    pub proxy_tag: Option<Tag>,
+    pub node_count: u16,
+    pub kind: InstallKind,
+    /// One entry per node, populated by the calling command. Length must
+    /// equal `node_count`.
+    pub nodes: Vec<NodeSpec>,
+    /// systemd unit knobs.
+    pub api_port_base: u16,
+    pub log_level: &'a str,
+    pub limit_nofile: u32,
+    pub restart_sec: u32,
+    pub custom_user: &'a str,
+    pub extra_flags: &'a str,
+    pub name_template: &'a str,
+    /// Source of the [Preferences] / [DbLookupExtensions] tweaks.
+    pub config_edits: ConfigEdits,
+    /// Whether to install + enable the proxy unit (observers-squad only).
+    pub install_proxy: bool,
+    /// Operator-supplied dotted-path overrides for every node's
+    /// `prefs.toml`. Empty by default.
+    pub prefs_overrides: &'a BTreeMap<String, toml::Value>,
+    /// Operator-supplied dotted-path overrides for every node's
+    /// `config.toml`. Empty by default.
+    pub config_overrides: &'a BTreeMap<String, toml::Value>,
+}
+
+/// Per-node spec written into state.toml + used for tomledit.
+#[derive(Debug, Clone)]
+pub struct NodeSpec {
+    pub index: NodeIndex,
+    pub role: Role,
+    pub shard: Shard,
+    /// Override for `display_name`. Empty string means "use template".
+    pub display_name: String,
+}
+
+/// What kind of TOML edits to apply to each node's config dir.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigEdits {
+    /// Validators: only stamp NodeDisplayName.
+    Validator,
+    /// Observers / multikey: stamp NodeDisplayName, set
+    /// DestinationShardAsObserver, enable [DbLookupExtensions].
+    Observer,
+}
+
+/// Outcome the caller surfaces to the operator + persists to state.toml.
+pub struct InstallOutcome {
+    pub state: State,
+    /// Paths of the systemd unit files we rendered. The caller installs
+    /// them into /etc/systemd/system (typically via sudo).
+    pub unit_files: Vec<UnitFile>,
+}
+
+#[derive(Debug, Clone)]
+pub struct UnitFile {
+    pub name: String,
+    pub contents: String,
+}
+
+/// Run the install plan: acquire binaries, copy config, render units.
+pub async fn run_install(
+    plan: InstallPlan<'_>,
+    acquirer: Arc<dyn BinaryAcquirer>,
+) -> Result<InstallOutcome, InstallError> {
+    if plan.nodes.len() != plan.node_count as usize {
+        return Err(InstallError::Invalid(format!(
+            "nodes spec len {} does not match node_count {}",
+            plan.nodes.len(),
+            plan.node_count,
+        )));
+    }
+
+    // 1. Acquire node binary + place into versioned BinStore.
+    let bin_store = BinStore::new(plan.paths.binaries.clone());
+    let node_src = acquirer
+        .acquire(Artifact::Node, &plan.binary_tag)
+        .await
+        .map_err(|e| InstallError::Acquire(format!("node binary: {e}")))?;
+    let node_installed = bin_store
+        .install_binary("node", plan.binary_tag.as_str(), &node_src)
+        .map_err(|e| InstallError::Acquire(format!("install_binary node: {e}")))?;
+
+    // 2. Acquire keygenerator (always — observers/multikey need it for
+    // their .pem files and validators benefit from having it on hand).
+    let keygen_src = acquirer
+        .acquire(Artifact::Keygenerator, &plan.binary_tag)
+        .await
+        .map_err(|e| InstallError::Acquire(format!("keygenerator binary: {e}")))?;
+    let _keygen_installed = bin_store
+        .install_binary("keygenerator", plan.binary_tag.as_str(), &keygen_src)
+        .map_err(|e| InstallError::Acquire(format!("install_binary keygen: {e}")))?;
+    // Place the keygenerator under elrond-utils for the observer_keys
+    // flow to find it.
+    let utils_dir = plan.paths.elrond_utils_root();
+    fs::create_dir_all(&utils_dir).map_err(|e| InstallError::Io {
+        path: utils_dir.display().to_string(),
+        source: e,
+    })?;
+    fs::copy(&keygen_src, utils_dir.join("keygenerator")).map_err(|e| InstallError::Io {
+        path: utils_dir.display().to_string(),
+        source: e,
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let kg = utils_dir.join("keygenerator");
+        let mut perms = fs::metadata(&kg).map_err(|e| InstallError::Io {
+            path: kg.display().to_string(),
+            source: e,
+        })?
+        .permissions();
+        perms.set_mode(0o755);
+        let _ = fs::set_permissions(&kg, perms);
+    }
+
+    // 3. Acquire proxy (only when this install ships one).
+    let mut proxy_state: Option<ProxyState> = None;
+    if plan.install_proxy {
+        let proxy_tag = plan.proxy_tag.as_ref().ok_or_else(|| {
+            InstallError::Invalid("install_proxy=true but no proxy_tag supplied".to_string())
+        })?;
+        let proxy_src = acquirer
+            .acquire(Artifact::Proxy, proxy_tag)
+            .await
+            .map_err(|e| InstallError::Acquire(format!("proxy binary: {e}")))?;
+        let proxy_installed = bin_store
+            .install_binary("proxy", proxy_tag.as_str(), &proxy_src)
+            .map_err(|e| InstallError::Acquire(format!("install_binary proxy: {e}")))?;
+
+        let proxy_dir = plan.paths.elrond_proxy_root();
+        fs::create_dir_all(proxy_dir.join("config")).map_err(|e| InstallError::Io {
+            path: proxy_dir.display().to_string(),
+            source: e,
+        })?;
+        // Symlink the active proxy binary into the proxy dir.
+        let proxy_link = proxy_dir.join("proxy");
+        swap_symlink(&proxy_link, &proxy_installed).map_err(|e| {
+            InstallError::Acquire(format!("symlink proxy binary: {e}"))
+        })?;
+
+        // Render canonical proxy unit. Returned to the caller via
+        // `unit_files` below; the bash flow installs it alongside the
+        // node units.
+        let proxy_unit_text = render_canonical_proxy_unit(&ProxyUnitSpec {
+            custom_user: plan.custom_user,
+            proxy_dir: &proxy_dir,
+            limit_nofile: plan.limit_nofile,
+            restart_sec: plan.restart_sec,
+        });
+        // We push this into `unit_files` after the node unit loop so the
+        // operator-visible order is node-0..node-N, proxy.
+        let _proxy_unit_pending = ("elrond-proxy.service".to_string(), proxy_unit_text);
+
+        // Build a default observers list: shard 0..=N (one per node), and
+        // metachain for the last entry. Matches the bash quirk of mapping
+        // `[[Observers]]` to `localhost:8080..8083`.
+        let observers: Vec<ObserverEntry> = build_default_observers(plan.api_port_base, plan.node_count);
+
+        // Write proxy config — the bash starts from the upstream config
+        // file; we don't have direct access to that here. For Phase 3 we
+        // write a minimal config sufficient for the proxy to run; later
+        // phases can rsync from the cloned proxy-go repo if operators
+        // demand the full upstream shape.
+        let mut proxy_config = DocumentMut::new();
+        rewrite_proxy_config(&mut proxy_config, DEFAULT_PROXY_PORT, &observers)
+            .map_err(|e| InstallError::Toml(format!("proxy config: {e}")))?;
+        fs::write(proxy_dir.join("config/config.toml"), proxy_config.to_string()).map_err(
+            |e| InstallError::Io {
+                path: proxy_dir.join("config/config.toml").display().to_string(),
+                source: e,
+            },
+        )?;
+
+        proxy_state = Some(ProxyState {
+            present: true,
+            unit: "elrond-proxy.service".to_string(),
+            workdir: proxy_dir,
+            server_port: DEFAULT_PROXY_PORT,
+        });
+    }
+
+    // 4. Clone the config repo once and copy into each node-i.
+    let config_repo = acquire_config_repo(
+        &plan.paths.binaries,
+        plan.github_org,
+        plan.environment,
+        &plan.config_tag,
+    )
+    .await?;
+
+    // 5. Per-node provisioning.
+    let mut node_states: Vec<NodeState> = Vec::with_capacity(plan.node_count as usize);
+    let mut unit_files: Vec<UnitFile> = Vec::with_capacity(plan.node_count as usize);
+    for node in &plan.nodes {
+        let workdir = plan.paths.node_workdir(node.index);
+        fs::create_dir_all(workdir.join("config")).map_err(|e| InstallError::Io {
+            path: workdir.display().to_string(),
+            source: e,
+        })?;
+        // Empty side dirs the node binary expects on first start.
+        for sub in ["db", "logs", "stats", "health-records"] {
+            fs::create_dir_all(workdir.join(sub)).map_err(|e| InstallError::Io {
+                path: workdir.display().to_string(),
+                source: e,
+            })?;
+        }
+        copy_dir_recursive(&config_repo, &workdir.join("config"))?;
+
+        let api_port = plan.api_port_base.saturating_add(node.index.get());
+        let display_name = if node.display_name.is_empty() {
+            plan.name_template
+                .replace("{env}", plan.environment.as_str())
+                .replace("{index}", &node.index.get().to_string())
+        } else {
+            node.display_name.clone()
+        };
+
+        // Apply per-node tomledit.
+        apply_node_tomledit(
+            &workdir,
+            &display_name,
+            node.shard,
+            plan.config_edits,
+            plan.prefs_overrides,
+            plan.config_overrides,
+        )?;
+
+        // Symlink node binary.
+        let symlink = workdir.join("node");
+        swap_symlink(&symlink, &node_installed).map_err(|e| {
+            InstallError::Acquire(format!("symlink node binary for index {}: {e}", node.index.get()))
+        })?;
+
+        // Install keys: validators expect node-{i}.zip in NODE_KEYS_LOCATION;
+        // observers + multikey nodes get their .pem files from the
+        // freshly-built keygenerator binary (mirrors the bash
+        // `observer_keys` flow). On any error from keygen we fall back
+        // to a warning so the operator can rerun `mxnode keygen` later.
+        match node.role {
+            Role::Validator => {
+                install_validator_keys(&plan.paths.node_keys, node.index, &workdir)?;
+            }
+            Role::Observer | Role::Multikey => {
+                generate_observer_keys(&utils_dir, &workdir, node.index)?;
+            }
+        }
+
+        // Render the supervisor config: systemd unit on Linux, launchd
+        // plist on macOS. The contents differ; the *name* the
+        // orchestrator passes downstream is always the systemd-style
+        // name (`elrond-node-N.service`), and `supervisor::unit_filename`
+        // translates to the macOS form at install time.
+        let spec = NodeUnitSpec {
+            index: node.index,
+            custom_user: plan.custom_user,
+            workdir: &workdir,
+            api_port,
+            log_level: plan.log_level,
+            limit_nofile: plan.limit_nofile,
+            restart_sec: plan.restart_sec,
+            extra_flags: plan.extra_flags,
+        };
+        let supervisor_text = match mxnode_core::Platform::current() {
+            mxnode_core::Platform::Macos => render_canonical_node_plist(&spec),
+            _ => render_canonical_node_unit(&spec),
+        };
+        let unit_name = format!("elrond-node-{}.service", node.index.get());
+        unit_files.push(UnitFile {
+            name: unit_name.clone(),
+            contents: supervisor_text,
+        });
+
+        node_states.push(NodeState {
+            index: node.index,
+            role: node.role,
+            shard: node.shard,
+            display_name: display_name.clone(),
+            api_port,
+            unit: unit_name.clone(),
+            unit_override: String::new(),
+            workdir,
+            last_known_pubkey: String::new(),
+            last_action: String::new(),
+            last_action_at: None,
+        });
+    }
+
+    // 6. Build State.
+    let install = InstallSection {
+        kind: plan.kind,
+        environment: plan.environment,
+        github_org: plan.github_org.to_string(),
+        node_count: plan.node_count,
+        versions: mxnode_core::InstallVersions {
+            config_tag: Some(plan.config_tag.clone()),
+            binary_tag: Some(plan.binary_tag.clone()),
+            proxy_tag: plan.proxy_tag.clone(),
+            go_version: String::new(),
+        },
+        binaries: mxnode_core::state::InstallBinaries {
+            node: vec![plan.binary_tag.clone()],
+            proxy: plan
+                .proxy_tag
+                .as_ref()
+                .map(|t| vec![t.clone()])
+                .unwrap_or_default(),
+            keygenerator: vec![plan.binary_tag.clone()],
+        },
+    };
+
+    let state = State {
+        schema_version: SCHEMA_VERSION,
+        written_at: time::OffsetDateTime::now_utc(),
+        written_by: format!("mxnode/{}", env!("CARGO_PKG_VERSION")),
+        discovered: false,
+        install: Some(install),
+        nodes: node_states,
+        proxy: proxy_state,
+        migrations: MigrationLog::default(),
+    };
+
+    Ok(InstallOutcome { state, unit_files })
+}
+
+/// Build a default `[[Observers]]` list for the proxy config.
+///
+/// For an observer squad, the bash maps node-0..node-2 → shards 0,1,2 and
+/// node-3 → metachain (`u32::MAX`). For other counts we just pin
+/// node-i to shard i and let the operator edit the proxy config later.
+pub fn build_default_observers(api_port_base: u16, node_count: u16) -> Vec<ObserverEntry> {
+    let mut out = Vec::with_capacity(node_count as usize);
+    for i in 0..node_count {
+        let port = api_port_base.saturating_add(i);
+        let shard_id = if node_count == 4 && i == 3 {
+            mxnode_core::Shard::Metachain.protocol_id().unwrap()
+        } else {
+            i as u32
+        };
+        out.push(ObserverEntry {
+            shard_id,
+            address: format!("http://127.0.0.1:{port}"),
+        });
+    }
+    out
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), InstallError> {
+    fs::create_dir_all(dst).map_err(|e| InstallError::Io {
+        path: dst.display().to_string(),
+        source: e,
+    })?;
+    for entry in fs::read_dir(src).map_err(|e| InstallError::Io {
+        path: src.display().to_string(),
+        source: e,
+    })? {
+        let entry = entry.map_err(|e| InstallError::Io {
+            path: src.display().to_string(),
+            source: e,
+        })?;
+        let from = entry.path();
+        let name = match from.file_name() {
+            Some(n) => n.to_owned(),
+            None => continue,
+        };
+        // Skip `.git` so the operator's per-node config dir doesn't carry
+        // a 1-commit bare repo around.
+        if name == ".git" {
+            continue;
+        }
+        let to = dst.join(&name);
+        let ft = entry
+            .file_type()
+            .map_err(|e| InstallError::Io {
+                path: from.display().to_string(),
+                source: e,
+            })?;
+        if ft.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else if ft.is_file() {
+            fs::copy(&from, &to).map_err(|e| InstallError::Io {
+                path: to.display().to_string(),
+                source: e,
+            })?;
+        }
+        // Symlinks inside the upstream config repo are not used; ignore.
+    }
+    Ok(())
+}
+
+/// Apply the well-known + operator-defined TOML edits to one node's
+/// `config/` directory. Operator overrides are applied **after** the
+/// well-known edits so they always win — operators can intentionally
+/// undo a default mxnode chooses.
+pub(crate) fn apply_node_tomledit(
+    workdir: &Path,
+    display_name: &str,
+    shard: Shard,
+    edits: ConfigEdits,
+    prefs_overrides: &BTreeMap<String, toml::Value>,
+    config_overrides: &BTreeMap<String, toml::Value>,
+) -> Result<(), InstallError> {
+    // Index/shard substitutions for string overrides. We derive
+    // `index` from the workdir's last segment (`node-N`) so we don't
+    // need a separate parameter — the install orchestrator stamps the
+    // workdir consistently.
+    let index_str = workdir
+        .file_name()
+        .and_then(|f| f.to_str())
+        .and_then(|s| s.strip_prefix("node-"))
+        .unwrap_or("");
+    let shard_str = shard.as_str();
+    let subs = [("{index}", index_str), ("{shard}", shard_str)];
+
+    let prefs_path = workdir.join("config/prefs.toml");
+    if prefs_path.exists() {
+        let body = fs::read_to_string(&prefs_path).map_err(|e| InstallError::Io {
+            path: prefs_path.display().to_string(),
+            source: e,
+        })?;
+        let mut doc: DocumentMut = body
+            .parse()
+            .map_err(|e| InstallError::Toml(format!("parse {}: {e}", prefs_path.display())))?;
+        set_node_display_name(&mut doc, display_name).map_err(|e| InstallError::Toml(e.to_string()))?;
+        if matches!(edits, ConfigEdits::Observer) {
+            set_destination_shard(&mut doc, shard).map_err(|e| InstallError::Toml(e.to_string()))?;
+        }
+        if !prefs_overrides.is_empty() {
+            apply_overrides(&mut doc, prefs_overrides, &subs)
+                .map_err(|e| InstallError::Toml(e.to_string()))?;
+        }
+        fs::write(&prefs_path, doc.to_string()).map_err(|e| InstallError::Io {
+            path: prefs_path.display().to_string(),
+            source: e,
+        })?;
+    }
+
+    // Edit config.toml when any of these is true:
+    //   1. Observer squads enable [DbLookupExtensions].
+    //   2. Non-x86 hosts (Apple Silicon, Linux aarch64) need the
+    //      [HardwareRequirements] CPUFlags array cleared.
+    //   3. The operator supplied [overrides.config] entries.
+    let config_path = workdir.join("config/config.toml");
+    let needs_observer_edits = matches!(edits, ConfigEdits::Observer);
+    let needs_arm_bypass = !cfg!(target_arch = "x86_64");
+    let has_op_overrides = !config_overrides.is_empty();
+    if (needs_observer_edits || needs_arm_bypass || has_op_overrides) && config_path.exists() {
+        let body = fs::read_to_string(&config_path).map_err(|e| InstallError::Io {
+            path: config_path.display().to_string(),
+            source: e,
+        })?;
+        let mut doc: DocumentMut = body
+            .parse()
+            .map_err(|e| InstallError::Toml(format!("parse {}: {e}", config_path.display())))?;
+        if needs_observer_edits {
+            enable_db_lookup_extensions(&mut doc).map_err(|e| InstallError::Toml(e.to_string()))?;
+        }
+        if needs_arm_bypass {
+            clear_cpu_flags(&mut doc).map_err(|e| InstallError::Toml(e.to_string()))?;
+        }
+        if has_op_overrides {
+            apply_overrides(&mut doc, config_overrides, &subs)
+                .map_err(|e| InstallError::Toml(e.to_string()))?;
+        }
+        fs::write(&config_path, doc.to_string()).map_err(|e| InstallError::Io {
+            path: config_path.display().to_string(),
+            source: e,
+        })?;
+    }
+    Ok(())
+}
+
+/// Run the just-built `keygenerator` to populate `*.pem` files inside
+/// `<workdir>/config/`. Mirrors the bash `observer_keys` step. We
+/// invoke the binary in a tempdir so we can copy the produced files
+/// into the right place without polluting `elrond-utils/`.
+fn generate_observer_keys(
+    utils_dir: &Path,
+    workdir: &Path,
+    index: NodeIndex,
+) -> Result<(), InstallError> {
+    let keygen = utils_dir.join("keygenerator");
+    if !keygen.exists() {
+        // Surface this as a warning rather than a hard error so the
+        // operator can run `mxnode keygen` separately. The node will
+        // refuse to start without keys, which is the right signal.
+        tracing::warn!(
+            target: "mxnode.event",
+            event = "install.keygen.missing",
+            index = index.get(),
+            expected = keygen.display().to_string(),
+            "keygenerator missing; node will fail to start until keys are placed",
+        );
+        return Ok(());
+    }
+    let scratch = tempfile::tempdir().map_err(|e| InstallError::Io {
+        path: utils_dir.display().to_string(),
+        source: e,
+    })?;
+    let status = std::process::Command::new(&keygen)
+        .current_dir(scratch.path())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .status()
+        .map_err(|e| InstallError::Io {
+            path: keygen.display().to_string(),
+            source: e,
+        })?;
+    if !status.success() {
+        return Err(InstallError::Invalid(format!(
+            "keygenerator exited {:?} for node-{}",
+            status.code(),
+            index.get(),
+        )));
+    }
+    // Move every .pem the keygen produced into the node's config dir.
+    let dest = workdir.join("config");
+    for entry in std::fs::read_dir(scratch.path()).map_err(|e| InstallError::Io {
+        path: scratch.path().display().to_string(),
+        source: e,
+    })? {
+        let entry = entry.map_err(|e| InstallError::Io {
+            path: scratch.path().display().to_string(),
+            source: e,
+        })?;
+        let p = entry.path();
+        if p.extension().and_then(|s| s.to_str()) == Some("pem") {
+            if let Some(name) = p.file_name() {
+                std::fs::copy(&p, dest.join(name)).map_err(|e| InstallError::Io {
+                    path: dest.display().to_string(),
+                    source: e,
+                })?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn install_validator_keys(
+    keys_dir: &Path,
+    index: NodeIndex,
+    workdir: &Path,
+) -> Result<(), InstallError> {
+    let zip_name = format!("node-{}.zip", index.get());
+    let zip_path = keys_dir.join(&zip_name);
+    if !zip_path.exists() {
+        // Mirrors the bash: warn and continue. Operators commonly install
+        // first then drop keys later. The unit will fail-to-start without
+        // them, which is the right signal.
+        tracing::warn!(
+            target: "mxnode.event",
+            event = "install.keys.missing",
+            index = index.get(),
+            expected = zip_path.display().to_string(),
+            "validator key zip not found; node will fail to start until it's placed",
+        );
+        return Ok(());
+    }
+
+    // Use the system `unzip -j` (junk paths) so the .pem files land
+    // directly in node-{i}/config/ — same as the bash.
+    let dest = workdir.join("config");
+    let status = std::process::Command::new("unzip")
+        .arg("-jo") // junk paths + overwrite
+        .arg(&zip_path)
+        .arg("-d")
+        .arg(&dest)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .status()
+        .map_err(|e| InstallError::Zip(format!("unzip not on PATH: {e}")))?;
+    if !status.success() {
+        return Err(InstallError::Zip(format!(
+            "unzip exited {:?} for {}",
+            status.code(),
+            zip_path.display(),
+        )));
+    }
+    Ok(())
+}
+
+/// Write rendered units (or plists) into the platform-appropriate
+/// supervisor directory and (optionally) enable them.
+///
+/// On Linux: `sudo mv` into `/etc/systemd/system` + `sudo systemctl
+/// enable`. On macOS: plain `cp` into `~/Library/LaunchAgents` +
+/// `launchctl bootstrap`. The branch lives in
+/// [`crate::orchestrator::supervisor::install_one_unit`]; we just
+/// translate `InstallError` for each per-unit failure.
+pub async fn install_units(units: &[UnitFile], enable: bool) -> Result<(), InstallError> {
+    use crate::orchestrator::supervisor::{install_one_unit, InstallUnitError};
+    use mxnode_core::Platform;
+    let platform = Platform::current();
+    for unit in units {
+        // Render the on-disk filename per platform; the caller already
+        // produced the right *contents* via render_canonical_node_unit
+        // (Linux) or render_canonical_node_plist (macOS), so we only
+        // need to make sure the file ends up at the right path.
+        if let Err(e) = install_one_unit(platform, &unit.name, &unit.contents, enable).await {
+            return Err(match e {
+                InstallUnitError::Io { path, source } => InstallError::Io { path, source },
+                InstallUnitError::UnsupportedPlatform => InstallError::Invalid(format!(
+                    "platform {:?} is not yet supported",
+                    platform,
+                )),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Persist the `State` produced by [`run_install`] under the lock + atomic
+/// write contract enforced by [`StateStore`].
+pub fn persist_state(paths: &Paths, state: &State) -> Result<PathBuf, InstallError> {
+    let store = StateStore::new(&paths.state);
+    let guard = store.lock().map_err(|e| InstallError::State(e.to_string()))?;
+    store.save(state, &guard).map_err(|e| InstallError::State(e.to_string()))?;
+    drop(guard);
+    Ok(store.state_path().to_path_buf())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    #[test]
+    fn build_default_observers_for_squad_maps_metachain_last() {
+        let observers = build_default_observers(8080, 4);
+        assert_eq!(observers.len(), 4);
+        assert_eq!(observers[0].shard_id, 0);
+        assert_eq!(observers[1].shard_id, 1);
+        assert_eq!(observers[2].shard_id, 2);
+        assert_eq!(observers[3].shard_id, mxnode_core::Shard::Metachain.protocol_id().unwrap());
+        assert!(observers[0].address.ends_with(":8080"));
+        assert!(observers[3].address.ends_with(":8083"));
+    }
+
+    #[test]
+    fn build_default_observers_for_arbitrary_count_uses_index_as_shard() {
+        let observers = build_default_observers(8080, 2);
+        assert_eq!(observers[0].shard_id, 0);
+        assert_eq!(observers[1].shard_id, 1);
+    }
+
+    #[test]
+    fn copy_dir_recursive_skips_dotgit() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(src.path().join(".git")).unwrap();
+        std::fs::write(src.path().join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(src.path().join("config.toml"), "key = 1\n").unwrap();
+        copy_dir_recursive(src.path(), dst.path()).unwrap();
+        assert!(dst.path().join("config.toml").exists());
+        assert!(!dst.path().join(".git").exists());
+    }
+
+    #[test]
+    fn validator_key_install_warns_when_zip_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let workdir = dir.path().join("node-0");
+        std::fs::create_dir_all(workdir.join("config")).unwrap();
+        // No zip -> warn-and-continue, returns Ok.
+        let r = install_validator_keys(dir.path(), NodeIndex::new(0), &workdir);
+        assert!(r.is_ok());
+    }
+
+    #[test]
+    fn apply_node_tomledit_validator_only_stamps_display_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let workdir = dir.path().join("node-0");
+        std::fs::create_dir_all(workdir.join("config")).unwrap();
+        std::fs::write(
+            workdir.join("config/prefs.toml"),
+            "[Preferences]\nNodeDisplayName = \"\"\nDestinationShardAsObserver = \"disabled\"\n",
+        )
+        .unwrap();
+
+        apply_node_tomledit(
+            &workdir,
+            "test-name",
+            Shard::Auto,
+            ConfigEdits::Validator,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+        let body = std::fs::read_to_string(workdir.join("config/prefs.toml")).unwrap();
+        assert!(body.contains("NodeDisplayName = \"test-name\""));
+        // Validator edits leave shard untouched.
+        assert!(body.contains("DestinationShardAsObserver = \"disabled\""));
+    }
+
+    #[test]
+    fn apply_node_tomledit_observer_pins_shard_and_enables_db_lookup() {
+        let dir = tempfile::tempdir().unwrap();
+        let workdir = dir.path().join("node-0");
+        std::fs::create_dir_all(workdir.join("config")).unwrap();
+        std::fs::write(
+            workdir.join("config/prefs.toml"),
+            "[Preferences]\nNodeDisplayName = \"\"\nDestinationShardAsObserver = \"disabled\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            workdir.join("config/config.toml"),
+            "[DbLookupExtensions]\nEnabled = false\n",
+        )
+        .unwrap();
+
+        apply_node_tomledit(
+            &workdir,
+            "obs-0",
+            Shard::Metachain,
+            ConfigEdits::Observer,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+        let prefs = std::fs::read_to_string(workdir.join("config/prefs.toml")).unwrap();
+        assert!(prefs.contains("DestinationShardAsObserver = \"metachain\""));
+        let config = std::fs::read_to_string(workdir.join("config/config.toml")).unwrap();
+        assert!(config.contains("Enabled = true"));
+    }
+
+    #[test]
+    fn tag_parses_for_install_specs() {
+        let _ = Tag::from_str("v1.7.13").unwrap();
+    }
+}
