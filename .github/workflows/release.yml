@@ -28,38 +28,30 @@ jobs:
   build:
     name: build ${{ matrix.target }}
     # Self-hosted runner gate: only run on the canonical repo so a
-    # malicious fork can't dispatch this workflow against
-    # `[self-hosted, …]` and execute arbitrary code on the runner.
-    # Tag-push and manual-dispatch already require write access in
-    # the canonical repo, so this is belt-and-braces.
+    # malicious fork can't dispatch this workflow against the
+    # XOXNO Hetzner box and execute arbitrary code on it. Tag-push
+    # and manual-dispatch already require write access in the
+    # canonical repo; this is belt-and-braces.
     if: github.repository_owner == 'XOXNO'
-    runs-on: ${{ matrix.runs-on }}
+    # Single runner for every target. The self-hosted XOXNO Hetzner
+    # box (Ubuntu x86_64) acts as the universal build host:
+    #
+    #   - Linux x86_64 musl   — native, via zig as a hermetic linker
+    #   - macOS arm64         — cross-compile via zig (Mach-O 64)
+    #   - macOS x86_64        — cross-compile via zig (Mach-O 64)
+    #
+    # `cargo-zigbuild` invokes a single `zig` binary as the C linker
+    # for every target, which means we don't need the macOS SDK,
+    # osxcross, Docker, musl-tools, or any per-target toolchain.
+    # zig itself ships every libc shim it needs.
+    runs-on: [self-hosted, Linux, X64]
     strategy:
       fail-fast: false
-      # Four targets, each on the runner that's native (or close to
-      # native) for that target so we don't fight cross-toolchains.
-      # Linux musl uses zigbuild from an Ubuntu host because zig is
-      # the cleanest way to produce a fully-static musl binary that
-      # drops on any glibc-2.x distro without dependency surgery.
       matrix:
         include:
-          # macOS targets: GitHub-hosted runners, native build per
-          # arch (so we never have to mess with the SDK for cross).
           - target: aarch64-apple-darwin
-            runs-on: macos-14
-            cross: 'no'
           - target: x86_64-apple-darwin
-            runs-on: macos-13
-            cross: 'no'
-          # Linux x86_64: the self-hosted XOXNO Hetzner runner.
-          # Building natively for the very platform we deploy on
-          # eliminates the zig + mirror-roulette failure mode that
-          # took out the Ubuntu-hosted job. We still produce a musl-
-          # static binary (works on any glibc-2.x distro) by
-          # depending on apt-installed `musl-tools`.
           - target: x86_64-unknown-linux-musl
-            runs-on: [self-hosted, Linux, X64]
-            cross: 'apt-musl'
           # aarch64 Linux: deliberately dropped from the matrix.
           # Add it back if/when an operator deploys to AWS Graviton
           # / ARM Hetzner / Pi — until then it'd be a maintenance
@@ -110,29 +102,25 @@ jobs:
           # different artifact sets.
           key: ${{ matrix.target }}
 
-      - name: Install musl-tools (Linux musl native build)
-        if: matrix.cross == 'apt-musl'
-        # Self-hosted runner — assume passwordless sudo for
-        # apt-get (standard on the actions/runner setup script).
-        # `musl-tools` provides `musl-gcc`, the C compiler ring's
-        # curve25519.c needs when targeting *-unknown-linux-musl.
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools
+      - name: Install zig (universal cross-toolchain)
+        # Pinned to a long-published, fully-mirrored version. 0.16.0
+        # was unreachable on every mirror at v0.1.0 release time
+        # (404 / 503 across machengine, hryx, nekos, linus,
+        # liujiacai, ziglang.org). 0.13.0 has been mirror-stable
+        # since 2024-08 and is what cargo-zigbuild's CI also uses.
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.13.0
 
-      - name: Build (native musl)
-        if: matrix.cross == 'apt-musl'
+      - name: Install cargo-zigbuild
+        # `--locked` so we don't silently grab a fresh transitive
+        # dep mid-release. Cached by Swatinem/rust-cache above.
+        run: cargo install --locked cargo-zigbuild
+
+      - name: Build (cargo-zigbuild)
         env:
           TARGET: ${{ matrix.target }}
-          CC_x86_64_unknown_linux_musl: musl-gcc
-          AR_x86_64_unknown_linux_musl: ar
-        run: cargo build --release --target "$TARGET" --bin mxnode
-
-      - name: Build (native)
-        if: matrix.cross == 'no'
-        env:
-          TARGET: ${{ matrix.target }}
-        run: cargo build --release --target "$TARGET" --bin mxnode
+        run: cargo zigbuild --release --target "$TARGET" --bin mxnode
 
       - name: Sanity check (binary exists + is the right ELF/Mach-O)
         env:
@@ -182,7 +170,10 @@ jobs:
   release:
     name: publish release
     needs: build
-    runs-on: ubuntu-latest
+    # Stay on the same runner pool the build jobs ran on — single
+    # source of CI hardware, no GitHub-hosted minutes consumed.
+    if: github.repository_owner == 'XOXNO'
+    runs-on: [self-hosted, Linux, X64]
     permissions:
       # Required by softprops/action-gh-release to attach assets +
       # write release notes.
