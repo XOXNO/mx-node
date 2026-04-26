@@ -8,6 +8,7 @@
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
+use mxnode_core::Role;
 use mxnode_state::StateStore;
 use serde::Serialize;
 
@@ -99,7 +100,7 @@ fn check(global: &GlobalArgs) -> Result<(), CliError> {
             CliError::new(
                 "failed to read state.toml",
                 e.to_string(),
-                "run `mxnode adopt` first",
+                "run `mxnode install` first",
             )
             .json_if(global.json)
         })?
@@ -107,14 +108,25 @@ fn check(global: &GlobalArgs) -> Result<(), CliError> {
             CliError::new(
                 "no state.toml on this host",
                 format!("expected {}", store.state_path().display()),
-                "run `mxnode adopt` first",
+                "run `mxnode install` first",
             )
             .json_if(global.json)
         })?;
 
     let key_dir = &runtime.paths.node_keys;
+    // Observer and multikey nodes generate their keys via keygenerator
+    // at install time (and the .pem files are stamped directly into
+    // each node's workdir/config). Validator nodes are the only ones
+    // that need an operator-supplied `node-{i}.zip`. Filter the check
+    // surface accordingly so observer-only installs don't surface
+    // spurious "missing" errors.
     let mut entries: Vec<KeyEntry> = Vec::with_capacity(state.nodes.len());
+    let mut skipped: Vec<u16> = Vec::new();
     for node in &state.nodes {
+        if !matches!(node.role, Role::Validator) {
+            skipped.push(node.index.get());
+            continue;
+        }
         let zip_name = format!("node-{}.zip", node.index.get());
         let zip_path = key_dir.join(&zip_name);
         let present = zip_path.exists();
@@ -131,8 +143,13 @@ fn check(global: &GlobalArgs) -> Result<(), CliError> {
             key_dir: key_dir.display().to_string(),
             entries: entries.iter().map(KeyEntryView::from).collect(),
             missing,
+            skipped_non_validator_nodes: skipped.clone(),
         };
         println!("{}", serde_json::to_string(&payload).unwrap_or_default());
+    } else if entries.is_empty() {
+        println!(
+            "no validator nodes in state.toml — observer/multikey installs use auto-generated keys",
+        );
     } else {
         println!("key dir: {}", key_dir.display());
         for e in &entries {
@@ -142,6 +159,12 @@ fn check(global: &GlobalArgs) -> Result<(), CliError> {
                 e.index,
                 e.zip_path.file_name().and_then(|n| n.to_str()).unwrap_or(""),
                 if e.present { "present" } else { "missing" },
+            );
+        }
+        if !skipped.is_empty() {
+            println!(
+                "  (skipped {n} observer/multikey node(s); keys are auto-generated)",
+                n = skipped.len(),
             );
         }
         if missing > 0 {
@@ -192,4 +215,8 @@ struct KeyReport {
     key_dir: String,
     entries: Vec<KeyEntryView>,
     missing: usize,
+    /// Indices of observer/multikey nodes the check skipped — those
+    /// roles don't consume operator-supplied zips.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    skipped_non_validator_nodes: Vec<u16>,
 }

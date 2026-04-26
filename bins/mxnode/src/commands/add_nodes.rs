@@ -16,7 +16,23 @@ use crate::orchestrator::install::{
 };
 use crate::orchestrator::runtime::{CliErrorExt, Runtime};
 
+use std::path::PathBuf;
+
 use super::install::{emit_success, install_err};
+
+/// When extending a multikey install, look at node-0's existing
+/// `config/allValidatorsKeys.pem` and reuse it for the new nodes.
+/// `add-nodes` doesn't accept `--keys-file`; the assumption is that
+/// every multikey node on a host signs for the same key set, so the
+/// original bundle is the right one. Returns `None` when the file
+/// isn't there (mismatched install, or operator never ran multikey).
+fn existing_multikey_keys(runtime: &Runtime) -> Option<PathBuf> {
+    let candidate = runtime
+        .paths
+        .elrond_nodes_root()
+        .join("node-0/config/allValidatorsKeys.pem");
+    candidate.exists().then_some(candidate)
+}
 
 #[tokio::main(flavor = "current_thread")]
 pub async fn run(args: AddNodesArgs, global: &GlobalArgs) -> Result<(), CliError> {
@@ -28,7 +44,7 @@ pub async fn run(args: AddNodesArgs, global: &GlobalArgs) -> Result<(), CliError
             CliError::new(
                 "failed to read state.toml",
                 e.to_string(),
-                "run `mxnode adopt` first",
+                "run `mxnode install` first",
             )
             .json_if(global.json)
         })?
@@ -45,7 +61,7 @@ pub async fn run(args: AddNodesArgs, global: &GlobalArgs) -> Result<(), CliError
         CliError::new(
             "state.toml has no [install] section",
             "expected an existing install",
-            "run `mxnode install` first, or `mxnode adopt` if the host already has units",
+            "run `mxnode install` first",
         )
         .json_if(global.json)
     })?;
@@ -98,7 +114,7 @@ pub async fn run(args: AddNodesArgs, global: &GlobalArgs) -> Result<(), CliError
             CliError::new(
                 "state.install.versions.binary_tag is unset",
                 "cannot extend without knowing the deployed tag",
-                "run `mxnode rebuild-state` to refresh, or pass an explicit override in config",
+                "run hand-edit and re-run to refresh, or pass an explicit override in config",
             )
             .json_if(global.json)
         })?;
@@ -148,6 +164,12 @@ pub async fn run(args: AddNodesArgs, global: &GlobalArgs) -> Result<(), CliError
         },
         // add-nodes never installs/replaces the proxy.
         install_proxy: false,
+        // add-nodes inherits the original install's keys-file: there's
+        // no UX surface for changing the multikey bundle on an
+        // already-installed host. A future `mxnode keys rotate` would
+        // be the right home for that.
+        multikey_keys_file: existing_multikey_keys(&runtime),
+        redundancy_level: 0,
         prefs_overrides: &runtime.loaded.config.overrides.prefs,
         config_overrides: &runtime.loaded.config.overrides.config,
     };
@@ -182,5 +204,5 @@ pub async fn run(args: AddNodesArgs, global: &GlobalArgs) -> Result<(), CliError
 
     let state_path = persist_state(&runtime.paths, &state).map_err(|e| install_err(e, global))?;
 
-    emit_success(global, &outcome, &state_path)
+    emit_success(global, &outcome, &state_path, &runtime.paths.node_keys)
 }

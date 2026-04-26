@@ -68,6 +68,20 @@ pub fn enable_db_lookup_extensions(doc: &mut DocumentMut) -> Result<(), TomlEdit
     Ok(())
 }
 
+/// Set `[Preferences] RedundancyLevel = N` for multikey backups.
+///
+/// `0` means "primary multikey machine" (default — emit anyway so
+/// `mxnode config show` reflects the install choice unambiguously).
+/// `1+` mark backup machines that take over signing for the same
+/// `allValidatorsKeys.pem` set when the lower-level instance fails.
+/// All instances must share the *same* keys file; only this knob
+/// differs across them.
+pub fn set_redundancy_level(doc: &mut DocumentMut, level: u8) -> Result<(), TomlEditError> {
+    let section = ensure_table(doc, "Preferences")?;
+    section["RedundancyLevel"] = value(i64::from(level));
+    Ok(())
+}
+
 /// Clear `[HardwareRequirements] CPUFlags = []` in the node's
 /// `config.toml`. The upstream config pins x86-only flags
 /// (`SSE4`, `SSE42`); on non-x86 hosts (Apple Silicon, Linux aarch64,

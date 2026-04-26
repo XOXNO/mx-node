@@ -67,9 +67,6 @@ impl Sandbox {
         self.xdg_state_home.join("mxnode/state.toml")
     }
 
-    fn inflight_path(&self) -> PathBuf {
-        self.xdg_state_home.join("mxnode/inflight.toml")
-    }
 }
 
 /// Render a canonical `elrond-node-{INDEX}.service` text matching what
@@ -112,65 +109,35 @@ fn version_emits_stable_json_schema() {
     assert!(v["schema_version"].is_number());
 }
 
+/// Auto-init: any state-changing command on a fresh box writes
+/// `~/.config/mxnode/config.toml` transparently. We trigger it via
+/// `status` (cheapest auto-init consumer) and verify the file landed
+/// with the auto-detected user/home + mainnet defaults.
 #[test]
-fn init_no_prompt_writes_valid_toml() {
+fn first_use_auto_inits_config() {
     let sandbox = Sandbox::new();
-    let output = sandbox
-        .cmd()
-        .args([
-            "init",
-            "--no-prompt",
-            "--network",
-            "testnet",
-            "--user",
-            "validator",
-            "--home",
-            "/srv/mx",
-        ])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "init failed:\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let body = std::fs::read_to_string(sandbox.config_path()).unwrap();
-    let parsed: toml::Value = toml::from_str(&body).expect("init must produce valid TOML");
-    assert_eq!(parsed["network"]["environment"].as_str(), Some("testnet"));
-    assert_eq!(parsed["paths"]["custom_user"].as_str(), Some("validator"));
-    assert_eq!(parsed["paths"]["custom_home"].as_str(), Some("/srv/mx"));
-}
-
-#[test]
-fn init_refuses_to_overwrite_existing_config() {
-    let sandbox = Sandbox::new();
-    // Place an existing config first.
-    let cfg = sandbox.config_path();
-    std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
-    std::fs::write(&cfg, "schema_version = 1\n[network]\nenvironment = \"mainnet\"\n").unwrap();
-
-    let output = sandbox
-        .cmd()
-        .args(["init", "--no-prompt", "--network", "testnet"])
-        .output()
-        .unwrap();
-    assert!(!output.status.success(), "expected init to refuse");
+    let output = sandbox.cmd().args(["status"]).output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("already exists"), "stderr: {stderr}");
-    // File remains untouched.
-    let body = std::fs::read_to_string(&cfg).unwrap();
-    assert!(body.contains("mainnet"));
+    assert!(
+        stderr.contains("auto-initializing"),
+        "expected auto-init banner on stderr; got: {stderr}",
+    );
+    let body = std::fs::read_to_string(sandbox.config_path())
+        .expect("auto-init must produce a config file");
+    let parsed: toml::Value = toml::from_str(&body).expect("auto-init must write valid TOML");
+    assert_eq!(parsed["network"]["environment"].as_str(), Some("mainnet"));
+    assert!(parsed["paths"]["custom_home"].as_str().is_some());
+    assert!(parsed["paths"]["custom_user"].as_str().is_some());
 }
 
 #[test]
 fn config_show_origin_annotates_each_leaf() {
     let sandbox = Sandbox::new();
-    sandbox
-        .cmd()
-        .args(["init", "--no-prompt", "--network", "mainnet"])
-        .status()
-        .unwrap();
+    // Trigger auto-init via a Runtime-using command so the
+    // user-scope config file actually exists for `config show` to
+    // attribute leaves to. `config show` itself is read-only and
+    // doesn't auto-init.
+    sandbox.cmd().args(["status"]).status().unwrap();
     let output = sandbox
         .cmd()
         .args(["config", "show", "--origin"])
@@ -185,11 +152,7 @@ fn config_show_origin_annotates_each_leaf() {
 #[test]
 fn config_validate_passes_for_minimal_config() {
     let sandbox = Sandbox::new();
-    sandbox
-        .cmd()
-        .args(["init", "--no-prompt", "--network", "mainnet"])
-        .status()
-        .unwrap();
+    sandbox.cmd().args(["status"]).status().unwrap();
     let output = sandbox
         .cmd()
         .args(["config", "validate"])
@@ -205,11 +168,6 @@ fn config_validate_passes_for_minimal_config() {
 #[test]
 fn status_without_state_emits_3_line_error() {
     let sandbox = Sandbox::new();
-    sandbox
-        .cmd()
-        .args(["init", "--no-prompt", "--network", "mainnet"])
-        .status()
-        .unwrap();
     let output = sandbox.cmd().args(["status"]).output().unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -222,11 +180,6 @@ fn status_without_state_emits_3_line_error() {
 #[test]
 fn status_with_no_state_returns_typed_json_error() {
     let sandbox = Sandbox::new();
-    sandbox
-        .cmd()
-        .args(["init", "--no-prompt", "--network", "mainnet"])
-        .status()
-        .unwrap();
     let output = sandbox
         .cmd()
         .args(["--json", "status"])
@@ -239,90 +192,8 @@ fn status_with_no_state_returns_typed_json_error() {
 }
 
 #[test]
-fn unlock_without_force_refuses() {
-    let sandbox = Sandbox::new();
-    sandbox
-        .cmd()
-        .args(["init", "--no-prompt", "--network", "mainnet"])
-        .status()
-        .unwrap();
-    let output = sandbox.cmd().args(["unlock"]).output().unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("--force"));
-}
-
-#[test]
-fn unlock_force_with_no_inflight_succeeds() {
-    let sandbox = Sandbox::new();
-    sandbox
-        .cmd()
-        .args(["init", "--no-prompt", "--network", "mainnet"])
-        .status()
-        .unwrap();
-    let output = sandbox
-        .cmd()
-        .args(["unlock", "--force"])
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-}
-
-/// `unlock --force` with a stale `inflight.toml` (PID that doesn't exist)
-/// must remove the file. PID is reusable, so we use u32::MAX-1 — virtually
-/// guaranteed not to be a live process on any OS.
-#[test]
-fn unlock_force_clears_stale_inflight() {
-    let sandbox = Sandbox::new();
-    sandbox
-        .cmd()
-        .args(["init", "--no-prompt", "--network", "mainnet"])
-        .status()
-        .unwrap();
-    // Manufacture a stale inflight.toml.
-    let inflight = sandbox.inflight_path();
-    std::fs::create_dir_all(inflight.parent().unwrap()).unwrap();
-    std::fs::write(
-        &inflight,
-        format!(
-            r#"
-op = "upgrade"
-started_at = "2026-04-25T08:00:00Z"
-strategy = "rolling"
-selected = []
-completed = []
-current_step = "resolving"
-
-[identity]
-pid = {pid}
-started_token = 0
-"#,
-            pid = u32::MAX - 1,
-        ),
-    )
-    .unwrap();
-
-    let output = sandbox
-        .cmd()
-        .args(["unlock", "--force"])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "unlock failed:\n{}",
-        String::from_utf8_lossy(&output.stderr),
-    );
-    assert!(!inflight.exists(), "inflight.toml should have been removed");
-}
-
-#[test]
 fn doctor_reports_findings_in_json() {
     let sandbox = Sandbox::new();
-    sandbox
-        .cmd()
-        .args(["init", "--no-prompt", "--network", "mainnet"])
-        .status()
-        .unwrap();
     let output = sandbox
         .cmd()
         .args(["--json", "doctor"])
@@ -358,11 +229,6 @@ fn lifecycle_selectors_conflict_at_parse_time() {
 #[test]
 fn cleanup_dry_run_default_is_safe_after_init() {
     let sandbox = Sandbox::new();
-    sandbox
-        .cmd()
-        .args(["init", "--no-prompt", "--network", "mainnet"])
-        .status()
-        .unwrap();
     // No state.toml and no managed dirs under the default
     // /home/ubuntu — cleanup should report "nothing to clean" cleanly.
     let output = sandbox.cmd().args(["cleanup"]).output().unwrap();
@@ -415,11 +281,6 @@ fn synthetic_units_can_be_rendered_for_a_real_world_smoke_check() {
 #[test]
 fn db_remove_without_yes_refuses() {
     let sandbox = Sandbox::new();
-    sandbox
-        .cmd()
-        .args(["init", "--no-prompt", "--network", "mainnet"])
-        .status()
-        .unwrap();
     let output = sandbox
         .cmd()
         .args(["db", "remove", "--node", "0"])
@@ -433,11 +294,6 @@ fn db_remove_without_yes_refuses() {
 #[test]
 fn keys_check_reports_missing_when_state_has_nodes_but_no_zip() {
     let sandbox = Sandbox::new();
-    sandbox
-        .cmd()
-        .args(["init", "--no-prompt", "--network", "mainnet"])
-        .status()
-        .unwrap();
     // Manufacture a minimal state.toml with one node so keys check has
     // something to look for. The zip files are intentionally absent.
     let state_dir = sandbox.xdg_state_home.join("mxnode");
@@ -562,11 +418,6 @@ fn metrics_output_format_validation() {
 #[test]
 fn upgrade_dry_run_emits_plan() {
     let sandbox = Sandbox::new();
-    sandbox
-        .cmd()
-        .args(["init", "--no-prompt", "--network", "mainnet"])
-        .status()
-        .unwrap();
     // Synthesise a state.toml so upgrade has nodes to plan over.
     let state_dir = sandbox.xdg_state_home.join("mxnode");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -648,11 +499,6 @@ entries = []
 #[test]
 fn upgrade_without_binary_tag_or_recorded_version_errors_clearly() {
     let sandbox = Sandbox::new();
-    sandbox
-        .cmd()
-        .args(["init", "--no-prompt", "--network", "mainnet"])
-        .status()
-        .unwrap();
     // Minimal state.toml with no recorded versions.
     let state_dir = sandbox.xdg_state_home.join("mxnode");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -715,153 +561,11 @@ entries = []
     );
 }
 
-#[test]
-fn rollback_without_to_tag_errors() {
-    let sandbox = Sandbox::new();
-    sandbox
-        .cmd()
-        .args(["init", "--no-prompt", "--network", "mainnet"])
-        .status()
-        .unwrap();
-    let output = sandbox
-        .cmd()
-        .args(["rollback", "--node", "0"])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("--to-tag"), "stderr: {stderr}");
-}
-
-#[test]
-fn rollback_invalid_tag_errors() {
-    let sandbox = Sandbox::new();
-    sandbox
-        .cmd()
-        .args(["init", "--no-prompt", "--network", "mainnet"])
-        .status()
-        .unwrap();
-    let output = sandbox
-        .cmd()
-        .args(["rollback", "--node", "0", "--to-tag", ""])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("invalid --to-tag") || stderr.contains("Tag"),
-        "stderr: {stderr}",
-    );
-}
-
-#[test]
-fn upgrade_resume_without_inflight_errors() {
-    let sandbox = Sandbox::new();
-    sandbox
-        .cmd()
-        .args(["init", "--no-prompt", "--network", "mainnet"])
-        .status()
-        .unwrap();
-    let output = sandbox
-        .cmd()
-        .args(["upgrade", "--resume"])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("nothing to resume"),
-        "stderr: {stderr}",
-    );
-}
-
-/// `--abandon` against a synthetic stale inflight.toml: the previous
-/// run's pid is u32::MAX-1 (dead), so abandon should clear cleanly.
-#[test]
-fn upgrade_abandon_clears_stale_inflight() {
-    let sandbox = Sandbox::new();
-    sandbox
-        .cmd()
-        .args(["init", "--no-prompt", "--network", "mainnet"])
-        .status()
-        .unwrap();
-    let state_dir = sandbox.xdg_state_home.join("mxnode");
-    std::fs::create_dir_all(&state_dir).unwrap();
-    // Minimal valid state so the abandon path can reload + write.
-    std::fs::write(
-        state_dir.join("state.toml"),
-        r#"
-schema_version = 1
-written_at = "2026-04-25T08:00:00Z"
-written_by = "test"
-discovered = true
-
-[install]
-kind = "validators"
-environment = "mainnet"
-github_org = "multiversx"
-node_count = 0
-
-[install.versions]
-go_version = ""
-
-[install.binaries]
-node = []
-proxy = []
-keygenerator = []
-
-[migrations]
-entries = []
-"#,
-    )
-    .unwrap();
-    // Synthesise a stale inflight.toml with a dead pid.
-    std::fs::write(
-        state_dir.join("inflight.toml"),
-        format!(
-            r#"
-op = "upgrade"
-started_at = "2026-04-25T08:00:00Z"
-strategy = "rolling"
-selected = [0]
-completed = []
-current_step = "binary-replaced"
-
-[identity]
-pid = {pid}
-started_token = 0
-"#,
-            pid = u32::MAX - 1,
-        ),
-    )
-    .unwrap();
-
-    let output = sandbox
-        .cmd()
-        .args(["upgrade", "--abandon"])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr),
-    );
-    assert!(
-        !state_dir.join("inflight.toml").exists(),
-        "inflight.toml should be cleared after --abandon",
-    );
-}
-
 // ---------- Phase 3 integration tests ----------
 
 #[test]
 fn install_dry_run_emits_plan_shape() {
     let sandbox = Sandbox::new();
-    sandbox
-        .cmd()
-        .args(["init", "--no-prompt", "--network", "mainnet"])
-        .status()
-        .unwrap();
     let output = sandbox
         .cmd()
         .args([
@@ -896,11 +600,6 @@ fn install_with_invalid_binary_tag_errors() {
     // rejects a malformed tag instead of silently passing it through —
     // and one that doesn't depend on network access.
     let sandbox = Sandbox::new();
-    sandbox
-        .cmd()
-        .args(["init", "--no-prompt", "--network", "mainnet"])
-        .status()
-        .unwrap();
     let output = sandbox
         .cmd()
         .args([
@@ -926,11 +625,6 @@ fn install_with_invalid_binary_tag_errors() {
 #[test]
 fn install_refuses_when_state_already_exists() {
     let sandbox = Sandbox::new();
-    sandbox
-        .cmd()
-        .args(["init", "--no-prompt", "--network", "mainnet"])
-        .status()
-        .unwrap();
     let state_dir = sandbox.xdg_state_home.join("mxnode");
     std::fs::create_dir_all(&state_dir).unwrap();
     std::fs::write(state_dir.join("state.toml"), "schema_version = 1\n").unwrap();
@@ -955,11 +649,6 @@ fn install_refuses_when_state_already_exists() {
 #[test]
 fn add_nodes_refuses_on_squad_install() {
     let sandbox = Sandbox::new();
-    sandbox
-        .cmd()
-        .args(["init", "--no-prompt", "--network", "mainnet"])
-        .status()
-        .unwrap();
     let state_dir = sandbox.xdg_state_home.join("mxnode");
     std::fs::create_dir_all(&state_dir).unwrap();
     // Synthesise a state.toml with kind=observers-squad.
@@ -1007,11 +696,6 @@ entries = []
 #[test]
 fn upgrade_proxy_dry_run_when_no_proxy_errors() {
     let sandbox = Sandbox::new();
-    sandbox
-        .cmd()
-        .args(["init", "--no-prompt", "--network", "mainnet"])
-        .status()
-        .unwrap();
     // state.toml without a [proxy] section.
     let state_dir = sandbox.xdg_state_home.join("mxnode");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -1062,11 +746,6 @@ entries = []
 #[test]
 fn upgrade_proxy_dry_run_with_proxy_succeeds() {
     let sandbox = Sandbox::new();
-    sandbox
-        .cmd()
-        .args(["init", "--no-prompt", "--network", "mainnet"])
-        .status()
-        .unwrap();
     let state_dir = sandbox.xdg_state_home.join("mxnode");
     std::fs::create_dir_all(&state_dir).unwrap();
     std::fs::write(
@@ -1126,17 +805,14 @@ entries = []
     assert_eq!(v["proxy_tag"].as_str(), Some("v1.1.50"));
 }
 
+/// Self-healing inflight.toml: a stale lock from a crashed previous
+/// run (recorded pid is dead) must not require operator intervention.
+/// The next `upgrade` invocation should auto-clear the lock and
+/// proceed (failing later for unrelated reasons — no nodes to upgrade,
+/// no acquirer set up — but never on a "stale inflight" gate).
 #[test]
-fn upgrade_resume_with_inflight_consumes_recorded_tag() {
-    // We can't drive a real upgrade end-to-end (no go/git on dev host),
-    // but we CAN assert that --resume reads the recorded inflight.toml
-    // and surfaces the right error chain when execution fails.
+fn upgrade_auto_clears_stale_inflight_from_dead_pid() {
     let sandbox = Sandbox::new();
-    sandbox
-        .cmd()
-        .args(["init", "--no-prompt", "--network", "mainnet"])
-        .status()
-        .unwrap();
     let state_dir = sandbox.xdg_state_home.join("mxnode");
     std::fs::create_dir_all(&state_dir).unwrap();
     std::fs::write(
@@ -1167,7 +843,6 @@ entries = []
     )
     .unwrap();
 
-    // Stale inflight with a recorded tag.
     std::fs::write(
         state_dir.join("inflight.toml"),
         format!(
@@ -1191,29 +866,19 @@ started_token = 0
 
     let output = sandbox
         .cmd()
-        .args(["upgrade", "--resume"])
+        .args(["upgrade", "--binary-tag", "v1.7.13", "--dry-run"])
         .output()
         .unwrap();
-    // Resume itself succeeds at the surface (no nodes to upgrade), or
-    // fails on acquire because we have no real Go. Both paths are
-    // acceptable; what matters is we did NOT fall into the "stale
-    // inflight" refuse-branch.
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        !stderr.contains("stale inflight.toml"),
-        "expected --resume to consume the inflight, not refuse it; stderr: {stderr}\nstdout: {stdout}",
+        stderr.contains("clearing stale inflight.toml"),
+        "expected the stale-clear notice on stderr; got: {stderr}",
     );
 }
 
 #[test]
 fn lifecycle_start_without_state_errors_clearly() {
     let sandbox = Sandbox::new();
-    sandbox
-        .cmd()
-        .args(["init", "--no-prompt", "--network", "mainnet"])
-        .status()
-        .unwrap();
     let output = sandbox
         .cmd()
         .args(["start", "--all"])
@@ -1233,11 +898,7 @@ fn state_path_falls_under_tempdir_state_home() {
     // test in the file produces false positives because the binary
     // silently writes to the developer's real home.
     let sandbox = Sandbox::new();
-    sandbox
-        .cmd()
-        .args(["init", "--no-prompt", "--network", "mainnet"])
-        .status()
-        .unwrap();
+    sandbox.cmd().args(["status"]).status().unwrap();
     assert!(sandbox.config_path().exists(), "config must land inside the sandbox");
     let state_path = sandbox.state_path();
     let state_dir = state_path.parent().unwrap();

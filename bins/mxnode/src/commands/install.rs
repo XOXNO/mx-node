@@ -1,9 +1,14 @@
-//! `mxnode install [--count N]`: fresh-host install for validators.
+//! `mxnode install`: fresh-host install. One front door for every
+//! shape — validator boxes, observer squads, multikey groups, mixed
+//! roles. The previous CLI exposed three separate commands
+//! (`install`, `observers`, `multikey`); they all called the same
+//! orchestrator with different flags so we collapsed them into:
 //!
-//! Default `kind = Validators` (per the bash `install` menu option). For
-//! observer squads / multikey squads, see `commands/observers.rs` and
-//! `commands/multikey.rs` which wrap the same orchestrator with the
-//! shape-specific `ConfigEdits` and `install_proxy` flags.
+//!   * `--role validator|observer|multikey` (default validator)
+//!   * `--squad` — pin 4 nodes to shards 0/1/2/metachain (else free
+//!     `--count N` with `Shard::Auto`)
+//!   * `--with-proxy` — also install the MultiversX proxy (off by
+//!     default; many operators host the proxy on a separate box)
 
 use mxnode_core::{Environment, InstallKind, NodeIndex, Role, Shard, Tag};
 use mxnode_state::StateStore;
@@ -18,7 +23,7 @@ use crate::orchestrator::install::{
 };
 use crate::orchestrator::runtime::{CliErrorExt, Runtime};
 use crate::orchestrator::tag_resolver::{
-    resolve_binary_tag, resolve_config_tag, ResolveError, Resolved, Source,
+    resolve_binary_tag, resolve_config_tag, resolve_proxy_tag, ResolveError, Resolved, Source,
 };
 
 #[tokio::main(flavor = "current_thread")]
@@ -43,22 +48,10 @@ pub async fn run(args: InstallArgs, global: &GlobalArgs) -> Result<(), CliError>
             CliError::new(
                 "network.environment is not set",
                 "install needs the operator's chosen network",
-                "run `mxnode init` (or `mxnode config set network.environment <env>`)",
+                "run any state-changing command (auto-init), or `mxnode config set network.environment <env>`",
             )
             .json_if(global.json)
         })?;
-
-    let count = args.count.unwrap_or(1).max(1);
-    let binary = resolve_binary_tag(&runtime, args.binary_tag.as_deref())
-        .await
-        .map_err(|e| resolve_err(e, global))?;
-    let config = resolve_config_tag(&runtime, environment, args.config_tag.as_deref())
-        .await
-        .map_err(|e| resolve_err(e, global))?;
-    announce_resolved(global, "binary", &binary);
-    announce_resolved(global, "config", &config);
-    let binary_tag = binary.tag;
-    let config_tag = config.tag;
 
     let role = match args.role {
         RoleArg::Validator => Role::Validator,
@@ -80,15 +73,70 @@ pub async fn run(args: InstallArgs, global: &GlobalArgs) -> Result<(), CliError>
         Role::Multikey => "multikey",
     };
 
+    // Validate every arg-vs-role combination before any I/O so
+    // operator typos fail fast (no GitHub round-trips, no apt
+    // probe). Order: cheapest checks first.
+    if matches!(role, Role::Multikey) && args.count.is_some() {
+        return Err(CliError::new(
+            "--count is rejected for --role multikey",
+            "multikey installs are always a 4-shard squad (one node per shard)",
+            "drop --count; mxnode picks count=4 and pins shards 0/1/2/metachain",
+        )
+        .json_if(global.json));
+    }
+    require_multikey_role("--backup", args.backup.is_some(), role, global)?;
+    require_multikey_role("--keys-file", args.keys_file.is_some(), role, global)?;
+    let multikey_keys_file = resolve_multikey_keys(&args, role, &runtime, global)?;
+    let backup_level = args.backup.unwrap_or(0);
+
+    let is_squad = args.squad || matches!(role, Role::Multikey);
+    let count = if is_squad {
+        4
+    } else {
+        args.count.unwrap_or(1).max(1)
+    };
+
+    // Resolve the three GitHub-API tag lookups concurrently. Each is
+    // an independent HTTP round-trip on a fresh box; serial they cost
+    // ~3x what concurrent does on a typical install.
+    let proxy_fut = async {
+        if args.with_proxy {
+            resolve_proxy_tag(&runtime, args.proxy_tag.as_deref()).await.map(Some)
+        } else {
+            Ok(None)
+        }
+    };
+    let (binary, config, proxy) = tokio::try_join!(
+        resolve_binary_tag(&runtime, args.binary_tag.as_deref()),
+        resolve_config_tag(&runtime, environment, args.config_tag.as_deref()),
+        proxy_fut,
+    )
+    .map_err(|e| resolve_err(e, global))?;
+    announce_resolved(global, "binary", &binary);
+    announce_resolved(global, "config", &config);
+    if let Some(p) = &proxy {
+        announce_resolved(global, "proxy", p);
+    }
+    let binary_tag = binary.tag;
+    let config_tag = config.tag;
+    let proxy_tag = proxy.map(|p| p.tag);
+
+    if let Some(path) = &multikey_keys_file {
+        announce_keys_file(global, path);
+        if backup_level != 0 {
+            announce_redundancy(global, backup_level);
+        }
+    }
+
     let nodes: Vec<NodeSpec> = (0..count)
         .map(|i| NodeSpec {
             index: NodeIndex::new(i),
             role,
-            // Single-node installs default to Auto so the node picks a
-            // shard at runtime; multi-node observer squads still go
-            // through `mxnode observers` for the deterministic 0/1/2/meta
-            // mapping.
-            shard: Shard::Auto,
+            shard: if is_squad {
+                squad_shard_for_index(i)
+            } else {
+                Shard::Auto
+            },
             display_name: String::new(),
         })
         .collect();
@@ -103,7 +151,7 @@ pub async fn run(args: InstallArgs, global: &GlobalArgs) -> Result<(), CliError>
         github_org: &runtime.loaded.config.network.github_org,
         binary_tag: binary_tag.clone(),
         config_tag: config_tag.clone(),
-        proxy_tag: None,
+        proxy_tag: proxy_tag.clone(),
         node_count: count,
         kind,
         nodes,
@@ -118,13 +166,19 @@ pub async fn run(args: InstallArgs, global: &GlobalArgs) -> Result<(), CliError>
             .as_deref()
             .unwrap_or(&runtime.loaded.config.node.name_template),
         config_edits,
-        install_proxy: false,
+        install_proxy: args.with_proxy,
+        multikey_keys_file,
+        redundancy_level: backup_level,
         prefs_overrides: &runtime.loaded.config.overrides.prefs,
         config_overrides: &runtime.loaded.config.overrides.config,
     };
 
     let acquirer = build_acquirer(&runtime);
-    global_op("install", &format!("{count} validator(s) on {environment}"));
+    let shape = if is_squad { "squad" } else { "node(s)" };
+    global_op(
+        "install",
+        &format!("{count} {label} {shape} on {environment}"),
+    );
     let outcome = run_install(plan, acquirer)
         .await
         .map_err(|e| install_err(e, global))?;
@@ -136,7 +190,76 @@ pub async fn run(args: InstallArgs, global: &GlobalArgs) -> Result<(), CliError>
     let state_path = persist_state(&runtime.paths, &outcome.state)
         .map_err(|e| install_err(e, global))?;
 
-    emit_success(global, &outcome, &state_path)
+    emit_success(global, &outcome, &state_path, &runtime.paths.node_keys)
+}
+
+/// Refuse if a multikey-only flag was given for a non-multikey role.
+/// Centralises the "drop the flag, or pass --role multikey alongside
+/// it" message so every gated flag emits the same shape.
+fn require_multikey_role(
+    flag: &str,
+    flag_present: bool,
+    role: Role,
+    global: &GlobalArgs,
+) -> Result<(), CliError> {
+    if flag_present && !matches!(role, Role::Multikey) {
+        return Err(CliError::new(
+            format!("{flag} only applies to --role multikey"),
+            format!("current role is {role}"),
+            format!("drop {flag}, or pass --role multikey alongside it"),
+        )
+        .json_if(global.json));
+    }
+    Ok(())
+}
+
+/// Resolve where to find `allValidatorsKeys.pem` for a multikey
+/// install. Returns `Ok(None)` for non-multikey roles, an explicit
+/// `--keys-file` path verbatim, or the auto-detected
+/// `<node_keys>/allValidatorsKeys.pem`. The auto-detect branch is the
+/// only one that tests for existence, because it has to distinguish
+/// "operator dropped the bundle" from "operator forgot" — an explicit
+/// path either copies cleanly or surfaces fs::copy's own io::Error
+/// downstream.
+fn resolve_multikey_keys(
+    args: &InstallArgs,
+    role: Role,
+    runtime: &Runtime,
+    global: &GlobalArgs,
+) -> Result<Option<std::path::PathBuf>, CliError> {
+    if !matches!(role, Role::Multikey) {
+        return Ok(None);
+    }
+    if let Some(path) = &args.keys_file {
+        return Ok(Some(path.clone()));
+    }
+    let auto = runtime.paths.node_keys.join("allValidatorsKeys.pem");
+    if auto.exists() {
+        return Ok(Some(auto));
+    }
+    Err(CliError::new(
+        "multikey install requires allValidatorsKeys.pem",
+        format!(
+            "neither --keys-file given nor {} found",
+            auto.display(),
+        ),
+        "pass --keys-file <path-to-allValidatorsKeys.pem>, or drop the bundle into the node_keys dir and re-run",
+    )
+    .json_if(global.json))
+}
+
+fn announce_keys_file(global: &GlobalArgs, path: &std::path::Path) {
+    if global.json {
+        return;
+    }
+    println!("multikey keys → {} (will be copied into every node)", path.display());
+}
+
+fn announce_redundancy(global: &GlobalArgs, level: u8) {
+    if global.json {
+        return;
+    }
+    println!("redundancy level → {level} (backup machine; same keys as primary)");
 }
 
 /// Map a [`ResolveError`] into the 3-line CLI error shape.
@@ -223,7 +346,7 @@ pub(super) fn install_err(
         ),
         E::State(_) => (
             "could not persist state.toml",
-            "another mxnode op may be running; wait or run `mxnode unlock --force`",
+            "another mxnode op may be running; wait for it to finish",
         ),
         E::Zip(_) => (
             "key zip extraction failed",
@@ -245,12 +368,19 @@ pub(super) fn emit_success(
     global: &GlobalArgs,
     outcome: &crate::orchestrator::install::InstallOutcome,
     state_path: &std::path::Path,
+    node_keys_dir: &std::path::Path,
 ) -> Result<(), CliError> {
     let install = outcome
         .state
         .install
         .as_ref()
         .ok_or_else(|| CliError::new("install outcome missing", "internal", "report a bug"))?;
+    // Validator installs need operator-supplied `node-{i}.zip` archives;
+    // observer/multikey installs generate their own keys via keygenerator
+    // and don't need anything dropped under `node_keys`. Surface the
+    // right next-step instead of printing the validator path
+    // unconditionally.
+    let needs_zips = matches!(install.kind, mxnode_core::InstallKind::Validators);
     if global.json {
         let report = InstallReport {
             ok: true,
@@ -261,6 +391,7 @@ pub(super) fn emit_success(
             config_tag: install.versions.config_tag.as_ref().map(|t| t.to_string()),
             state_path: state_path.display().to_string(),
             units: outcome.unit_files.iter().map(|u| u.name.clone()).collect(),
+            node_keys_dir: needs_zips.then(|| node_keys_dir.display().to_string()),
         };
         println!("{}", serde_json::to_string(&report).unwrap_or_default());
     } else {
@@ -276,10 +407,55 @@ pub(super) fn emit_success(
                 .join(", "),
         );
         println!();
-        println!("next: place node-{{0..N-1}}.zip under {} (validators only),", install.node_count);
-        println!("      then `mxnode start --all` to bring units up.");
+        if needs_zips {
+            println!(
+                "next: place node-{{0..{n}}}.zip under {dir}",
+                n = install.node_count.saturating_sub(1),
+                dir = node_keys_dir.display(),
+            );
+            println!("      then `mxnode start --all` to bring units up.");
+        } else {
+            println!("next: `mxnode start --all` to bring units up");
+            println!("      (observer/multikey keys were generated automatically).");
+        }
     }
     Ok(())
+}
+
+/// Squad shard mapping: the canonical bash `observing_squad` /
+/// `multikey_group` layout — index 0 → shard 0, 1 → 1, 2 → 2, 3 →
+/// metachain. Squads are always 4-node so any other index is a
+/// programmer error; we surface it as `Shard::Auto` so the node still
+/// boots rather than panicking on a stray 5th index.
+fn squad_shard_for_index(index: u16) -> Shard {
+    match index {
+        0 => Shard::Zero,
+        1 => Shard::One,
+        2 => Shard::Two,
+        3 => Shard::Metachain,
+        _ => Shard::Auto,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::squad_shard_for_index;
+    use mxnode_core::Shard;
+
+    #[test]
+    fn squad_mapping_pins_canonical_shards() {
+        assert_eq!(squad_shard_for_index(0), Shard::Zero);
+        assert_eq!(squad_shard_for_index(1), Shard::One);
+        assert_eq!(squad_shard_for_index(2), Shard::Two);
+        assert_eq!(squad_shard_for_index(3), Shard::Metachain);
+    }
+
+    #[test]
+    fn squad_mapping_falls_back_to_auto_for_extra_indices() {
+        // Squads are 4-node, but defensive: out-of-range index
+        // should not panic.
+        assert_eq!(squad_shard_for_index(4), Shard::Auto);
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -292,4 +468,9 @@ struct InstallReport {
     config_tag: Option<String>,
     state_path: String,
     units: Vec<String>,
+    /// Where the operator must drop `node-{i}.zip` archives. Present
+    /// only for validator installs; `null` for observer/multikey
+    /// (which generate their own keys via keygenerator).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    node_keys_dir: Option<String>,
 }

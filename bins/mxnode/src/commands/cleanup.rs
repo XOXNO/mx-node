@@ -8,9 +8,10 @@
 //! second confirmation flag.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use mxnode_config::user_config_path;
 use mxnode_core::{NodeState, Platform, State};
 use mxnode_state::StateStore;
 use mxnode_systemd::Ctl; // trait used by `Step::apply` parameter
@@ -44,7 +45,7 @@ pub async fn run(args: CleanupArgs, global: &GlobalArgs) -> Result<(), CliError>
         }
     };
 
-    let plan = build_plan(&state, &runtime.paths);
+    let plan = build_plan(&state, &runtime.paths, &args);
 
     if !args.yes {
         return Err(CliError::new(
@@ -89,14 +90,6 @@ pub async fn run(args: CleanupArgs, global: &GlobalArgs) -> Result<(), CliError>
         }
     }
 
-    // Remove state.toml last so we still have it if anything else fails.
-    if store.exists() {
-        if let Err(e) = fs::remove_file(store.state_path()) {
-            had_error = true;
-            eprintln!("warn: failed to remove state.toml: {e}");
-        }
-    }
-
     if had_error {
         return Err(CliError::new(
             "cleanup completed with errors",
@@ -113,16 +106,32 @@ fn cleanup_with_no_state(
     global: &GlobalArgs,
     runtime: &Runtime,
 ) -> Result<(), CliError> {
-    let dirs_present: Vec<PathBuf> = [
+    // Even without state.toml, an aborted/half-installed host can have
+    // any of these directories: the bash-era `elrond-*` trio plus
+    // mxnode's own `~/mxnode/binaries`+`~/mxnode/build` and
+    // `~/.local/state/mxnode`. Scan them all and let `--keep-binaries`
+    // / `--keep-config` opt out of the mxnode-specific paths.
+    let mut candidates: Vec<PathBuf> = vec![
         runtime.paths.elrond_nodes_root(),
         runtime.paths.elrond_proxy_root(),
         runtime.paths.elrond_utils_root(),
-    ]
-    .into_iter()
-    .filter(|p| p.exists())
-    .collect();
+        runtime.paths.state.clone(),
+    ];
+    if !args.keep_binaries {
+        candidates.push(runtime.paths.custom_home.join("mxnode"));
+    }
+    let mut dirs_present: Vec<PathBuf> =
+        candidates.into_iter().filter(|p| p.exists()).collect();
+    let mut config_to_remove: Option<PathBuf> = None;
+    if !args.keep_config {
+        if let Ok(target) = user_config_path() {
+            if target.exists() {
+                config_to_remove = Some(target);
+            }
+        }
+    }
 
-    if dirs_present.is_empty() {
+    if dirs_present.is_empty() && config_to_remove.is_none() {
         if global.json {
             println!(
                 "{}",
@@ -143,30 +152,40 @@ fn cleanup_with_no_state(
         .json_if(global.json));
     }
 
+    let mut summary: Vec<String> = dirs_present
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect();
+    if let Some(p) = &config_to_remove {
+        summary.push(p.display().to_string());
+    }
+
     if !args.should_execute() {
         if global.json {
             println!(
                 "{}",
                 serde_json::json!({
                     "mode": "dry-run",
-                    "would_remove": dirs_present
-                        .iter()
-                        .map(|p| p.display().to_string())
-                        .collect::<Vec<_>>(),
+                    "would_remove": summary,
                 })
             );
         } else {
             println!("dry-run — would remove:");
-            for p in &dirs_present {
-                println!("  {}", p.display());
+            for p in &summary {
+                println!("  {p}");
             }
             println!("\nRe-run with --execute to actually delete.");
         }
         return Ok(());
     }
 
-    for p in &dirs_present {
-        if let Err(e) = fs::remove_dir_all(p) {
+    for p in dirs_present.drain(..) {
+        if let Err(e) = remove_dir_idempotent(&p) {
+            eprintln!("warn: failed to remove {}: {e}", p.display());
+        }
+    }
+    if let Some(p) = config_to_remove {
+        if let Err(e) = remove_file_idempotent(&p) {
             eprintln!("warn: failed to remove {}: {e}", p.display());
         }
     }
@@ -184,6 +203,7 @@ enum Step {
     DisableUnit { unit: String },
     RemoveUnitFile { path: PathBuf, sudo: bool },
     RemoveDir { path: PathBuf },
+    RemoveFile { path: PathBuf },
 }
 
 impl Step {
@@ -199,6 +219,7 @@ impl Step {
                 }
             }
             Step::RemoveDir { path } => format!("rm -rf {}", path.display()),
+            Step::RemoveFile { path } => format!("rm {}", path.display()),
         }
     }
 
@@ -237,19 +258,41 @@ impl Step {
                 }
                 Ok(())
             }
-            Step::RemoveDir { path } => {
-                if let Err(e) = fs::remove_dir_all(path) {
-                    if e.kind() != std::io::ErrorKind::NotFound {
-                        return Err(e.to_string());
-                    }
-                }
-                Ok(())
-            }
+            Step::RemoveDir { path } => remove_dir_idempotent(path),
+            Step::RemoveFile { path } => remove_file_idempotent(path),
         }
     }
 }
 
-fn build_plan(state: &State, paths: &mxnode_core::Paths) -> Vec<Step> {
+/// Wipe `path` (and everything beneath it). Missing path is success;
+/// any other error bubbles up. Centralised so `cleanup_with_no_state`
+/// and the planner share the same semantics.
+fn remove_dir_idempotent(path: &Path) -> Result<(), String> {
+    if let Err(e) = fs::remove_dir_all(path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            return Err(e.to_string());
+        }
+    }
+    Ok(())
+}
+
+fn remove_file_idempotent(path: &Path) -> Result<(), String> {
+    if let Err(e) = fs::remove_file(path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            return Err(e.to_string());
+        }
+    }
+    // Best-effort: drop the parent directory if it's now empty so
+    // `~/.config/mxnode/` doesn't linger as an empty husk after the
+    // config.toml leaf is removed. `remove_dir` (not `remove_dir_all`)
+    // is intentional: only removes empty directories, never recursive.
+    if let Some(parent) = path.parent() {
+        let _ = fs::remove_dir(parent);
+    }
+    Ok(())
+}
+
+fn build_plan(state: &State, paths: &mxnode_core::Paths, args: &CleanupArgs) -> Vec<Step> {
     let platform = Platform::current();
     // macOS LaunchAgents live in the operator's home, no sudo needed.
     // Linux systemd units live in /etc/systemd/system, removal needs sudo.
@@ -286,6 +329,31 @@ fn build_plan(state: &State, paths: &mxnode_core::Paths) -> Vec<Step> {
     }
     plan.push(Step::RemoveDir { path: paths.elrond_utils_root() });
     plan.push(Step::RemoveDir { path: paths.elrond_nodes_root() });
+
+    // Remove mxnode's own footprint by default. Operators can opt out
+    // per-category with `--keep-binaries` / `--keep-config`. Without
+    // these the host is left with stale `state.toml`, megabytes of
+    // built binaries, and an auto-init'd config that points at
+    // already-deleted nodes — what the operator almost never wants.
+    if !args.keep_binaries {
+        // `binaries/` holds the versioned binstore + `build/` holds
+        // git clones for source-build mode. Both are large and
+        // re-acquired on the next install.
+        plan.push(Step::RemoveDir {
+            path: paths.custom_home.join("mxnode"),
+        });
+    }
+    // state.toml lives under `paths.state` (state.toml itself + lock
+    // file + inflight). Always wipe the whole directory so we don't
+    // leave a stale state behind that contradicts the deleted nodes.
+    plan.push(Step::RemoveDir {
+        path: paths.state.clone(),
+    });
+    if !args.keep_config {
+        if let Ok(target) = user_config_path() {
+            plan.push(Step::RemoveFile { path: target });
+        }
+    }
     plan
 }
 

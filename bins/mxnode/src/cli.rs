@@ -53,26 +53,6 @@ pub struct GlobalArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Interactive setup wizard for fresh installs. Writes
-    /// `~/.config/mxnode/config.toml`.
-    Init(InitArgs),
-
-    /// One-shot migration from a bash-installed setup. Parses the
-    /// legacy `variables.cfg` + dotfiles, scans every node's
-    /// `prefs.toml` / `config.toml` for fleet-wide overrides, writes
-    /// a unified `~/.config/mxnode/config.toml`, then adopts the
-    /// existing units into `state.toml`. Running processes are not
-    /// touched — same units, same workdirs, same DBs.
-    Migrate(MigrateFromBashArgs),
-
-    /// Re-walk the supervisor + node workdirs and rewrite state.toml
-    /// from observed reality. Recovery escape-hatch when state.toml
-    /// gets corrupted or out-of-sync with the disk.
-    RebuildState,
-
-    /// Break a stale upgrade.lock left by a crashed previous run.
-    Unlock { #[arg(long)] force: bool },
-
     /// Configuration commands.
     Config {
         #[command(subcommand)]
@@ -84,12 +64,6 @@ pub enum Command {
 
     /// Add more nodes to an existing install.
     AddNodes(AddNodesArgs),
-
-    /// Install a 4-observer squad + proxy. Was `observing_squad` in bash.
-    Observers { #[arg(long, default_value_t = 4)] count: u16 },
-
-    /// Install a 4-multikey-observer group. Was `multikey_group` in bash.
-    Multikey { #[arg(long, default_value_t = 4)] count: u16 },
 
     /// Start units.
     Start(LifecycleArgs),
@@ -104,10 +78,11 @@ pub enum Command {
     /// Serve a Prometheus metrics endpoint.
     Metrics(MetricsArgs),
 
-    /// Upgrade nodes (and/or proxy + squad) to a new tag.
+    /// Upgrade (or downgrade) nodes to a different tag. To go back to
+    /// an old version, pass `--binary-tag <T>` for any T already in
+    /// the binstore — the acquirer reuses the cached binary instead of
+    /// re-downloading.
     Upgrade(UpgradeArgs),
-    /// Roll back to a previously-kept binary tag.
-    Rollback(RollbackArgs),
 
     /// Database commands.
     Db {
@@ -141,33 +116,8 @@ pub enum Command {
     /// Full host diagnostic; suggests fixes.
     Doctor,
 
-    /// Replace this binary with the latest signed release.
-    SelfUpdate(SelfUpdateArgs),
-
     /// Print version (also available via --version).
     Version,
-}
-
-#[derive(Debug, Args)]
-pub struct InitArgs {
-    #[arg(long, value_enum)] pub network: Option<NetworkArg>,
-    #[arg(long)] pub user: Option<String>,
-    #[arg(long)] pub home: Option<PathBuf>,
-    #[arg(long)] pub no_prompt: bool,
-    #[arg(long)] pub token_file: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum NetworkArg {
-    Mainnet,
-    Testnet,
-    Devnet,
-}
-
-#[derive(Debug, Args)]
-pub struct MigrateFromBashArgs {
-    /// Where the bash repo lives. Defaults to `$CUSTOM_HOME/mx-chain-scripts`.
-    #[arg(long)] pub legacy_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -210,16 +160,50 @@ pub enum Scope {
 
 #[derive(Debug, Args)]
 pub struct InstallArgs {
-    #[arg(long)] pub count: Option<u16>,
+    /// Number of nodes to install. Ignored when `--squad` is set, and
+    /// rejected for `--role multikey` (multikey is always a 4-shard
+    /// squad by design). Defaults to 1.
+    #[arg(long, conflicts_with = "squad")] pub count: Option<u16>,
     #[arg(long)] pub config_tag: Option<String>,
     #[arg(long)] pub binary_tag: Option<String>,
     #[arg(long)] pub proxy_tag: Option<String>,
     #[arg(long)] pub name_template: Option<String>,
     /// Role for every node in this install. Validator (default) expects
-    /// an operator-supplied `node-{i}.zip` per node. Observer / multikey
-    /// generate their own keys via `keygenerator` post-build.
+    /// an operator-supplied `node-{i}.zip` per node. Observer
+    /// auto-generates a throwaway BLS key on first start. Multikey
+    /// signs for an operator-supplied `allValidatorsKeys.pem` bundle
+    /// and is **always** a 4-shard squad — `--squad` is implicit.
     #[arg(long, value_enum, default_value_t = RoleArg::Validator)]
     pub role: RoleArg,
+    /// Install a 4-node squad pinned to shards 0, 1, 2, and metachain.
+    /// Use with `--role validator` or `--role observer` to opt into
+    /// the squad layout. Implicit and unnecessary for `--role multikey`.
+    #[arg(long)] pub squad: bool,
+    /// Also install the MultiversX proxy alongside the nodes. Off by
+    /// default — many operators host the proxy on a separate box and
+    /// point their squads at it over the network.
+    #[arg(long)] pub with_proxy: bool,
+    /// Path to the operator's `allValidatorsKeys.pem` (the bundle of
+    /// every BLS key the multikey nodes will sign for). Required for
+    /// `--role multikey`; rejected for any other role.
+    ///
+    /// If omitted on a multikey install, mxnode looks for
+    /// `<node_keys>/allValidatorsKeys.pem` (the same directory that
+    /// holds validator zips by convention) and uses it if present.
+    #[arg(long, value_name = "PATH")] pub keys_file: Option<PathBuf>,
+    /// Mark this multikey host as a backup for an existing primary.
+    /// Both machines must share the **same** `allValidatorsKeys.pem`;
+    /// only the redundancy level differs. Pass `--backup` for level 1
+    /// (the common case), `--backup 2` for a backup-of-backup, etc.
+    /// Omit entirely for a primary install (`RedundancyLevel = 0`).
+    /// Requires `--role multikey`.
+    #[arg(
+        long,
+        value_name = "N",
+        num_args = 0..=1,
+        default_missing_value = "1",
+    )]
+    pub backup: Option<u8>,
     #[arg(long)] pub dry_run: bool,
 }
 
@@ -312,10 +296,6 @@ pub struct UpgradeArgs {
     #[arg(long)] pub select: Option<String>,
     #[arg(long)] pub skip_validators: bool,
     #[arg(long)] pub dry_run: bool,
-    /// Resume a previously-interrupted upgrade (requires inflight.toml).
-    #[arg(long, conflicts_with = "abandon")] pub resume: bool,
-    /// Abandon the inflight op and mark it `partial` without rolling back.
-    #[arg(long)] pub abandon: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -324,12 +304,6 @@ pub enum UpgradeTarget {
         #[arg(long)] proxy_tag: Option<String>,
     },
     Squad,
-}
-
-#[derive(Debug, Args)]
-pub struct RollbackArgs {
-    #[arg(long)] pub node: Vec<u16>,
-    #[arg(long)] pub to_tag: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -365,7 +339,15 @@ pub enum KeysCommand {
 pub struct CleanupArgs {
     /// Required to confirm intent. Without it, the command refuses.
     #[arg(long)] pub yes: bool,
+    /// Keep the versioned binstore (`{custom_home}/mxnode/binaries`)
+    /// and the build cache around. Useful when re-installing
+    /// immediately after cleanup to avoid re-downloading + re-building.
     #[arg(long)] pub keep_binaries: bool,
+    /// Keep the operator's `~/.config/mxnode/config.toml` so a
+    /// subsequent `mxnode install` does not have to re-prompt /
+    /// re-auto-init. Default cleanup removes it along with the rest
+    /// of the mxnode footprint.
+    #[arg(long)] pub keep_config: bool,
     /// Actually perform the cleanup. Cleanup is dry-run by default —
     /// pass `--execute` to opt in to real deletion. Cannot be combined
     /// with `--dry-run`.
@@ -412,19 +394,6 @@ pub struct ReapplyConfigArgs {
     #[arg(long)] pub node: Vec<u16>,
 }
 
-#[derive(Debug, Args)]
-pub struct SelfUpdateArgs {
-    #[arg(long, value_enum, default_value_t = Channel::Stable)] pub channel: Channel,
-    #[arg(long)] pub check_only: bool,
-    #[arg(long)] pub rollback: bool,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum Channel {
-    Stable,
-    Beta,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,6 +406,38 @@ mod tests {
         // mistakes like duplicate arg names or invalid arg-group references
         // at test time rather than first user invocation.
         cmd.debug_assert();
+    }
+
+    /// `--role multikey --squad` parses cleanly. Squad is implicit for
+    /// multikey, but we accept the explicit flag so operators who type
+    /// it from muscle memory don't get rejected. Documented in
+    /// install-shapes.mdx as "the flag is accepted as a no-op".
+    #[test]
+    fn install_role_multikey_with_explicit_squad_parses() {
+        let cli = Cli::try_parse_from(["mxnode", "install", "--role", "multikey", "--squad"])
+            .expect("--role multikey --squad must parse");
+        match cli.command {
+            Command::Install(args) => {
+                assert!(matches!(args.role, RoleArg::Multikey));
+                assert!(args.squad);
+            }
+            other => panic!("expected Install, got {other:?}"),
+        }
+    }
+
+    /// `--backup` with no value defaults to 1; `--backup 2` parses to
+    /// Some(2); omitting `--backup` leaves it None.
+    #[test]
+    fn install_backup_flag_defaults_to_one() {
+        let no_backup = Cli::try_parse_from(["mxnode", "install", "--role", "multikey"]).unwrap();
+        let bare = Cli::try_parse_from(["mxnode", "install", "--role", "multikey", "--backup"]).unwrap();
+        let level2 = Cli::try_parse_from(["mxnode", "install", "--role", "multikey", "--backup", "2"]).unwrap();
+        for (cli, expected) in [(no_backup, None), (bare, Some(1)), (level2, Some(2))] {
+            match cli.command {
+                Command::Install(args) => assert_eq!(args.backup, expected),
+                other => panic!("expected Install, got {other:?}"),
+            }
+        }
     }
 
     /// Regression: lifecycle selectors are mutually exclusive.

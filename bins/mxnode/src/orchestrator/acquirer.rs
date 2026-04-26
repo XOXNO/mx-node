@@ -32,7 +32,7 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use mxnode_build::{build_artifact, build_ldflags, clone_shallow};
 use mxnode_core::Tag;
-use mxnode_toolchain::bootstrap;
+use mxnode_toolchain::{bootstrap, DEFAULT_GO_VERSION};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -181,10 +181,12 @@ impl BinaryAcquirer for MockAcquirer {
 ///
 /// The acquirer requires:
 ///   - `git` on PATH (any version that supports `--depth=1 --branch=<tag>`)
-///   - a Go install matching `min_go_version` (defaults to 1.20.7 to match
-///     the bash `GO_LATEST_TESTED`)
+///   - a Go install matching `min_go_version` (defaults to
+///     [`DEFAULT_GO_VERSION`], the floor required by recent
+///     `mx-chain-go` `go.mod` files)
 ///
-/// Both are operator-managed; mxnode does not auto-install either.
+/// Both are auto-installed by [`bootstrap`] on Debian-likes when
+/// missing or below the requested floor.
 pub struct SourceBuildAcquirer {
     pub github_org: String,
     pub workdir: PathBuf,
@@ -196,7 +198,7 @@ impl SourceBuildAcquirer {
         Self {
             github_org: github_org.into(),
             workdir,
-            min_go_version: "1.20.7".to_string(),
+            min_go_version: DEFAULT_GO_VERSION.to_string(),
         }
     }
 

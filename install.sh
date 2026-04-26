@@ -190,7 +190,9 @@ echo
 "${INSTALL_DIR}/mxnode" --version
 
 # Friendly tail with the most useful next steps. Different on a host
-# with an existing bash setup vs a fresh box.
+# with an existing bash setup vs a fresh box. mxnode auto-initialises
+# its config (auto-detected $USER/$HOME, network=mainnet) on first
+# state-changing command, so the fresh-box path is just `install`.
 echo
 if [ -f "${HOME}/mx-chain-scripts/config/variables.cfg" ] \
     || [ -f "/root/mx-chain-scripts/config/variables.cfg" ]; then
@@ -199,7 +201,8 @@ if [ -f "${HOME}/mx-chain-scripts/config/variables.cfg" ] \
     echo "    mxnode migrate"
 else
     echo "Next:"
-    echo "    mxnode init               # interactive setup wizard"
+    echo "    mxnode install            # auto-init + build + install nodes"
+    echo "    mxnode init --network testnet   # only needed if not mainnet"
     echo "    mxnode --help"
 fi
 echo

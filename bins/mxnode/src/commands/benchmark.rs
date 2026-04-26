@@ -22,7 +22,7 @@ pub async fn run(global: &GlobalArgs) -> Result<(), CliError> {
             CliError::new(
                 "failed to read state.toml",
                 e.to_string(),
-                "run `mxnode adopt` first",
+                "run `mxnode install` first",
             )
             .json_if(global.json)
         })?
@@ -30,7 +30,7 @@ pub async fn run(global: &GlobalArgs) -> Result<(), CliError> {
             CliError::new(
                 "no state.toml on this host",
                 format!("expected {}", store.state_path().display()),
-                "run `mxnode adopt` first",
+                "run `mxnode install` first",
             )
             .json_if(global.json)
         })?;

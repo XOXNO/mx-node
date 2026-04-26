@@ -27,9 +27,23 @@ pub fn build_acquirer(runtime: &Runtime) -> Arc<dyn BinaryAcquirer> {
     let token = std::env::var("MXNODE_GITHUB_TOKEN")
         .ok()
         .filter(|s| !s.is_empty());
+    let go_override = runtime
+        .loaded
+        .config
+        .overrides
+        .goversion()
+        .map(str::to_owned);
+
+    let make_source = || {
+        let mut acq = SourceBuildAcquirer::new(github_org.clone(), workdir.clone());
+        if let Some(v) = &go_override {
+            acq = acq.with_min_go(v.clone());
+        }
+        acq
+    };
 
     match runtime.loaded.config.install.artifact_source {
-        ArtifactSource::Source => Arc::new(SourceBuildAcquirer::new(github_org, workdir)),
+        ArtifactSource::Source => Arc::new(make_source()),
         ArtifactSource::Release => Arc::new(
             ReleaseAcquirer::new(github_org, workdir).with_token(token),
         ),
@@ -37,7 +51,7 @@ pub fn build_acquirer(runtime: &Runtime) -> Arc<dyn BinaryAcquirer> {
             let release = Arc::new(
                 ReleaseAcquirer::new(github_org.clone(), workdir.clone()).with_token(token),
             );
-            let source = Arc::new(SourceBuildAcquirer::new(github_org, workdir));
+            let source = Arc::new(make_source());
             Arc::new(AutoAcquirer { release, source })
         }
     }

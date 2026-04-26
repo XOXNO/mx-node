@@ -1,24 +1,17 @@
 //! `mxnode upgrade [--config-tag T --binary-tag T --proxy-tag T]
 //!  [--strategy rolling|parallel] [--max-parallel N] [--select <expr>]
-//!  [--skip-validators] [--dry-run] [--resume | --abandon]`
+//!  [--skip-validators] [--dry-run]`
 //!
-//! The orchestration spine for upgrading nodes to a new tag set.
-//! Implements the per-step transaction log (D12) so a crash mid-flight
-//! can be resumed via `--resume` or abandoned via `--abandon`.
+//! Upgrade nodes to a new tag set. To downgrade, pass any
+//! `--binary-tag T` already in the binstore — the acquirer reuses the
+//! cached binary instead of re-acquiring.
 //!
-//! Phase 2a scope:
-//!   - resolve target tags (CLI flags > [overrides] > GitHub-latest stub)
-//!   - acquire upgrade.lock + write inflight.toml
-//!   - per-node rolling steps: stop → tomledit → swap symlink → start
-//!   - record migrations entry on completion or rollback
-//!   - `--resume` continues from the recorded `current_step`
-//!   - `--abandon` writes `result = "partial"` and clears inflight
-//!
-//! Out of scope (Phase 2b):
-//!   - real source-build (`go build`) acquirer
-//!   - real release-artifact downloader with sha256/signature check
-//!   - actual nonce-based readiness probe (we wait a small fixed
-//!     interval instead and trust `is-active` as a smoke check)
+//! Crash recovery: a stale `inflight.toml` (recorded pid is dead) is
+//! auto-cleared at the next invocation; the operator just reruns the
+//! upgrade. There is no `--resume` flag — re-running the upgrade will
+//! redo every per-node step, all of which are idempotent
+//! (`systemctl stop` on a stopped unit, symlink swap to the same
+//! target, etc.).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -51,26 +44,23 @@ pub async fn run(args: UpgradeArgs, global: &GlobalArgs) -> Result<(), CliError>
     }
     let is_squad = matches!(args.target, Some(UpgradeTarget::Squad));
 
-    if args.resume && args.abandon {
-        // clap already enforces this via conflicts_with, but defensive.
-        return Err(CliError::new(
-            "--resume and --abandon are mutually exclusive",
-            "choose exactly one",
-            "rerun with the option you want",
-        )
-        .json_if(global.json));
-    }
-
     let runtime = Runtime::from_global(global)?;
 
-    // Detect any in-flight op before we touch anything else.
+    // Self-healing inflight.toml: only a *live* peer mxnode upgrade is
+    // a real conflict. A `Stale` (recorded pid is dead) or
+    // `Indeterminate` (pid liveness can't be determined) lock is
+    // garbage from a previous crash; auto-clear it and proceed instead
+    // of asking the operator to run a manual unlock command. The audit
+    // log entry for the previous run was already written by whichever
+    // step failed — we don't try to second-guess what the dead process
+    // would have done next.
     let inflight_loc = inflight_path(&runtime.paths.state);
     let identity = ProcessIdentity::current();
     let check = InflightCheck::from_path(&inflight_loc, identity).map_err(|e| {
         CliError::new(
             "failed to read inflight.toml",
             e.to_string(),
-            "remove the file manually if it's corrupt",
+            "the file is corrupt; remove it manually then retry",
         )
         .json_if(global.json)
     })?;
@@ -80,34 +70,19 @@ pub async fn run(args: UpgradeArgs, global: &GlobalArgs) -> Result<(), CliError>
             return Err(CliError::new(
                 format!("another mxnode upgrade is running (pid {other_pid})"),
                 "inflight.toml records a live process",
-                "wait for it to finish, or run `mxnode unlock --force` after confirming it's dead",
+                "wait for that invocation to finish, or kill it before retrying",
             )
             .json_if(global.json));
         }
         InflightCheck::StaleFromDeadProcess(prev) | InflightCheck::Indeterminate(prev) => {
-            return handle_stale_inflight(prev, args, global, &runtime).await;
+            eprintln!(
+                "→ clearing stale inflight.toml from previous run (pid {} step {:?}); proceeding",
+                prev.identity.pid, prev.current_step,
+            );
+            let _ = Inflight::clear(&inflight_loc);
         }
         InflightCheck::Clear => {}
     }
-
-    if args.resume {
-        return Err(CliError::new(
-            "nothing to resume",
-            "no inflight.toml found",
-            "rerun without --resume to start a fresh upgrade",
-        )
-        .json_if(global.json));
-    }
-    if args.abandon {
-        return Err(CliError::new(
-            "nothing to abandon",
-            "no inflight.toml found",
-            "the abandon flag is only meaningful when a prior upgrade crashed mid-flight",
-        )
-        .json_if(global.json));
-    }
-
-    let _ = ResumePoint::Fresh; // silence dead-code on the value form
 
     let store = StateStore::new(&runtime.paths.state);
     let state = store
@@ -116,7 +91,7 @@ pub async fn run(args: UpgradeArgs, global: &GlobalArgs) -> Result<(), CliError>
             CliError::new(
                 "failed to read state.toml",
                 e.to_string(),
-                "run `mxnode adopt` first",
+                "run `mxnode install` first",
             )
             .json_if(global.json)
         })?
@@ -124,7 +99,7 @@ pub async fn run(args: UpgradeArgs, global: &GlobalArgs) -> Result<(), CliError>
             CliError::new(
                 "no state.toml on this host",
                 format!("expected {}", store.state_path().display()),
-                "run `mxnode adopt` first",
+                "run `mxnode install` first",
             )
             .json_if(global.json)
         })?;
@@ -136,8 +111,11 @@ pub async fn run(args: UpgradeArgs, global: &GlobalArgs) -> Result<(), CliError>
         return emit_dry_run(&plan, global);
     }
 
-    // Persist the inflight.toml. From here on, every step writes back
-    // a step marker so a crash can be picked up by `--resume`.
+    // Persist the inflight.toml as a host-wide upgrade lock. Every
+    // step inside `execute_upgrade` updates the `current_step` field
+    // so a crash leaves a "where did we die" breadcrumb behind for
+    // post-mortem inspection. The next mxnode invocation auto-clears
+    // the file if our pid has gone away.
     let mut inflight = Inflight::new(OpKind::Upgrade, strategy_label(args.strategy), plan.selected.clone());
     inflight.target_binary_tag = Some(plan.binary_tag.clone());
     inflight.target_config_tag = plan.config_tag.clone();
@@ -157,7 +135,6 @@ pub async fn run(args: UpgradeArgs, global: &GlobalArgs) -> Result<(), CliError>
         &runtime,
         &inflight_loc,
         &mut inflight,
-        ResumePoint::Fresh,
         global,
     )
     .await;
@@ -212,7 +189,7 @@ async fn build_plan(
             CliError::new(
                 "cannot resolve --config-tag without an environment",
                 "state.install.environment is missing",
-                "run `mxnode rebuild-state` or pass --config-tag explicitly",
+                "run hand-edit and re-run or pass --config-tag explicitly",
             )
             .json_if(global.json)
         })?;
@@ -322,23 +299,6 @@ fn emit_dry_run(plan: &Plan, global: &GlobalArgs) -> Result<(), CliError> {
     Ok(())
 }
 
-/// Where the orchestrator should pick up from.
-#[derive(Debug, Clone)]
-enum ResumePoint {
-    /// Fresh upgrade — start at the first node from the beginning.
-    Fresh,
-    /// Resuming a prior in-flight op. Skip nodes already in
-    /// `completed`; for the recorded `current` node, restart at
-    /// `current_step`. Steps are idempotent so re-running a step that
-    /// already completed is a no-op (e.g. `systemctl stop` on an already
-    /// stopped unit).
-    From {
-        completed: Vec<NodeIndex>,
-        current: Option<NodeIndex>,
-        step: InflightStep,
-    },
-}
-
 struct UpgradeOutcome {
     binary_tag: Tag,
     started_at: time::OffsetDateTime,
@@ -364,7 +324,6 @@ async fn execute_upgrade(
     runtime: &Runtime,
     inflight_loc: &PathBuf,
     inflight: &mut Inflight,
-    resume: ResumePoint,
     _global: &GlobalArgs,
 ) -> UpgradeOutcome {
     let started = time::OffsetDateTime::now_utc();
@@ -386,8 +345,8 @@ async fn execute_upgrade(
     let acquired_path = match acquired {
         Ok(p) => p,
         Err(AcquireError::NotImplemented(reason)) => {
-            // Phase 2b stub. Leave inflight.toml in place so `--abandon`
-            // works, return a partial-failure outcome with no nodes done.
+            // Acquirer stub returned: nothing to do for any node.
+            // The outer `run` clears inflight.toml on its way out.
             return UpgradeOutcome {
                 binary_tag: plan.binary_tag.clone(),
                 started_at: started,
@@ -457,40 +416,7 @@ async fn execute_upgrade(
     let mut nodes_failed: Vec<NodeIndex> = Vec::new();
     let mut per_node: Vec<NodeResult> = Vec::new();
 
-    // Resolve resume position: which nodes do we skip outright, and at
-    // what step do we re-enter for the in-flight node?
-    let (skip_set, mut current_node_step): (Vec<NodeIndex>, Option<(NodeIndex, InflightStep)>) =
-        match resume {
-            ResumePoint::Fresh => (Vec::new(), None),
-            ResumePoint::From {
-                completed,
-                current,
-                step,
-            } => (completed, current.map(|c| (c, step))),
-        };
-
-    // Pre-populate per_node + nodes_done for skipped nodes so the
-    // migrations entry reflects what the previous run finished.
-    for idx in &skip_set {
-        let unit = state
-            .nodes
-            .iter()
-            .find(|n| n.index == *idx)
-            .map(|n| n.unit.clone())
-            .unwrap_or_else(|| format!("elrond-node-{}.service", idx.get()));
-        nodes_done.push(*idx);
-        per_node.push(NodeResult {
-            index: idx.get(),
-            unit,
-            ok: true,
-            error: Some("skipped (already completed in a prior run)".to_string()),
-        });
-    }
-
     for idx in &plan.selected {
-        if skip_set.contains(idx) {
-            continue;
-        }
         let Some(node) = state.nodes.iter().find(|n| n.index == *idx) else {
             nodes_failed.push(*idx);
             per_node.push(NodeResult {
@@ -502,18 +428,10 @@ async fn execute_upgrade(
             continue;
         };
         inflight.current = Some(node.index);
-        // Restart from the recorded step ONLY for the matching node.
-        let starting_step = match current_node_step {
-            Some((cur, step)) if cur == node.index => {
-                current_node_step = None; // consume — fresh after this
-                step
-            }
-            _ => InflightStep::Resolving,
-        };
-        inflight.current_step = starting_step;
+        inflight.current_step = InflightStep::Resolving;
         let _ = inflight.save(inflight_loc);
 
-        match upgrade_one_node(&ctl, state, node, &installed_path, starting_step, inflight, inflight_loc, plan.is_squad).await {
+        match upgrade_one_node(&ctl, state, node, &installed_path, inflight, inflight_loc, plan.is_squad).await {
             Ok(()) => {
                 nodes_done.push(node.index);
                 per_node.push(NodeResult {
@@ -559,7 +477,6 @@ async fn upgrade_one_node(
     state: &State,
     node: &NodeState,
     installed_binary: &PathBuf,
-    starting_step: InflightStep,
     inflight: &mut Inflight,
     inflight_loc: &PathBuf,
     is_squad: bool,
@@ -567,70 +484,62 @@ async fn upgrade_one_node(
     use InflightStep::*;
     node_op_start("upgrade", node.index, &node.unit);
 
-    // Each step is idempotent and runs only when the resume position is
-    // at-or-before it. `step_le` defines the per-node execution order.
-    if step_le(&starting_step, &Stopped) {
-        inflight.current_step = Stopped;
-        let _ = inflight.save(inflight_loc);
-        if let Err(e) = ctl.stop(&node.unit).await {
-            let cause = e.to_string();
-            node_op_end("upgrade", node.index, &node.unit, Outcome::Fail { cause: &cause });
-            return Err(format!("systemctl stop failed: {cause}"));
-        }
+    // Each step writes its label into inflight.toml before running so a
+    // crashed run leaves a "where did we die" breadcrumb on disk for
+    // post-mortem `cat inflight.toml`. Steps are idempotent (e.g.
+    // `systemctl stop` on an already-stopped unit, symlink swap to the
+    // same target).
+
+    inflight.current_step = Stopped;
+    let _ = inflight.save(inflight_loc);
+    if let Err(e) = ctl.stop(&node.unit).await {
+        let cause = e.to_string();
+        node_op_end("upgrade", node.index, &node.unit, Outcome::Fail { cause: &cause });
+        return Err(format!("systemctl stop failed: {cause}"));
     }
 
-    if step_le(&starting_step, &ConfigApplied) {
-        inflight.current_step = ConfigApplied;
-        let _ = inflight.save(inflight_loc);
-        if is_squad {
-            apply_squad_config_edits(node).map_err(|e| {
-                let cause = format!("squad config edits: {e}");
-                node_op_end(
-                    "upgrade",
-                    node.index,
-                    &node.unit,
-                    Outcome::Fail { cause: &cause },
-                );
-                cause
-            })?;
-        }
+    inflight.current_step = ConfigApplied;
+    let _ = inflight.save(inflight_loc);
+    if is_squad {
+        apply_squad_config_edits(node).map_err(|e| {
+            let cause = format!("squad config edits: {e}");
+            node_op_end(
+                "upgrade",
+                node.index,
+                &node.unit,
+                Outcome::Fail { cause: &cause },
+            );
+            cause
+        })?;
     }
 
-    if step_le(&starting_step, &BinaryReplaced) {
-        inflight.current_step = BinaryReplaced;
-        let _ = inflight.save(inflight_loc);
-        let symlink = node.workdir.join("node");
-        if let Err(e) = swap_symlink(&symlink, installed_binary) {
-            let cause = e.to_string();
-            node_op_end("upgrade", node.index, &node.unit, Outcome::Fail { cause: &cause });
-            return Err(format!("symlink swap failed: {cause}"));
-        }
+    inflight.current_step = BinaryReplaced;
+    let _ = inflight.save(inflight_loc);
+    let symlink = node.workdir.join("node");
+    if let Err(e) = swap_symlink(&symlink, installed_binary) {
+        let cause = e.to_string();
+        node_op_end("upgrade", node.index, &node.unit, Outcome::Fail { cause: &cause });
+        return Err(format!("symlink swap failed: {cause}"));
     }
 
-    if step_le(&starting_step, &Started) {
-        inflight.current_step = Started;
-        let _ = inflight.save(inflight_loc);
-        if let Err(e) = ctl.start(&node.unit).await {
-            let cause = e.to_string();
-            node_op_end("upgrade", node.index, &node.unit, Outcome::Fail { cause: &cause });
-            return Err(format!("systemctl start failed: {cause}"));
-        }
+    inflight.current_step = Started;
+    let _ = inflight.save(inflight_loc);
+    if let Err(e) = ctl.start(&node.unit).await {
+        let cause = e.to_string();
+        node_op_end("upgrade", node.index, &node.unit, Outcome::Fail { cause: &cause });
+        return Err(format!("systemctl start failed: {cause}"));
     }
 
-    if step_le(&starting_step, &NonceVerified) {
-        inflight.current_step = NonceVerified;
-        let _ = inflight.save(inflight_loc);
-        // Readiness probe: wait for the node's nonce to be within K of
-        // the highest known network nonce among siblings, OR for the
-        // node to report `erd_is_syncing == 0` with a non-zero nonce.
-        // We don't penalise upgrades on single-node hosts where there's
-        // no sibling to compare against — the start succeeding plus an
-        // active unit is enough.
-        if let Err(e) = wait_for_node_ready(state, node).await {
-            let cause = format!("readiness probe: {e}");
-            node_op_end("upgrade", node.index, &node.unit, Outcome::Fail { cause: &cause });
-            return Err(cause);
-        }
+    inflight.current_step = NonceVerified;
+    let _ = inflight.save(inflight_loc);
+    // Readiness probe: wait for the node's nonce to be within K of the
+    // highest known network nonce among siblings, OR for the node to
+    // report `erd_is_syncing == 0` with a non-zero nonce. Single-node
+    // hosts skip the cross-sibling comparison.
+    if let Err(e) = wait_for_node_ready(state, node).await {
+        let cause = format!("readiness probe: {e}");
+        node_op_end("upgrade", node.index, &node.unit, Outcome::Fail { cause: &cause });
+        return Err(cause);
     }
 
     node_op_end("upgrade", node.index, &node.unit, Outcome::Ok);
@@ -670,22 +579,6 @@ fn apply_squad_config_edits(node: &NodeState) -> Result<(), String> {
     Ok(())
 }
 
-/// Total ordering of upgrade steps; `step_le(a, b)` is true when step
-/// `a` happens before-or-at `b`.
-fn step_le(a: &InflightStep, b: &InflightStep) -> bool {
-    use InflightStep::*;
-    fn rank(s: &InflightStep) -> u8 {
-        match s {
-            Resolving => 0,
-            Stopped => 1,
-            ConfigApplied => 2,
-            BinaryReplaced => 3,
-            Started => 4,
-            NonceVerified => 5,
-        }
-    }
-    rank(a) <= rank(b)
-}
 
 /// Probe the node's local REST API until either:
 ///   - `erd_nonce` is within `K` of the highest sibling's
@@ -805,7 +698,7 @@ fn persist_migration(
             return Err(CliError::new(
                 "state.toml went missing mid-upgrade",
                 "expected the file we loaded earlier",
-                "rerun `mxnode adopt` then retry",
+                "hand-edit state.toml or re-run `mxnode install` to refresh",
             )
             .json_if(global.json));
         }
@@ -882,86 +775,6 @@ fn persist_migration(
     Ok(())
 }
 
-async fn handle_stale_inflight(
-    inflight: Inflight,
-    args: UpgradeArgs,
-    global: &GlobalArgs,
-    runtime: &Runtime,
-) -> Result<(), CliError> {
-    let inflight_loc = inflight_path(&runtime.paths.state);
-
-    if args.abandon {
-        // Mark the previous run as partial in migrations[] and drop
-        // inflight.toml so the next invocation starts cleanly.
-        let store = StateStore::new(&runtime.paths.state);
-        let guard = store.lock().map_err(|e| {
-            CliError::new(
-                "failed to lock state",
-                e.to_string(),
-                "another mxnode op may be running",
-            )
-            .json_if(global.json)
-        })?;
-        let mut state = match store.load() {
-            Ok(Some(s)) => s,
-            _ => {
-                drop(guard);
-                let _ = Inflight::clear(&inflight_loc);
-                return Ok(());
-            }
-        };
-        state.migrations.entries.push(MigrationEntry {
-            at: time::OffsetDateTime::now_utc(),
-            from_config: None,
-            to_config: None,
-            from_binary: None,
-            to_binary: inflight.target_binary_tag.clone(),
-            strategy: inflight.strategy.clone(),
-            trigger: "abandon".to_string(),
-            result: MigrationResult::Partial,
-            duration_secs: 0,
-            nodes_done: inflight.completed.clone(),
-            nodes_failed: Vec::new(),
-        });
-        let _ = store.save(&state, &guard);
-        drop(guard);
-        let _ = Inflight::clear(&inflight_loc);
-        if global.json {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "ok": true,
-                    "abandoned": true,
-                    "completed_nodes": inflight.completed.iter().map(|i| i.get()).collect::<Vec<_>>(),
-                })
-            );
-        } else {
-            println!(
-                "abandoned previous upgrade ({} node(s) had completed)",
-                inflight.completed.len(),
-            );
-        }
-        return Ok(());
-    }
-
-    if args.resume {
-        return resume_upgrade(inflight, runtime, global).await;
-    }
-    let _ = runtime;
-
-    Err(CliError::new(
-        "stale inflight.toml from a prior upgrade",
-        format!(
-            "previous run stopped at step {:?} on node {:?}; completed: {:?}",
-            inflight.current_step,
-            inflight.current,
-            inflight.completed.iter().map(|i| i.get()).collect::<Vec<_>>(),
-        ),
-        "rerun with `--resume` to continue from the recorded step, or `--abandon` to clear",
-    )
-    .json_if(global.json))
-}
-
 async fn upgrade_proxy(
     proxy_tag: Option<String>,
     args: &UpgradeArgs,
@@ -975,7 +788,7 @@ async fn upgrade_proxy(
             CliError::new(
                 "failed to read state.toml",
                 e.to_string(),
-                "run `mxnode adopt` first",
+                "run `mxnode install` first",
             )
             .json_if(global.json)
         })?
@@ -983,7 +796,7 @@ async fn upgrade_proxy(
             CliError::new(
                 "no state.toml on this host",
                 format!("expected {}", store.state_path().display()),
-                "run `mxnode adopt` first",
+                "run `mxnode install` first",
             )
             .json_if(global.json)
         })?;
@@ -1164,88 +977,3 @@ async fn upgrade_proxy(
     Ok(())
 }
 
-async fn resume_upgrade(
-    inflight: Inflight,
-    runtime: &Runtime,
-    global: &GlobalArgs,
-) -> Result<(), CliError> {
-    let target_tag = inflight.target_binary_tag.clone().ok_or_else(|| {
-        CliError::new(
-            "inflight.toml has no target_binary_tag",
-            "cannot resume without a recorded tag",
-            "abandon and re-run with explicit --binary-tag",
-        )
-        .json_if(global.json)
-    })?;
-
-    let store = StateStore::new(&runtime.paths.state);
-    let state = store
-        .load()
-        .map_err(|e| {
-            CliError::new(
-                "failed to read state.toml",
-                e.to_string(),
-                "run `mxnode adopt` first",
-            )
-            .json_if(global.json)
-        })?
-        .ok_or_else(|| {
-            CliError::new(
-                "no state.toml on this host",
-                format!("expected {}", store.state_path().display()),
-                "run `mxnode adopt` first",
-            )
-            .json_if(global.json)
-        })?;
-
-    let plan = Plan {
-        selected: inflight.selected.clone(),
-        binary_tag: target_tag,
-        config_tag: inflight.target_config_tag.clone(),
-        proxy_tag: inflight.target_proxy_tag.clone(),
-        strategy: Strategy::Rolling,
-        skip_validators: false,
-        is_squad: false,
-    };
-
-    let inflight_loc = inflight_path(&runtime.paths.state);
-    // Re-stamp the inflight to claim ownership under our identity, then
-    // proceed from the recorded step.
-    let mut inflight_mut = Inflight::new(
-        OpKind::Upgrade,
-        inflight.strategy.clone(),
-        inflight.selected.clone(),
-    );
-    inflight_mut.target_binary_tag = inflight.target_binary_tag.clone();
-    inflight_mut.target_config_tag = inflight.target_config_tag.clone();
-    inflight_mut.target_proxy_tag = inflight.target_proxy_tag.clone();
-    inflight_mut.completed = inflight.completed.clone();
-    inflight_mut.current = inflight.current;
-    inflight_mut.current_step = inflight.current_step;
-    inflight_mut.save(&inflight_loc).map_err(|e| {
-        CliError::new(
-            "failed to update inflight.toml",
-            e.to_string(),
-            "ensure the state directory is writable",
-        )
-        .json_if(global.json)
-    })?;
-
-    let resume = ResumePoint::From {
-        completed: inflight.completed.clone(),
-        current: inflight.current,
-        step: inflight.current_step,
-    };
-
-    let outcome = execute_upgrade(
-        &plan,
-        &state,
-        runtime,
-        &inflight_loc,
-        &mut inflight_mut,
-        resume,
-        global,
-    )
-    .await;
-    persist_migration(&store, outcome, &inflight_loc, global)
-}

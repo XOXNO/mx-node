@@ -4,11 +4,8 @@
 
 pub mod acquirer;
 pub mod acquirer_factory;
-pub mod adopt;
-pub mod common_settings;
 pub mod config_repo;
 pub mod install;
-pub mod legacy;
 pub mod runtime;
 pub mod selector;
 pub mod supervisor;

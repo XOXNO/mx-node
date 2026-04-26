@@ -27,11 +27,11 @@ use thiserror::Error;
 static BOOTSTRAP_INSTALLED: OnceLock<()> = OnceLock::new();
 
 /// Default Go version installed by [`bootstrap`] when no Go is on PATH.
-/// Matches the bash `GO_LATEST_TESTED` value at the time of the v0.1
-/// release. Operators on a fork that pins a different version override
-/// via `[install].go_version` in `config.toml` or by passing
+/// Tracks the floor required by recent `mx-chain-go` `go.mod` files
+/// (`go 1.22`). Operators on a fork that pins a different version
+/// override via `[install].go_version` in `config.toml` or by passing
 /// `--go-version` to `install` / `upgrade`.
-pub const DEFAULT_GO_VERSION: &str = "1.20.7";
+pub const DEFAULT_GO_VERSION: &str = "1.22.12";
 
 /// apt packages auto-installed before the first source build. Lifted
 /// directly from the bash `assert_required_packages` recipe.
@@ -155,6 +155,26 @@ pub fn bootstrap(version: &str) -> Result<GoInstall, ToolchainError> {
             install_go(version)?;
             ensure_go(version)
         }
+        // mx-chain-go bumps its go.mod floor every few releases, so
+        // operators frequently arrive with an older Go installed by a
+        // previous mxnode/bash run. Try to upgrade in place — but
+        // [`install_go`] will refuse and surface
+        // [`ToolchainError::AutoInstallUnsupported`] if `/usr/local/go`
+        // is operator-managed (no marker file). In that case we
+        // re-shape the error as a `VersionMismatch` so the caller's
+        // hint stays focused on the Go version, not the auto-install
+        // refusal.
+        Err(ToolchainError::VersionMismatch { found, required }) => {
+            eprintln!("→ go {found} is older than required ({version}); attempting reinstall");
+            match install_go(version) {
+                Ok(_) => ensure_go(version),
+                Err(ToolchainError::AutoInstallUnsupported(reason)) => {
+                    eprintln!("warn: cannot auto-upgrade Go: {reason}");
+                    Err(ToolchainError::VersionMismatch { found, required })
+                }
+                Err(other) => Err(other),
+            }
+        }
         Err(other) => Err(other),
     };
     if result.is_ok() {
@@ -186,14 +206,35 @@ pub fn install_apt_deps() -> Result<(), ToolchainError> {
     Ok(())
 }
 
+/// Marker file written under `/usr/local/go` by [`install_go`] to
+/// record that we (mxnode) put the install there. Subsequent calls
+/// check for the marker before clobbering: an `/usr/local/go` we did
+/// not write (operator followed go.dev install instructions, packaged
+/// distros that drop Go there) is left alone with a typed error.
+const MXNODE_GO_MARKER: &str = "/usr/local/go/.mxnode-managed";
+
 /// Download Go `version` and extract to `/usr/local/go`. Mirrors the
-/// bash `wget … && sudo tar -C /usr/local -xzf …` exactly.
+/// bash `wget … && sudo tar -C /usr/local -xzf …`, with one safety
+/// addition: refuses to clobber an existing `/usr/local/go` we did
+/// not write ourselves (no [`MXNODE_GO_MARKER`]). Operators with a
+/// hand-installed Go in that path see a typed
+/// [`ToolchainError::AutoInstallUnsupported`] explaining the
+/// situation rather than losing their toolchain to a `sudo rm -rf`.
 pub fn install_go(version: &str) -> Result<GoInstall, ToolchainError> {
     if !cfg!(target_os = "linux") {
         return Err(ToolchainError::AutoInstallUnsupported(
             "automatic Go install is Linux-only — install via brew/dl on macOS".to_string(),
         ));
     }
+
+    if Path::new("/usr/local/go").exists() && !Path::new(MXNODE_GO_MARKER).exists() {
+        return Err(ToolchainError::AutoInstallUnsupported(format!(
+            "/usr/local/go already exists but mxnode did not install it (no marker at {MXNODE_GO_MARKER}). \
+             Refusing to overwrite an operator-managed toolchain. Either remove /usr/local/go yourself \
+             and re-run, or upgrade Go through the same channel you used to install it (the floor is {version})."
+        )));
+    }
+
     let arch = detect_arch()?;
     let tarball_name = format!("go{version}.linux-{arch}.tar.gz");
     let url = format!("https://dl.google.com/go/{tarball_name}");
@@ -202,13 +243,11 @@ pub fn install_go(version: &str) -> Result<GoInstall, ToolchainError> {
     eprintln!("→ downloading {url}");
     run_visible("curl", &["-fsSL", "-o", tarball.to_string_lossy().as_ref(), &url])?;
 
-    // If a previous bash- or scripts-managed Go install lives at
-    // /usr/local/go, blow it away before we extract — bash does the
-    // same (`sudo rm -rf /usr/local/go`). Operators with a non-bash
-    // Go install never reach this branch (detect_go found their
-    // installation first).
-    if Path::new("/usr/local/go").exists() {
-        eprintln!("→ removing previous /usr/local/go (sudo)");
+    // Marker present → this is a previous mxnode install we own; the
+    // bash also clobbered, so we do too. Marker absent + path absent
+    // → fresh install, nothing to remove.
+    if Path::new(MXNODE_GO_MARKER).exists() {
+        eprintln!("→ removing previous mxnode-managed /usr/local/go (sudo)");
         run_visible("sudo", &["rm", "-rf", "/usr/local/go"])?;
     }
 
@@ -219,6 +258,7 @@ pub fn install_go(version: &str) -> Result<GoInstall, ToolchainError> {
     )?;
     let _ = std::fs::remove_file(&tarball);
 
+    write_ownership_marker(version);
     update_profile_for_go()?;
 
     // CRITICAL: also extend the *current* process's PATH so any
@@ -235,6 +275,36 @@ pub fn install_go(version: &str) -> Result<GoInstall, ToolchainError> {
     );
 
     detect_go()
+}
+
+/// Drop a marker file inside `/usr/local/go` so subsequent
+/// [`install_go`] calls know the install came from us and may be
+/// safely replaced. Uses `sudo tee` because the directory is
+/// root-owned after extraction. A marker write that fails is logged
+/// but non-fatal — the worst case is the next reinstall refuses to
+/// clobber and the operator either passes `--force-reinstall-go` (TBD)
+/// or runs the cleanup themselves.
+fn write_ownership_marker(version: &str) {
+    let body = format!("installed-by=mxnode\nversion={version}\n");
+    let mut child = match Command::new("sudo")
+        .args(["tee", MXNODE_GO_MARKER])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("warn: could not record /usr/local/go ownership marker: {e}");
+            return;
+        }
+    };
+    if let Some(stdin) = child.stdin.as_mut() {
+        if let Err(e) = stdin.write_all(body.as_bytes()) {
+            eprintln!("warn: could not write ownership marker payload: {e}");
+        }
+    }
+    let _ = child.wait();
 }
 
 /// Extend the current process's PATH + GOPATH env so spawned

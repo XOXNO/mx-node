@@ -33,7 +33,7 @@ pub async fn run(args: ReapplyConfigArgs, global: &GlobalArgs) -> Result<(), Cli
             CliError::new(
                 "failed to read state.toml",
                 e.to_string(),
-                "run `mxnode adopt` first",
+                "run `mxnode install` first",
             )
             .json_if(global.json)
         })?
@@ -41,7 +41,7 @@ pub async fn run(args: ReapplyConfigArgs, global: &GlobalArgs) -> Result<(), Cli
             CliError::new(
                 "no state.toml on this host",
                 format!("expected {}", store.state_path().display()),
-                "run `mxnode adopt` first, or `mxnode install` for a fresh setup",
+                "run `mxnode install` first, or `mxnode install` for a fresh setup",
             )
             .json_if(global.json)
         })?;
@@ -50,7 +50,7 @@ pub async fn run(args: ReapplyConfigArgs, global: &GlobalArgs) -> Result<(), Cli
         CliError::new(
             "state.toml has no [install] section",
             "expected an existing install",
-            "run `mxnode adopt` first",
+            "run `mxnode install` first",
         )
         .json_if(global.json)
     })?;
@@ -116,11 +116,18 @@ pub async fn run(args: ReapplyConfigArgs, global: &GlobalArgs) -> Result<(), Cli
         } else {
             String::new()
         };
+        // reapply-config preserves the operator's `RedundancyLevel`
+        // by passing `None`: only install-time stamps the value, and
+        // re-applying overrides should never silently reset it.
+        // Operators who need to flip primary↔backup edit prefs.toml
+        // directly or via `[overrides.prefs]` in config.toml.
         apply_node_tomledit(
             &node.workdir,
             &display_name,
             node.shard,
             edits,
+            node.role,
+            None,
             prefs_overrides,
             config_overrides,
         )

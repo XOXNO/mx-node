@@ -37,7 +37,3 @@ time        = { workspace = true }
 toml_edit   = { workspace = true }
 async-trait = "0.1"
 # Wizard-style init prompts: arrow-key Select, validated Input, etc.
-# `default-features = false` drops the optional history file the
-# library writes alongside its binary, which we don't need.
-dialoguer = { version = "0.11", default-features = false }
-

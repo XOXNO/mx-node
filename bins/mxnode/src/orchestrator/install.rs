@@ -24,7 +24,8 @@ use mxnode_core::{
 };
 use mxnode_state::{swap_symlink, BinStore, StateStore};
 use mxnode_systemd::{
-    apply_overrides, clear_cpu_flags, enable_db_lookup_extensions, render_canonical_node_plist,
+    apply_overrides, clear_cpu_flags, enable_db_lookup_extensions, set_redundancy_level,
+    render_canonical_node_plist,
     render_canonical_node_unit, render_canonical_proxy_unit, rewrite_proxy_config,
     set_destination_shard, set_node_display_name, NodeUnitSpec, ObserverEntry, ProxyUnitSpec,
 };
@@ -81,6 +82,16 @@ pub struct InstallPlan<'a> {
     pub config_edits: ConfigEdits,
     /// Whether to install + enable the proxy unit (observers-squad only).
     pub install_proxy: bool,
+    /// `allValidatorsKeys.pem` to copy into every node's `config/`.
+    /// Required for multikey installs (and rejected for everything
+    /// else by the CLI layer); the orchestrator just performs the
+    /// copy and stamps file permissions.
+    pub multikey_keys_file: Option<PathBuf>,
+    /// `Preferences.RedundancyLevel` for multikey nodes. Always
+    /// stamped (even at 0) so the install choice is visible in
+    /// `mxnode config show` and downstream tooling can read the
+    /// value without falling back to the upstream default.
+    pub redundancy_level: u8,
     /// Operator-supplied dotted-path overrides for every node's
     /// `prefs.toml`. Empty by default.
     pub prefs_overrides: &'a BTreeMap<String, toml::Value>,
@@ -287,6 +298,8 @@ pub async fn run_install(
             &display_name,
             node.shard,
             plan.config_edits,
+            node.role,
+            Some(plan.redundancy_level),
             plan.prefs_overrides,
             plan.config_overrides,
         )?;
@@ -297,17 +310,36 @@ pub async fn run_install(
             InstallError::Acquire(format!("symlink node binary for index {}: {e}", node.index.get()))
         })?;
 
-        // Install keys: validators expect node-{i}.zip in NODE_KEYS_LOCATION;
-        // observers + multikey nodes get their .pem files from the
-        // freshly-built keygenerator binary (mirrors the bash
-        // `observer_keys` flow). On any error from keygen we fall back
-        // to a warning so the operator can rerun `mxnode keygen` later.
+        // Install keys per role:
+        //
+        //   * Validator: operator-supplied `node-{i}.zip` from
+        //     `paths.node_keys`. Legacy single-BLS-key flow.
+        //   * Observer: nothing — mx-chain-go auto-generates a
+        //     throwaway BLS key on first start when the workdir has
+        //     no `validatorKey.pem`. Generating one ahead of time was
+        //     previous behaviour but adds nothing and just couples
+        //     the install to a working keygenerator binary.
+        //   * Multikey: copy `allValidatorsKeys.pem` into the
+        //     workdir's `config/`. The node detects the bundle and
+        //     enters multikey mode automatically; mx-chain-go also
+        //     auto-generates the host's own observer key on first
+        //     start (no separate keygen step needed).
         match node.role {
             Role::Validator => {
                 install_validator_keys(&plan.paths.node_keys, node.index, &workdir)?;
             }
-            Role::Observer | Role::Multikey => {
-                generate_observer_keys(&utils_dir, &workdir, node.index)?;
+            Role::Observer => {
+                // No-op. Documented above.
+            }
+            Role::Multikey => {
+                let keys_file = plan.multikey_keys_file.as_deref().ok_or_else(|| {
+                    InstallError::Invalid(
+                        "multikey install reached the orchestrator without a keys file; \
+                         the CLI layer must populate plan.multikey_keys_file"
+                            .to_string(),
+                    )
+                })?;
+                install_multikey_keys(keys_file, &workdir)?;
             }
         }
 
@@ -462,6 +494,8 @@ pub(crate) fn apply_node_tomledit(
     display_name: &str,
     shard: Shard,
     edits: ConfigEdits,
+    role: Role,
+    redundancy_level: Option<u8>,
     prefs_overrides: &BTreeMap<String, toml::Value>,
     config_overrides: &BTreeMap<String, toml::Value>,
 ) -> Result<(), InstallError> {
@@ -489,6 +523,18 @@ pub(crate) fn apply_node_tomledit(
         set_node_display_name(&mut doc, display_name).map_err(|e| InstallError::Toml(e.to_string()))?;
         if matches!(edits, ConfigEdits::Observer) {
             set_destination_shard(&mut doc, shard).map_err(|e| InstallError::Toml(e.to_string()))?;
+        }
+        // Multikey is the only role for which RedundancyLevel is
+        // load-bearing — validators historically hand-edit if they
+        // run a backup, observers don't sign blocks at all. Stamp
+        // for multikey at install time; `reapply-config` passes
+        // `None` so it doesn't clobber an operator's hand-edited
+        // value during a re-apply.
+        if matches!(role, Role::Multikey) {
+            if let Some(level) = redundancy_level {
+                set_redundancy_level(&mut doc, level)
+                    .map_err(|e| InstallError::Toml(e.to_string()))?;
+            }
         }
         if !prefs_overrides.is_empty() {
             apply_overrides(&mut doc, prefs_overrides, &subs)
@@ -535,69 +581,31 @@ pub(crate) fn apply_node_tomledit(
     Ok(())
 }
 
-/// Run the just-built `keygenerator` to populate `*.pem` files inside
-/// `<workdir>/config/`. Mirrors the bash `observer_keys` step. We
-/// invoke the binary in a tempdir so we can copy the produced files
-/// into the right place without polluting `elrond-utils/`.
-fn generate_observer_keys(
-    utils_dir: &Path,
-    workdir: &Path,
-    index: NodeIndex,
-) -> Result<(), InstallError> {
-    let keygen = utils_dir.join("keygenerator");
-    if !keygen.exists() {
-        // Surface this as a warning rather than a hard error so the
-        // operator can run `mxnode keygen` separately. The node will
-        // refuse to start without keys, which is the right signal.
-        tracing::warn!(
-            target: "mxnode.event",
-            event = "install.keygen.missing",
-            index = index.get(),
-            expected = keygen.display().to_string(),
-            "keygenerator missing; node will fail to start until keys are placed",
-        );
-        return Ok(());
-    }
-    let scratch = tempfile::tempdir().map_err(|e| InstallError::Io {
-        path: utils_dir.display().to_string(),
+/// Copy `allValidatorsKeys.pem` into the multikey node's `config/`
+/// directory and tighten file permissions to 0600 (the file holds
+/// every BLS private key the operator owns; world-readable would be
+/// catastrophic). Caller has already verified that `keys_file` exists
+/// — failing here is an operator-environment problem, not a misuse.
+fn install_multikey_keys(keys_file: &Path, workdir: &Path) -> Result<(), InstallError> {
+    let dest = workdir.join("config/allValidatorsKeys.pem");
+    fs::copy(keys_file, &dest).map_err(|e| InstallError::Io {
+        path: dest.display().to_string(),
         source: e,
     })?;
-    let status = std::process::Command::new(&keygen)
-        .current_dir(scratch.path())
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .status()
-        .map_err(|e| InstallError::Io {
-            path: keygen.display().to_string(),
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&dest)
+            .map_err(|e| InstallError::Io {
+                path: dest.display().to_string(),
+                source: e,
+            })?
+            .permissions();
+        perms.set_mode(0o600);
+        fs::set_permissions(&dest, perms).map_err(|e| InstallError::Io {
+            path: dest.display().to_string(),
             source: e,
         })?;
-    if !status.success() {
-        return Err(InstallError::Invalid(format!(
-            "keygenerator exited {:?} for node-{}",
-            status.code(),
-            index.get(),
-        )));
-    }
-    // Move every .pem the keygen produced into the node's config dir.
-    let dest = workdir.join("config");
-    for entry in std::fs::read_dir(scratch.path()).map_err(|e| InstallError::Io {
-        path: scratch.path().display().to_string(),
-        source: e,
-    })? {
-        let entry = entry.map_err(|e| InstallError::Io {
-            path: scratch.path().display().to_string(),
-            source: e,
-        })?;
-        let p = entry.path();
-        if p.extension().and_then(|s| s.to_str()) == Some("pem") {
-            if let Some(name) = p.file_name() {
-                std::fs::copy(&p, dest.join(name)).map_err(|e| InstallError::Io {
-                    path: dest.display().to_string(),
-                    source: e,
-                })?;
-            }
-        }
     }
     Ok(())
 }
@@ -748,6 +756,8 @@ mod tests {
             "test-name",
             Shard::Auto,
             ConfigEdits::Validator,
+            Role::Validator,
+            Some(0),
             &BTreeMap::new(),
             &BTreeMap::new(),
         )
@@ -757,6 +767,9 @@ mod tests {
         assert!(body.contains("NodeDisplayName = \"test-name\""));
         // Validator edits leave shard untouched.
         assert!(body.contains("DestinationShardAsObserver = \"disabled\""));
+        // Validator + redundancy 0 must NOT stamp RedundancyLevel —
+        // only multikey installs are load-bearing for that knob.
+        assert!(!body.contains("RedundancyLevel"));
     }
 
     #[test]
@@ -780,6 +793,8 @@ mod tests {
             "obs-0",
             Shard::Metachain,
             ConfigEdits::Observer,
+            Role::Observer,
+            Some(0),
             &BTreeMap::new(),
             &BTreeMap::new(),
         )
@@ -789,6 +804,65 @@ mod tests {
         assert!(prefs.contains("DestinationShardAsObserver = \"metachain\""));
         let config = std::fs::read_to_string(workdir.join("config/config.toml")).unwrap();
         assert!(config.contains("Enabled = true"));
+    }
+
+    #[test]
+    fn apply_node_tomledit_multikey_stamps_redundancy_level() {
+        let dir = tempfile::tempdir().unwrap();
+        let workdir = dir.path().join("node-0");
+        std::fs::create_dir_all(workdir.join("config")).unwrap();
+        std::fs::write(
+            workdir.join("config/prefs.toml"),
+            "[Preferences]\nNodeDisplayName = \"\"\nDestinationShardAsObserver = \"disabled\"\nRedundancyLevel = 0\n",
+        )
+        .unwrap();
+
+        apply_node_tomledit(
+            &workdir,
+            "mk-0",
+            Shard::Zero,
+            ConfigEdits::Observer,
+            Role::Multikey,
+            Some(2), // backup-of-backup
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+        let prefs = std::fs::read_to_string(workdir.join("config/prefs.toml")).unwrap();
+        assert!(prefs.contains("RedundancyLevel = 2"));
+        // Same call also pins the shard via the observer edits.
+        assert!(prefs.contains("DestinationShardAsObserver = \"0\""));
+    }
+
+    /// reapply-config passes `redundancy_level: None` to keep operator
+    /// hand-edits intact. Even on a multikey node, `None` must leave
+    /// the existing `RedundancyLevel` line alone.
+    #[test]
+    fn apply_node_tomledit_multikey_with_none_redundancy_preserves_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let workdir = dir.path().join("node-0");
+        std::fs::create_dir_all(workdir.join("config")).unwrap();
+        std::fs::write(
+            workdir.join("config/prefs.toml"),
+            "[Preferences]\nNodeDisplayName = \"\"\nDestinationShardAsObserver = \"disabled\"\nRedundancyLevel = 7\n",
+        )
+        .unwrap();
+
+        apply_node_tomledit(
+            &workdir,
+            "mk-0",
+            Shard::Zero,
+            ConfigEdits::Observer,
+            Role::Multikey,
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+        let prefs = std::fs::read_to_string(workdir.join("config/prefs.toml")).unwrap();
+        assert!(prefs.contains("RedundancyLevel = 7"));
     }
 
     #[test]

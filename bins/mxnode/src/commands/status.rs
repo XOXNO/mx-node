@@ -54,7 +54,7 @@ async fn paint_once(
             CliError::new(
                 "failed to read state.toml",
                 e.to_string(),
-                "run `mxnode adopt` to populate state from the host's existing units",
+                "run `mxnode install` to set up nodes",
             )
             .json_if(global.json)
         })?
@@ -62,7 +62,7 @@ async fn paint_once(
             CliError::new(
                 "no state.toml on this host",
                 format!("expected {}", store.state_path().display()),
-                "run `mxnode adopt` (or `mxnode migrate-from-bash` if upgrading from the bash repo)",
+                "run `mxnode install` to set up nodes",
             )
             .json_if(global.json)
         })?;
@@ -228,7 +228,7 @@ fn render_table(state: &State, probes: &[Probe], color: bool) {
         })
         .unwrap_or_else(|| {
             format!(
-                "mxnode {} │ no install recorded — run `mxnode adopt`",
+                "mxnode {} │ no install recorded — run `mxnode install`",
                 env!("CARGO_PKG_VERSION")
             )
         });

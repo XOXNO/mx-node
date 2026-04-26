@@ -339,7 +339,7 @@ fn load_state_or_err(store: &StateStore, global: &GlobalArgs) -> Result<State, C
             CliError::new(
                 "failed to read state.toml",
                 e.to_string(),
-                "run `mxnode adopt` to populate state from the host's existing units",
+                "run `mxnode install` to set up nodes",
             )
             .json_if(global.json)
         })?
@@ -347,7 +347,7 @@ fn load_state_or_err(store: &StateStore, global: &GlobalArgs) -> Result<State, C
             CliError::new(
                 "no state.toml on this host",
                 format!("expected {}", store.state_path().display()),
-                "run `mxnode adopt` first",
+                "run `mxnode install` first",
             )
             .json_if(global.json)
         })

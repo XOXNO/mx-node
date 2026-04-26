@@ -116,7 +116,7 @@ fn pick_units(runtime: &Runtime, requested_indices: &[u16], global: &GlobalArgs)
             return Err(CliError::new(
                 "no such node",
                 format!("state.toml has no node(s) at index {missing:?}"),
-                "run `mxnode status` to list available indices, or `mxnode rebuild-state` if state.toml is stale",
+                "run `mxnode status` to list available indices, or hand-edit and re-run if state.toml is stale",
             )
             .json_if(global.json));
         }
@@ -124,7 +124,7 @@ fn pick_units(runtime: &Runtime, requested_indices: &[u16], global: &GlobalArgs)
             return Err(CliError::new(
                 "no nodes recorded in state.toml",
                 "state.toml is empty",
-                "run `mxnode adopt` after installing nodes to populate state.toml",
+                "run `mxnode install` to set up nodes",
             )
             .json_if(global.json));
         }
@@ -137,7 +137,7 @@ fn pick_units(runtime: &Runtime, requested_indices: &[u16], global: &GlobalArgs)
         CliError::new(
             "no state.toml; failed to scan systemd dir",
             e.to_string(),
-            "run `mxnode adopt` first",
+            "run `mxnode install` first",
         )
         .json_if(global.json)
     })?;
@@ -183,7 +183,7 @@ fn tail_node_log_files(
             CliError::new(
                 "failed to read state.toml",
                 e.to_string(),
-                "run `mxnode adopt` first",
+                "run `mxnode install` first",
             )
             .json_if(global.json)
         })?
@@ -191,7 +191,7 @@ fn tail_node_log_files(
             CliError::new(
                 "no state.toml on this host",
                 format!("expected {}", store.state_path().display()),
-                "run `mxnode adopt` first",
+                "run `mxnode install` first",
             )
             .json_if(global.json)
         })?;
@@ -276,7 +276,7 @@ async fn run_save_archive(args: LogsArgs, global: &GlobalArgs) -> Result<(), Cli
             CliError::new(
                 "failed to read state.toml",
                 e.to_string(),
-                "run `mxnode adopt` first",
+                "run `mxnode install` first",
             )
             .json_if(global.json)
         })?
@@ -284,7 +284,7 @@ async fn run_save_archive(args: LogsArgs, global: &GlobalArgs) -> Result<(), Cli
             CliError::new(
                 "no state.toml on this host",
                 format!("expected {}", store.state_path().display()),
-                "run `mxnode adopt` first",
+                "run `mxnode install` first",
             )
             .json_if(global.json)
         })?;

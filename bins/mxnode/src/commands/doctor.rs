@@ -5,7 +5,7 @@
 //!   - state and runtime directories are writable
 //!   - inflight.toml is either absent or stale-with-dead-pid
 //!   - systemctl + journalctl are on PATH
-//!   - discovery sees no drift / drop-ins beyond what state.toml records
+//!   - the supervisor unit dir is readable
 //!
 //! Each check produces a `Finding`; the command exits non-zero if any
 //! finding has severity `Error`.
@@ -19,7 +19,6 @@ use serde::Serialize;
 
 use crate::cli::GlobalArgs;
 use crate::errors::CliError;
-use crate::orchestrator::adopt::{analyze, AdoptInputs};
 use crate::orchestrator::runtime::Runtime;
 
 const DEFAULT_SYSTEMD_DIR: &str = "/etc/systemd/system";
@@ -85,7 +84,7 @@ pub fn run(global: &GlobalArgs) -> Result<(), CliError> {
             findings.push(Finding::err(
                 "config",
                 "could not load config",
-                "run `mxnode init` to create ~/.config/mxnode/config.toml, or fix the existing file",
+                "run any state-changing command to auto-init, or fix the existing config file",
             ));
             None
         }
@@ -248,14 +247,14 @@ fn check_state(runtime: &Runtime) -> Vec<Finding> {
             out.push(Finding::warn(
                 "state",
                 "no state.toml on this host",
-                "run `mxnode adopt` to populate state from existing units",
+                "run `mxnode install` to set up nodes",
             ));
         }
         Err(e) => {
             out.push(Finding::err(
                 "state",
                 format!("could not parse state.toml: {e}"),
-                "either fix the file manually or remove it and run `mxnode rebuild-state`",
+                "either fix the file manually or remove it and run hand-edit and re-run",
             ));
         }
     }
@@ -308,7 +307,7 @@ fn check_inflight(runtime: &Runtime) -> Vec<Finding> {
             return vec![Finding::err(
                 "inflight",
                 format!("could not parse inflight.toml: {e}"),
-                "remove the file and rerun the failed op, or `mxnode unlock --force`",
+                "remove the file and rerun the failed op",
             )]
         }
     };
@@ -321,86 +320,36 @@ fn check_inflight(runtime: &Runtime) -> Vec<Finding> {
         Liveness::Stale => vec![Finding::warn(
             "inflight",
             "inflight.toml left over from a crashed run",
-            "run `mxnode unlock --force` to clear, then `--resume` or `--abandon` the op",
+            "delete inflight.toml manually to clear",
         )],
         Liveness::Unknown => vec![Finding::warn(
             "inflight",
             "could not determine liveness of recorded pid",
-            "be conservative: run `mxnode unlock --force` only after confirming no mxnode process is alive",
+            "be conservative: only delete inflight.toml after confirming no mxnode process is alive",
         )],
     }
 }
 
-fn check_discovery(runtime: &Runtime) -> Vec<Finding> {
+fn check_discovery(_runtime: &Runtime) -> Vec<Finding> {
     use crate::orchestrator::supervisor::unit_dir_for_platform;
     use mxnode_core::Platform;
     let supervisor_dir = unit_dir_for_platform(Platform::current())
         .unwrap_or_else(|| Path::new(DEFAULT_SYSTEMD_DIR).to_path_buf());
-    if scan_supervisor_dir(&supervisor_dir).is_err() {
-        return vec![Finding::warn(
-            "discovery",
+    match scan_supervisor_dir(&supervisor_dir) {
+        Ok(_) => vec![Finding::ok(
+            "supervisor-dir",
+            format!("readable: {}", supervisor_dir.display()),
+        )],
+        Err(_) => vec![Finding::warn(
+            "supervisor-dir",
             format!("could not read {}", supervisor_dir.display()),
             match Platform::current() {
                 Platform::Linux => "run as root or with read access on /etc/systemd/system",
                 Platform::Macos => "ensure ~/Library/LaunchAgents is readable by the current user",
                 Platform::Unsupported => "this platform is not yet supported",
             },
-        )];
+        )],
     }
-    let environment = match runtime.loaded.config.network.environment {
-        Some(e) => e,
-        None => {
-            return vec![Finding::warn(
-                "discovery",
-                "skipping drift check (network.environment is unset)",
-                "run `mxnode init` to set the network",
-            )];
-        }
-    };
-    let outcome = match analyze(
-        &supervisor_dir,
-        &AdoptInputs {
-            paths: &runtime.paths,
-            environment,
-            github_org: &runtime.loaded.config.network.github_org,
-            log_level: &runtime.loaded.config.node.log_level,
-            limit_nofile: runtime.loaded.config.node.limit_nofile,
-            restart_sec: runtime.loaded.config.node.restart_sec,
-            api_port_base: runtime.loaded.config.node.api_port_base,
-            extra_flags: &runtime.loaded.config.node.extra_flags,
-        },
-        "mxnode/doctor",
-    ) {
-        Ok(o) => o,
-        Err(e) => {
-            return vec![Finding::warn(
-                "discovery",
-                format!("could not analyze units: {e}"),
-                "ensure /etc/systemd/system is readable",
-            )]
-        }
-    };
-    if outcome.is_clean() {
-        return vec![Finding::ok("discovery", "no drift across discovered units")];
-    }
-    let drift = outcome.drift_reports().count();
-    let drop_ins = outcome.has_drop_ins();
-    let mut out = Vec::new();
-    if drop_ins {
-        out.push(Finding::warn(
-            "drop-ins",
-            "drop-in `.conf` files detected alongside elrond-* units",
-            "mxnode does not author or merge drop-ins; review them manually before adopting",
-        ));
-    }
-    if drift > 0 {
-        out.push(Finding::warn(
-            "drift",
-            format!("{drift} unit(s) differ from what mxnode would render"),
-            "run `mxnode adopt --force-adopt` to preserve them, or `mxnode rebuild-state` to refresh",
-        ));
-    }
-    out
 }
 
 fn print_findings(findings: &[Finding]) {

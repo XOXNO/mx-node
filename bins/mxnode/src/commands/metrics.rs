@@ -38,7 +38,7 @@ pub async fn run(args: MetricsArgs, global: &GlobalArgs) -> Result<(), CliError>
         return Err(CliError::new(
             "no state.toml on this host",
             format!("expected {}", store.state_path().display()),
-            "run `mxnode adopt` first",
+            "run `mxnode install` first",
         )
         .json_if(global.json));
     }

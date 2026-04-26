@@ -49,7 +49,7 @@ impl std::fmt::Display for SelectorError {
             ),
             SelectorError::EmptyState => write!(
                 f,
-                "state.toml has no nodes; run `mxnode adopt` or `mxnode install` first",
+                "state.toml has no nodes; run `mxnode install` first",
             ),
         }
     }
