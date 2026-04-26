@@ -1060,7 +1060,7 @@ dependencies = [
 
 [[package]]
 name = "mxnode"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1089,7 +1089,7 @@ dependencies = [
 
 [[package]]
 name = "mxnode-build"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "mxnode-core",
  "mxnode-toolchain",
@@ -1101,7 +1101,7 @@ dependencies = [
 
 [[package]]
 name = "mxnode-config"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "dirs",
  "figment",
@@ -1116,7 +1116,7 @@ dependencies = [
 
 [[package]]
 name = "mxnode-core"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "semver",
  "serde",
@@ -1127,7 +1127,7 @@ dependencies = [
 
 [[package]]
 name = "mxnode-github"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "hex",
  "mxnode-core",
@@ -1144,7 +1144,7 @@ dependencies = [
 
 [[package]]
 name = "mxnode-rpc"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "mxnode-core",
  "reqwest",
@@ -1157,7 +1157,7 @@ dependencies = [
 
 [[package]]
 name = "mxnode-state"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "fs2",
  "libc",
@@ -1173,7 +1173,7 @@ dependencies = [
 
 [[package]]
 name = "mxnode-systemd"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "async-trait",
  "dirs",
@@ -1189,7 +1189,7 @@ dependencies = [
 
 [[package]]
 name = "mxnode-toolchain"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "mxnode-core",
  "semver",
@@ -1200,7 +1200,7 @@ dependencies = [
 
 [[package]]
 name = "mxnode-tui"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "crossterm",
  "futures-util",
