@@ -2,7 +2,7 @@
 # mxnode installer — single-line install for any host.
 #
 # Usage:
-#     curl -fsSL https://raw.githubusercontent.com/mihaieremia/mx-node/main/install.sh | sh
+#     curl -fsSL https://raw.githubusercontent.com/XOXNO/mx-node/main/install.sh | sh
 #
 # Options (pass after `sh -s --`):
 #     --version <TAG>   Install a specific release (default: latest)
@@ -10,7 +10,7 @@
 #     --help            Show this message
 #
 # Examples:
-#     curl -fsSL https://raw.githubusercontent.com/mihaieremia/mx-node/main/install.sh | sh
+#     curl -fsSL https://raw.githubusercontent.com/XOXNO/mx-node/main/install.sh | sh
 #     curl -fsSL .../install.sh | sh -s -- --version v0.1.0
 #     curl -fsSL .../install.sh | sh -s -- --dir "$HOME/.local/bin"
 #
@@ -24,7 +24,7 @@
 
 set -eu
 
-REPO="mihaieremia/mx-node"
+REPO="XOXNO/mx-node"
 INSTALL_DIR="${MXNODE_INSTALL_DIR:-/usr/local/bin}"
 VERSION="latest"
 
@@ -45,7 +45,7 @@ while [ $# -gt 0 ]; do
             cat <<'EOF'
 mxnode installer
 
-  curl -fsSL https://raw.githubusercontent.com/mihaieremia/mx-node/main/install.sh | sh
+  curl -fsSL https://raw.githubusercontent.com/XOXNO/mx-node/main/install.sh | sh
 
 Options:
   --version <TAG>   Install a specific release (default: latest)
