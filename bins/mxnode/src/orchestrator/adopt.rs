@@ -74,7 +74,20 @@ pub fn analyze(
     for d in &discovered {
         match &d.kind {
             DiscoveredKind::Node(idx) => {
-                let workdir = inputs.paths.node_workdir(*idx);
+                // Trust the supervisor's `WorkingDirectory=` line first.
+                // The bash setup often leaves `CUSTOM_HOME=/home/ubuntu`
+                // in `variables.cfg` even when the operator runs as a
+                // different user (e.g. `truststaking`), so the
+                // config-derived `paths.node_workdir(*idx)` would point
+                // at a non-existent path. The unit file the supervisor
+                // is actually running from is the source of truth — fall
+                // back to the config path only when the unit didn't carry
+                // a WorkingDirectory line (legacy unrendered units).
+                let workdir = d
+                    .view
+                    .working_directory
+                    .clone()
+                    .unwrap_or_else(|| inputs.paths.node_workdir(*idx));
                 let api_port = api_port_for(inputs.api_port_base, *idx);
                 let report = analyze_node(
                     d,
@@ -94,7 +107,13 @@ pub fn analyze(
                 node_count = node_count.saturating_add(1);
             }
             DiscoveredKind::Proxy => {
-                let proxy_dir = inputs.paths.elrond_proxy_root();
+                // Same logic for the proxy — prefer the supervisor's
+                // recorded WorkingDirectory.
+                let proxy_dir = d
+                    .view
+                    .working_directory
+                    .clone()
+                    .unwrap_or_else(|| inputs.paths.elrond_proxy_root());
                 let report = analyze_proxy(
                     d,
                     &ExpectedProxy {
