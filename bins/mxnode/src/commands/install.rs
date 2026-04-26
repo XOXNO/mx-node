@@ -84,6 +84,16 @@ pub async fn run(args: InstallArgs, global: &GlobalArgs) -> Result<(), CliError>
         )
         .json_if(global.json));
     }
+    if matches!(role, Role::Multikey) && args.with_proxy {
+        return Err(CliError::new(
+            "--with-proxy is rejected for --role multikey",
+            "multikey nodes hold validator BLS keys; co-locating a public RPC proxy \
+             on the same host mixes signing infra with public-facing API and is unsafe",
+            "host the proxy on a separate box (any --role observer --squad install), \
+             or drop --with-proxy if you don't need a proxy here",
+        )
+        .json_if(global.json));
+    }
     require_multikey_role("--backup", args.backup.is_some(), role, global)?;
     require_multikey_role("--keys-file", args.keys_file.is_some(), role, global)?;
     let multikey_keys_file = resolve_multikey_keys(&args, role, &runtime, global)?;

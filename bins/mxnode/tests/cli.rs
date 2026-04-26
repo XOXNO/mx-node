@@ -563,6 +563,26 @@ entries = []
 
 // ---------- Phase 3 integration tests ----------
 
+/// `--with-proxy` is rejected for `--role multikey`. Multikey nodes hold
+/// validator BLS keys; co-locating a public RPC proxy on the same host
+/// would expose signing infra to public traffic. Operators wanting a
+/// proxy should run a separate observer-squad host.
+#[test]
+fn install_role_multikey_with_proxy_is_rejected() {
+    let sandbox = Sandbox::new();
+    let output = sandbox
+        .cmd()
+        .args(["install", "--role", "multikey", "--with-proxy", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "expected rejection");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--with-proxy is rejected for --role multikey"),
+        "stderr: {stderr}",
+    );
+}
+
 #[test]
 fn install_dry_run_emits_plan_shape() {
     let sandbox = Sandbox::new();
