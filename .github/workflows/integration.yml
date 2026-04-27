@@ -1,0 +1,124 @@
+name: integration
+
+# Triggers:
+#   - push to main
+#   - pull request against main
+#   - manual `workflow_dispatch` for re-runs after fixing flakes
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Pinned upstream tags so the sweep is deterministic. Bump these
+  # when the operator-recommended mainnet tag changes.
+  NODE_TAG: v1.11.5
+  CONFIG_TAG: v1.11.5.0
+  PROXY_TAG: v1.3.4
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Job 1: full integration sweep on a real Linux runner ────────
+  sweep:
+    name: sweep (every command, every flag combination)
+    # Self-hosted XOXNO runner only — building mx-chain-go from
+    # source needs Go + ~3 GB scratch + several minutes per fresh
+    # tag. The hosted ubuntu-latest runner doesn't have the disk
+    # budget for repeated builds.
+    if: github.repository_owner == 'XOXNO'
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # mxnode-toolchain auto-installs Go 1.22 if absent. Pre-installing
+      # here lets the sweep skip the download step (faster + less flaky).
+      - name: ensure Go 1.22 on PATH
+        run: |
+          if ! /usr/local/go/bin/go version 2>/dev/null | grep -qE 'go1\.(22|23|24)'; then
+            curl -fsSL -o /tmp/go.tar.gz https://dl.google.com/go/go1.22.12.linux-amd64.tar.gz
+            sudo rm -rf /usr/local/go
+            sudo tar -C /usr/local -xzf /tmp/go.tar.gz
+            sudo touch /usr/local/go/.mxnode-managed
+          fi
+          /usr/local/go/bin/go version
+
+      - name: cargo build --release
+        run: cargo build --release -p mxnode
+
+      - name: doc-parity (clone mintlify-docs + verify every example parses)
+        env:
+          MXNODE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git clone --depth=1 https://github.com/XOXNO/mintlify-docs.git ../mintlify-docs
+          tests/integration/doc-parity.sh \
+            target/release/mxnode \
+            ../mintlify-docs
+
+      - name: integration sweep (every command, every flag combination)
+        env:
+          # Avoids the unauthenticated 60-req/h rate limit on the
+          # GitHub releases API. The default GITHUB_TOKEN is
+          # workflow-scoped and can't push, so it's safe for read-only
+          # API lookups.
+          MXNODE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tests/integration/sweep.sh target/release/mxnode
+
+      - name: ensure host is pristine after the sweep
+        if: always()
+        run: |
+          # Belt and braces: the sweep already asserts pristine, but
+          # an early-exit on a sweep bug could leave artifacts behind.
+          # This step always runs — even on previous-step failure —
+          # so the next CI run starts clean.
+          target/release/mxnode cleanup --yes --execute || true
+          rm -rf "$HOME/VALIDATOR_KEYS" /tmp/mxnode-test-keys || true
+
+      - name: report leftover state (informational)
+        if: always()
+        run: |
+          echo "=== mxnode footprint after run ==="
+          ls -d "$HOME/.config/mxnode" "$HOME/.local/state/mxnode" "$HOME/mxnode" "$HOME/elrond-nodes" 2>/dev/null || true
+          ls /etc/systemd/system/elrond-*.service 2>/dev/null || true
+          echo "(empty above = pristine)"
+
+  # ── Job 2: doc-parity-only (runs on hosted ubuntu-latest, no
+  # systemd needed). Catches doc drift in PRs without paying the
+  # self-hosted-runner queue cost.
+  doc-parity-fast:
+    name: doc-parity (no install needed)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-doc-parity-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: cargo build --release -p mxnode
+        run: cargo build --release -p mxnode
+
+      - name: clone mintlify-docs
+        run: git clone --depth=1 https://github.com/XOXNO/mintlify-docs.git ../mintlify-docs
+
+      - name: doc-parity sweep
+        run: |
+          tests/integration/doc-parity.sh \
+            target/release/mxnode \
+            ../mintlify-docs

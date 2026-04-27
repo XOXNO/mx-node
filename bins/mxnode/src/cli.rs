@@ -272,7 +272,7 @@ pub struct LogsArgs {
     #[arg(long)] pub node: Vec<u16>,
     #[arg(long)] pub since: Option<String>,
     /// Tail logs as they arrive. Cannot be combined with `--save-archive`.
-    #[arg(long, conflicts_with = "save_archive")] pub follow: bool,
+    #[arg(long, short = 'f', conflicts_with = "save_archive")] pub follow: bool,
     /// Replicates `get_logs` — produces a tar.gz under $CUSTOM_HOME/mx-chain-logs.
     /// Cannot be combined with `--follow`.
     #[arg(long)] pub save_archive: bool,
@@ -314,10 +314,20 @@ pub struct UpgradeArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum UpgradeTarget {
+    /// Upgrade only the proxy. Reads `--proxy-tag` from the subcommand
+    /// (or falls back to the parent `mxnode upgrade --proxy-tag`).
     Proxy {
         #[arg(long)] proxy_tag: Option<String>,
     },
-    Squad,
+    /// Upgrade the squad: every node + the proxy if installed. The
+    /// observer-shape config edits (`[DbLookupExtensions] Enabled`,
+    /// shard pinning) are re-applied during the upgrade — useful when
+    /// the upstream config repo changed a knob you've been overriding.
+    Squad {
+        #[arg(long)] binary_tag: Option<String>,
+        #[arg(long)] config_tag: Option<String>,
+        #[arg(long)] proxy_tag: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]

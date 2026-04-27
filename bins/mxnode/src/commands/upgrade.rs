@@ -38,11 +38,34 @@ use crate::orchestrator::acquirer::{
 use crate::orchestrator::runtime::{CliErrorExt, Runtime};
 
 #[tokio::main(flavor = "current_thread")]
-pub async fn run(args: UpgradeArgs, global: &GlobalArgs) -> Result<(), CliError> {
+pub async fn run(mut args: UpgradeArgs, global: &GlobalArgs) -> Result<(), CliError> {
     if let Some(UpgradeTarget::Proxy { proxy_tag }) = &args.target {
         return upgrade_proxy(proxy_tag.clone(), &args, global).await;
     }
-    let is_squad = matches!(args.target, Some(UpgradeTarget::Squad));
+    // `mxnode upgrade squad` flattens its own --binary-tag / --config-tag /
+    // --proxy-tag onto the parent UpgradeArgs so the rest of the pipeline
+    // (build_plan, execute_upgrade) only sees one set of fields. When
+    // both the parent and the subcommand specify the same tag the
+    // subcommand wins — operators reach for the explicit form last.
+    let is_squad = if let Some(UpgradeTarget::Squad {
+        binary_tag,
+        config_tag,
+        proxy_tag,
+    }) = &args.target
+    {
+        if binary_tag.is_some() {
+            args.binary_tag = binary_tag.clone();
+        }
+        if config_tag.is_some() {
+            args.config_tag = config_tag.clone();
+        }
+        if proxy_tag.is_some() {
+            args.proxy_tag = proxy_tag.clone();
+        }
+        true
+    } else {
+        false
+    };
 
     let runtime = Runtime::from_global(global)?;
 
