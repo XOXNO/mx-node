@@ -52,10 +52,7 @@ jobs:
           - target: aarch64-apple-darwin
           - target: x86_64-apple-darwin
           - target: x86_64-unknown-linux-musl
-          # aarch64 Linux: deliberately dropped from the matrix.
-          # Add it back if/when an operator deploys to AWS Graviton
-          # / ARM Hetzner / Pi — until then it'd be a maintenance
-          # burden with no consumer.
+          - target: aarch64-unknown-linux-musl   # AWS Graviton, Hetzner CAX, Pi 4/5
     steps:
       # Resolve the release tag once, into the per-job env. Every
       # downstream shell step reads `$RELEASE_TAG` — never substitutes
