@@ -55,7 +55,7 @@ pub fn run(args: LogsArgs, global: &GlobalArgs) -> Result<(), CliError> {
         cmd.arg("--unit").arg(unit);
     }
     if let Some(since) = &args.since {
-        cmd.arg("--since").arg(since);
+        cmd.arg("--since").arg(translate_since(since));
     }
     if args.follow {
         cmd.arg("--follow");
@@ -339,7 +339,7 @@ async fn run_save_archive(args: LogsArgs, global: &GlobalArgs) -> Result<(), Cli
         let mut cmd = Command::new("journalctl");
         cmd.arg("--unit").arg(&node.unit);
         if let Some(since) = &args.since {
-            cmd.arg("--since").arg(since);
+            cmd.arg("--since").arg(translate_since(since));
         }
         cmd.stdout(Stdio::from(log_file))
             .stderr(Stdio::inherit())
@@ -461,4 +461,51 @@ struct ArchiveEntry {
     index: u16,
     log_name: String,
     pubkey_prefix: Option<String>,
+}
+
+/// Translate a duration shorthand like `1h`, `30min`, `5s`, `2d` into the
+/// `"N units ago"` form journalctl's `--since` accepts. Operators reach
+/// for the short form; journalctl insists on the long. Anything that
+/// doesn't match the shorthand pattern (absolute timestamps, words like
+/// `yesterday`, the long form itself) is passed through unchanged.
+fn translate_since(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let (num_part, unit_part) = trimmed
+        .find(|c: char| !c.is_ascii_digit())
+        .map(|i| trimmed.split_at(i))
+        .unwrap_or((trimmed, ""));
+    if num_part.is_empty() || num_part.parse::<u64>().is_err() {
+        return raw.to_string();
+    }
+    let unit_word = match unit_part.trim() {
+        "s" | "sec" | "secs" | "second" | "seconds" => "seconds",
+        "m" | "min" | "mins" | "minute" | "minutes" => "minutes",
+        "h" | "hr" | "hrs" | "hour" | "hours" => "hours",
+        "d" | "day" | "days" => "days",
+        "w" | "week" | "weeks" => "weeks",
+        _ => return raw.to_string(),
+    };
+    format!("{num_part} {unit_word} ago")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::translate_since;
+
+    #[test]
+    fn translate_since_handles_shorthand() {
+        assert_eq!(translate_since("5s"), "5 seconds ago");
+        assert_eq!(translate_since("30min"), "30 minutes ago");
+        assert_eq!(translate_since("1h"), "1 hours ago");
+        assert_eq!(translate_since("2d"), "2 days ago");
+        assert_eq!(translate_since("3 weeks"), "3 weeks ago");
+    }
+
+    #[test]
+    fn translate_since_passes_through_absolute_and_words() {
+        assert_eq!(translate_since("2024-01-01"), "2024-01-01");
+        assert_eq!(translate_since("yesterday"), "yesterday");
+        assert_eq!(translate_since("1 hour ago"), "1 hour ago");
+        assert_eq!(translate_since(""), "");
+    }
 }

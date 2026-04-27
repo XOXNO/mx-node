@@ -283,7 +283,15 @@ pub struct MetricsArgs {
     #[arg(long, default_value_t = 9090)] pub port: u16,
 }
 
+/// Mutually-exclusive selector flags on `mxnode upgrade`. `clap`'s
+/// ArgGroup with `multiple = false` enforces "at most one" at parse
+/// time, matching how `LifecycleArgs` handles the same set so both
+/// surfaces stay consistent.
 #[derive(Debug, Args)]
+#[command(group = clap::ArgGroup::new("upgrade_selector")
+    .required(false)
+    .multiple(false)
+    .args(["select", "node", "shard"]))]
 pub struct UpgradeArgs {
     #[command(subcommand)]
     pub target: Option<UpgradeTarget>,
@@ -294,13 +302,12 @@ pub struct UpgradeArgs {
     #[arg(long, value_enum, default_value_t = Strategy::Rolling)] pub strategy: Strategy,
     #[arg(long, default_value_t = 1)] pub max_parallel: u16,
     /// Free-form selector expression, same grammar as lifecycle commands
-    /// (e.g. `role=validator AND shard=0`). Mutually exclusive with the
-    /// shorthand `--node` and `--shard` flags.
-    #[arg(long, conflicts_with_all = ["node", "shard"])] pub select: Option<String>,
+    /// (e.g. `role=validator AND shard=0`).
+    #[arg(long, group = "upgrade_selector")] pub select: Option<String>,
     /// Limit the upgrade to specific node indices. Repeatable.
-    #[arg(long)] pub node: Vec<u16>,
+    #[arg(long, group = "upgrade_selector")] pub node: Vec<u16>,
     /// Limit the upgrade to one shard (`0`, `1`, `2`, or `metachain`).
-    #[arg(long)] pub shard: Option<String>,
+    #[arg(long, group = "upgrade_selector")] pub shard: Option<String>,
     #[arg(long)] pub skip_validators: bool,
     #[arg(long)] pub dry_run: bool,
 }
