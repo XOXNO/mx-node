@@ -37,6 +37,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # GitHub Actions sanitizes PATH on self-hosted runners; the
+      # rustup-installed cargo at ~/.cargo/bin isn't picked up unless
+      # we install the toolchain explicitly per-step (matches the
+      # release workflow's pattern).
+      - uses: dtolnay/rust-toolchain@stable
+
       # mxnode-toolchain auto-installs Go 1.22 if absent. Pre-installing
       # here lets the sweep skip the download step (faster + less flaky).
       - name: ensure Go 1.22 on PATH
@@ -52,14 +58,40 @@ jobs:
       - name: cargo build --release
         run: cargo build --release -p mxnode
 
-      - name: doc-parity (clone mintlify-docs + verify every example parses)
+      # mintlify-docs is a private sibling repo; the default
+      # GITHUB_TOKEN can't cross-repo. Operators who want the
+      # doc-parity check on the sweep job add a `DOCS_READ_TOKEN`
+      # repo secret with read access to XOXNO/mintlify-docs. When
+      # absent, the step skips with a one-line notice and the rest
+      # of the sweep continues.
+      - name: checkout mintlify-docs (optional, for doc-parity)
+        if: env.DOCS_READ_TOKEN != ''
         env:
+          DOCS_READ_TOKEN: ${{ secrets.DOCS_READ_TOKEN }}
+        uses: actions/checkout@v4
+        with:
+          repository: XOXNO/mintlify-docs
+          token: ${{ secrets.DOCS_READ_TOKEN }}
+          path: mintlify-docs
+
+      - name: doc-parity (verify every example parses)
+        if: env.DOCS_READ_TOKEN != ''
+        env:
+          DOCS_READ_TOKEN: ${{ secrets.DOCS_READ_TOKEN }}
           MXNODE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git clone --depth=1 https://github.com/XOXNO/mintlify-docs.git ../mintlify-docs
           tests/integration/doc-parity.sh \
             target/release/mxnode \
-            ../mintlify-docs
+            mintlify-docs
+
+      - name: doc-parity (skipped — no DOCS_READ_TOKEN secret)
+        if: env.DOCS_READ_TOKEN == ''
+        env:
+          DOCS_READ_TOKEN: ${{ secrets.DOCS_READ_TOKEN }}
+        run: |
+          echo "skipping doc-parity: no DOCS_READ_TOKEN secret configured"
+          echo "  add a repo secret with read access to XOXNO/mintlify-docs"
+          echo "  to enable this check on the sweep job"
 
       - name: integration sweep (every command, every flag combination)
         env:
@@ -90,8 +122,9 @@ jobs:
           echo "(empty above = pristine)"
 
   # ── Job 2: doc-parity-only (runs on hosted ubuntu-latest, no
-  # systemd needed). Catches doc drift in PRs without paying the
-  # self-hosted-runner queue cost.
+  # systemd needed). Fast and cheap — runs on every PR. Skipped
+  # when DOCS_READ_TOKEN isn't configured because mintlify-docs is
+  # private. ──
   doc-parity-fast:
     name: doc-parity (no install needed)
     runs-on: ubuntu-latest
@@ -114,11 +147,30 @@ jobs:
       - name: cargo build --release -p mxnode
         run: cargo build --release -p mxnode
 
-      - name: clone mintlify-docs
-        run: git clone --depth=1 https://github.com/XOXNO/mintlify-docs.git ../mintlify-docs
+      - name: checkout mintlify-docs
+        if: env.DOCS_READ_TOKEN != ''
+        env:
+          DOCS_READ_TOKEN: ${{ secrets.DOCS_READ_TOKEN }}
+        uses: actions/checkout@v4
+        with:
+          repository: XOXNO/mintlify-docs
+          token: ${{ secrets.DOCS_READ_TOKEN }}
+          path: mintlify-docs
 
       - name: doc-parity sweep
+        if: env.DOCS_READ_TOKEN != ''
+        env:
+          DOCS_READ_TOKEN: ${{ secrets.DOCS_READ_TOKEN }}
         run: |
           tests/integration/doc-parity.sh \
             target/release/mxnode \
-            ../mintlify-docs
+            mintlify-docs
+
+      - name: doc-parity (skipped — no DOCS_READ_TOKEN secret)
+        if: env.DOCS_READ_TOKEN == ''
+        env:
+          DOCS_READ_TOKEN: ${{ secrets.DOCS_READ_TOKEN }}
+        run: |
+          echo "skipping doc-parity: no DOCS_READ_TOKEN secret configured"
+          echo "  add a repo secret with read access to XOXNO/mintlify-docs"
+          echo "  to enable this check"
