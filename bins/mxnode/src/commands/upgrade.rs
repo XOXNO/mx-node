@@ -213,23 +213,25 @@ async fn build_plan(
         None
     };
 
-    // Selection: default to all nodes when no --select is supplied. The
-    // bash `upgrade` command also acts on all nodes by default.
-    let selected: Vec<NodeIndex> = if let Some(expr) = &args.select {
+    // Selection: route every form through the same resolver as the
+    // lifecycle commands so behaviour stays consistent. Default with
+    // no selector is "every node". `--select`, `--node`, and `--shard`
+    // are mutually exclusive (clap enforces).
+    let selected: Vec<NodeIndex> = if args.select.is_some() || !args.node.is_empty() || args.shard.is_some() {
         use crate::orchestrator::selector::{resolve, DefaultSelection};
         let lifecycle_args = crate::cli::LifecycleArgs {
             all: false,
-            select: Some(expr.clone()),
+            select: args.select.clone(),
             validators_only: false,
             observers_only: false,
-            shard: None,
-            node: Vec::new(),
+            shard: args.shard.clone(),
+            node: args.node.clone(),
         };
         resolve(state, &lifecycle_args, DefaultSelection::All).map_err(|e| {
             CliError::new(
-                "invalid --select",
+                "selector did not resolve",
                 e.to_string(),
-                "see `mxnode status` for valid selectors",
+                "see `mxnode status` for valid indices and shards",
             )
             .json_if(global.json)
         })?

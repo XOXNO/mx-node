@@ -36,4 +36,5 @@ dirs        = { workspace = true }
 time        = { workspace = true }
 toml_edit   = { workspace = true }
 async-trait = "0.1"
+libc        = { workspace = true }
 # Wizard-style init prompts: arrow-key Select, validated Input, etc.

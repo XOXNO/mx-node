@@ -293,7 +293,14 @@ pub struct UpgradeArgs {
     #[arg(long)] pub proxy_tag: Option<String>,
     #[arg(long, value_enum, default_value_t = Strategy::Rolling)] pub strategy: Strategy,
     #[arg(long, default_value_t = 1)] pub max_parallel: u16,
-    #[arg(long)] pub select: Option<String>,
+    /// Free-form selector expression, same grammar as lifecycle commands
+    /// (e.g. `role=validator AND shard=0`). Mutually exclusive with the
+    /// shorthand `--node` and `--shard` flags.
+    #[arg(long, conflicts_with_all = ["node", "shard"])] pub select: Option<String>,
+    /// Limit the upgrade to specific node indices. Repeatable.
+    #[arg(long)] pub node: Vec<u16>,
+    /// Limit the upgrade to one shard (`0`, `1`, `2`, or `metachain`).
+    #[arg(long)] pub shard: Option<String>,
     #[arg(long)] pub skip_validators: bool,
     #[arg(long)] pub dry_run: bool,
 }

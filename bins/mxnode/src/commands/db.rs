@@ -22,9 +22,9 @@ use crate::orchestrator::runtime::{CliErrorExt, Runtime};
 /// Top-level dispatcher for `mxnode db <subcmd>`.
 pub fn run(cmd: DbCommand, global: &GlobalArgs) -> Result<(), CliError> {
     match cmd {
-        DbCommand::Remove { node, yes } => run_op(DbVerb::Remove, &node, yes, global),
-        DbCommand::Prune { node, epochs: _ } => run_op(DbVerb::Prune, &node, true, global),
-        DbCommand::Reseed { node, yes } => run_op(DbVerb::Reseed, &node, yes, global),
+        DbCommand::Remove { node, yes } => run_op(DbVerb::Remove, &node, None, yes, global),
+        DbCommand::Prune { node, epochs } => run_op(DbVerb::Prune, &node, epochs, true, global),
+        DbCommand::Reseed { node, yes } => run_op(DbVerb::Reseed, &node, None, yes, global),
     }
 }
 
@@ -47,33 +47,33 @@ impl DbVerb {
     fn description(self) -> &'static str {
         match self {
             Self::Remove => "remove db/, logs/, stats/, health-records/",
-            Self::Prune => "prune database (Phase 2 — not implemented)",
-            Self::Reseed => "remove db then mark for reseed (Phase 2 — not implemented)",
+            Self::Prune => "trim db/Epoch_N directories",
+            Self::Reseed => "remove db then start the node (resync from genesis)",
         }
     }
 }
+
+/// Default number of recent epochs `db prune` keeps when `--epochs` is
+/// not supplied. The mainnet config rotates an epoch every ~24 hours,
+/// so 4 keeps roughly the last four days of block data.
+const DEFAULT_PRUNE_KEEP: u32 = 4;
 
 #[tokio::main(flavor = "current_thread")]
 async fn run_op(
     verb: DbVerb,
     requested: &[u16],
+    epochs_to_keep: Option<u32>,
     yes: bool,
     global: &GlobalArgs,
 ) -> Result<(), CliError> {
-    if matches!(verb, DbVerb::Prune | DbVerb::Reseed) {
-        return Err(CliError::new(
-            format!("`mxnode db {}` is not yet implemented", phase_name(verb)),
-            "scheduled for Phase 2 alongside the upgrade transaction log",
-            "for now use `mxnode db remove --yes --node N` or the bash get_logs flow",
-        )
-        .json_if(global.json));
-    }
-
     if !yes {
         return Err(CliError::new(
             "refusing without --yes",
-            "db remove permanently deletes the node's database, logs, stats, and health-records",
-            "rerun with `mxnode db remove --yes --node N` to confirm intent",
+            format!(
+                "{} permanently changes the node's data; pass --yes to confirm",
+                verb.description(),
+            ),
+            format!("rerun with `mxnode db {} --yes --node N`", phase_name(verb)),
         )
         .json_if(global.json));
     }
@@ -107,13 +107,27 @@ async fn run_op(
         prompt_confirm(verb, &targets, global)?;
     }
 
+    let keep = epochs_to_keep.unwrap_or(DEFAULT_PRUNE_KEEP);
     let mut results: Vec<NodeResult> = Vec::with_capacity(targets.len());
     for node in &targets {
         node_op_start(verb.op_label(), node.index, &node.unit);
-        let outcome = wipe_node_data(&node.workdir);
-        let (ok, error) = match &outcome {
-            Ok(()) => (true, None),
-            Err(e) => (false, Some(e.to_string())),
+        let outcome: std::io::Result<Option<String>> = match verb {
+            DbVerb::Remove => wipe_node_data(&node.workdir).map(|_| None),
+            DbVerb::Prune => prune_old_epochs(&node.workdir, keep).map(Some),
+            DbVerb::Reseed => match wipe_node_data(&node.workdir) {
+                Err(e) => Err(e),
+                Ok(()) => match ctl.start(&node.unit).await {
+                    Ok(()) => Ok(Some(format!("started {}", node.unit))),
+                    Err(e) => Err(std::io::Error::other(format!(
+                        "wiped db but failed to start {}: {e}",
+                        node.unit
+                    ))),
+                },
+            },
+        };
+        let (ok, error, note) = match outcome {
+            Ok(note) => (true, None, note),
+            Err(e) => (false, Some(e.to_string()), None),
         };
         let event_outcome = match &error {
             None => Outcome::Ok,
@@ -125,6 +139,7 @@ async fn run_op(
             unit: node.unit.clone(),
             ok,
             error,
+            note,
         });
     }
 
@@ -152,6 +167,9 @@ async fn run_op(
         for r in &results {
             let glyph = if r.ok { "✓" } else { "✗" };
             print!("{glyph} {} node-{}", verb.op_label(), r.index);
+            if let Some(note) = &r.note {
+                print!(" — {note}");
+            }
             if let Some(err) = &r.error {
                 print!(" — {err}");
             }
@@ -235,20 +253,53 @@ fn pick_targets<'a>(
 }
 
 fn wipe_node_data(workdir: &Path) -> std::io::Result<()> {
-    // Match `cleanup_files` from the bash: db/, logs/, stats/, health-records/
-    // are removed and recreated as empty dirs so the node restart finds the
-    // expected layout.
+    // Recreate the four data subdirs as empty so the next node start
+    // finds the expected layout. The operator's CUSTOM_USER owns these
+    // dirs; an io error surfaces directly if it doesn't.
     for sub in ["db", "logs", "stats", "health-records"] {
         let path = workdir.join(sub);
         if path.exists() {
-            // Best-effort recursive remove. We don't shell to `sudo rm -rf`
-            // here — the operator's CUSTOM_USER owns these dirs and has
-            // write access. If they don't, the io error surfaces clearly.
             std::fs::remove_dir_all(&path)?;
         }
         std::fs::create_dir_all(&path)?;
     }
     Ok(())
+}
+
+/// Trim `db/Epoch_N/` directories down to the most recent `keep` of
+/// them. Returns a one-line summary the caller prints alongside the
+/// per-node `✓`. Missing/empty `db/` directories are a no-op.
+fn prune_old_epochs(workdir: &Path, keep: u32) -> std::io::Result<String> {
+    let db = workdir.join("db");
+    if !db.exists() {
+        return Ok("no db/ to prune".to_string());
+    }
+    let mut epochs: Vec<(u32, std::path::PathBuf)> = Vec::new();
+    for entry in std::fs::read_dir(&db)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if let Some(rest) = name_str.strip_prefix("Epoch_") {
+            if let Ok(n) = rest.parse::<u32>() {
+                epochs.push((n, entry.path()));
+            }
+        }
+    }
+    if epochs.is_empty() {
+        return Ok("no Epoch_N directories found".to_string());
+    }
+    // Sort descending so the head of the vec is the newest.
+    epochs.sort_by(|a, b| b.0.cmp(&a.0));
+    let total = epochs.len();
+    let to_remove = epochs.split_off(keep.min(total as u32) as usize);
+    let removed = to_remove.len();
+    for (_, path) in &to_remove {
+        std::fs::remove_dir_all(path)?;
+    }
+    Ok(format!(
+        "removed {removed} of {total} Epoch_N directories (kept newest {})",
+        keep.min(total as u32),
+    ))
 }
 
 fn prompt_confirm(verb: DbVerb, targets: &[&NodeState], global: &GlobalArgs) -> Result<(), CliError> {
@@ -318,4 +369,6 @@ struct NodeResult {
     ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
 }

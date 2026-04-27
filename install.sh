@@ -202,8 +202,10 @@ if [ -f "${HOME}/mx-chain-scripts/config/variables.cfg" ] \
 else
     echo "Next:"
     echo "    mxnode install            # auto-init + build + install nodes"
-    echo "    mxnode init --network testnet   # only needed if not mainnet"
     echo "    mxnode --help"
+    echo
+    echo "Default network is mainnet. Switch with:"
+    echo "    mxnode config set network.environment testnet"
 fi
 echo
 echo "Path note: ensure ${INSTALL_DIR} is on your PATH."

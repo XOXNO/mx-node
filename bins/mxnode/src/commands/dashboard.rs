@@ -3,6 +3,7 @@
 //! Reads state.toml + the operator's config to build a per-node spec
 //! (label / unit / api port / workdir) then hands off to mxnode-tui.
 
+use std::io::IsTerminal;
 use std::time::Duration;
 
 use mxnode_state::StateStore;
@@ -14,6 +15,18 @@ use crate::orchestrator::runtime::{CliErrorExt, Runtime};
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 pub async fn run(args: DashboardArgs, global: &GlobalArgs) -> Result<(), CliError> {
+    // The TUI grabs the terminal in raw mode and renders an alternate
+    // screen. Without a TTY (piped, ssh -T, systemd-run) the ratatui
+    // backend surfaces a raw `os error 6` from the first termios call.
+    // Catch that case up front with a focused error.
+    if !std::io::stdout().is_terminal() {
+        return Err(CliError::new(
+            "dashboard requires a terminal",
+            "stdout is not a TTY (piped, redirected, or non-interactive shell)",
+            "run `mxnode dashboard` directly in a terminal, or use `mxnode status --watch` for a non-TUI live view",
+        )
+        .json_if(global.json));
+    }
     let runtime = Runtime::from_global(global)?;
     let store = StateStore::new(&runtime.paths.state);
     let state = store

@@ -190,8 +190,11 @@ pub async fn run_install(
         let _ = fs::set_permissions(&kg, perms);
     }
 
-    // 3. Acquire proxy (only when this install ships one).
+    // 3. Acquire proxy (only when this install ships one). The
+    // rendered proxy unit lands in `unit_files` after the node loop
+    // so the operator-visible install order is node-0..node-N, proxy.
     let mut proxy_state: Option<ProxyState> = None;
+    let mut pending_proxy_unit: Option<UnitFile> = None;
     if plan.install_proxy {
         let proxy_tag = plan.proxy_tag.as_ref().ok_or_else(|| {
             InstallError::Invalid("install_proxy=true but no proxy_tag supplied".to_string())
@@ -224,9 +227,10 @@ pub async fn run_install(
             limit_nofile: plan.limit_nofile,
             restart_sec: plan.restart_sec,
         });
-        // We push this into `unit_files` after the node unit loop so the
-        // operator-visible order is node-0..node-N, proxy.
-        let _proxy_unit_pending = ("elrond-proxy.service".to_string(), proxy_unit_text);
+        pending_proxy_unit = Some(UnitFile {
+            name: "elrond-proxy.service".to_string(),
+            contents: proxy_unit_text,
+        });
 
         // Build a default observers list: shard 0..=N (one per node), and
         // metachain for the last entry. Matches the bash quirk of mapping
@@ -381,6 +385,13 @@ pub async fn run_install(
             last_action: String::new(),
             last_action_at: None,
         });
+    }
+
+    // Append the proxy unit so the caller's `install_units` writes it
+    // alongside the node units. Order is intentional: node-0..N first,
+    // proxy last, matching what the operator sees in `install` output.
+    if let Some(proxy_unit) = pending_proxy_unit {
+        unit_files.push(proxy_unit);
     }
 
     // 6. Build State.

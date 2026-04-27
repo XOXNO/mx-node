@@ -71,12 +71,12 @@ pub async fn run(args: AddNodesArgs, global: &GlobalArgs) -> Result<(), CliError
         InstallKind::ObserversSquad | InstallKind::MultikeySquad,
     ) {
         return Err(CliError::new(
-            "cannot add nodes to an observers-squad or multikey-squad",
+            "cannot add nodes to a squad install",
             format!(
-                "this install is `{}`; the bash refuses for the same reason",
+                "this install is `{}`; squad layouts have a fixed shape (one node per shard)",
                 install.kind,
             ),
-            "run `mxnode cleanup` and reinstall as `mxnode install` (mixed not yet supported)",
+            "run `mxnode cleanup --yes --execute` and reinstall with the new node count",
         )
         .json_if(global.json));
     }
