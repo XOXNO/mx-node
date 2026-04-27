@@ -18,6 +18,7 @@
 //! efficiency).
 
 mod app;
+mod journal_tail;
 mod log_tail;
 mod metrics;
 mod poller;
@@ -37,7 +38,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use crossterm::{execute, ExecutableCommand};
-use mxnode_core::NodeIndex;
+use mxnode_core::{NodeIndex, Platform};
 use mxnode_rpc::{GatewayClient, NodeClient};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
@@ -66,9 +67,11 @@ pub struct DashboardOpts {
     /// Public gateway base URL. Empty string disables trie-stats lookups.
     pub gateway: String,
     /// Stream logs over the node's `/log` WebSocket (true) instead of
-    /// tailing the on-disk log file (false). Both deliver the same
-    /// content; WS gives structured field highlighting + level
-    /// detection, file tail works without WS support on the node.
+    /// the OS-default source (false). On Linux the OS default is
+    /// `journalctl --unit <unit> --follow`; on macOS it's a tail of
+    /// `<workdir>/logs/*.log` (launchd's stdout redirect). Both deliver
+    /// the same content; WS gives structured field highlighting plus
+    /// level detection straight from the node's logger.
     pub ws_logs: bool,
     /// Network environment label rendered as a badge in the header
     /// (`mainnet` / `testnet` / `devnet`). `None` = no badge.
@@ -112,17 +115,28 @@ pub async fn run(opts: DashboardOpts) -> Result<(), DashboardError> {
             interval: opts.interval,
         };
         poll_tasks.push(poller.spawn());
-        // Per-node log streamer. Caller picks: WS gives structured,
-        // level-tagged log lines straight from the node binary; file
-        // tail reads whatever the launchd/systemd stdout redirect put
-        // on disk. Mutually exclusive — both into the same ring would
-        // produce duplicates.
+        // Per-node log streamer. Three sources, mutually exclusive
+        // (any pair into the same ring would duplicate lines):
+        //
+        //   1. WS  — `--ws-logs`. Structured, level-tagged lines straight
+        //            from the node's `/log` socket. Works on any OS.
+        //   2. journalctl — Linux default. The systemd unit pipes stdout
+        //            to the journal (no `-log-save` on the node), so
+        //            `<workdir>/logs/*.log` is empty there. `mxnode logs`
+        //            already shells out to journalctl; the dashboard
+        //            now matches.
+        //   3. file tail — macOS / non-systemd hosts. launchd writes
+        //            stdout/stderr to `<workdir>/logs/{stdout,stderr}.log`,
+        //            and the node binary itself writes
+        //            `mx-chain-{pubkey}-{round}.log` next to those.
         if opts.ws_logs {
             poll_tasks.push(ws_log::spawn(
                 spec.host.clone(),
                 spec.api_port,
                 Arc::clone(&snap),
             ));
+        } else if Platform::current().has_journal() && !spec.unit.trim().is_empty() {
+            poll_tasks.push(journal_tail::spawn(spec.unit.clone(), Arc::clone(&snap)));
         } else {
             poll_tasks.push(log_tail::spawn(spec.workdir.clone(), Arc::clone(&snap)));
         }

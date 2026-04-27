@@ -400,10 +400,10 @@ pub struct DashboardArgs {
     #[arg(long, default_value_t = 1000)] pub interval: u64,
     /// Override the host the dashboard talks to. Default: 127.0.0.1.
     #[arg(long, default_value = "127.0.0.1")] pub host: String,
-    /// Stream logs over the node's `/log` WebSocket instead of tailing
-    /// the on-disk log file. WS gives structured + level-tagged lines
-    /// straight from the logger; file tail is the default and works
-    /// without WS support.
+    /// Stream logs over the node's `/log` WebSocket. WS gives structured
+    /// level-tagged lines straight from the logger. Default source is
+    /// `journalctl --unit <unit> --follow` on Linux (matching `mxnode
+    /// logs`) and a tail of `<workdir>/logs/*.log` on macOS.
     #[arg(long)] pub ws_logs: bool,
 }
 
