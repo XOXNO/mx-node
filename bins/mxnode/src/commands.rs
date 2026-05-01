@@ -15,6 +15,7 @@ mod logs;
 mod metrics;
 pub(crate) mod migrate;
 mod reapply_config;
+mod rename;
 mod status;
 mod upgrade;
 mod version;
@@ -40,6 +41,7 @@ pub fn dispatch(cli: Cli) -> Result<(), CliError> {
         Command::Cleanup(args) => cleanup::run(args, &cli.global),
         Command::MigrateBash(args) => migrate::run(args, &cli.global),
         Command::ReapplyConfig(args) => reapply_config::run(args, &cli.global),
+        Command::Rename(args) => rename::run(args, &cli.global),
         Command::Dashboard(args) => dashboard::run(args, &cli.global),
         Command::Metrics(args) => metrics::run(args, &cli.global),
         Command::Upgrade(args) => upgrade::run(args, &cli.global),

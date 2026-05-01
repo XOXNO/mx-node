@@ -107,6 +107,12 @@ pub enum Command {
     /// touching binaries or restarting units.
     ReapplyConfig(ReapplyConfigArgs),
 
+    /// Rename a single node's `NodeDisplayName` in both `state.toml` and
+    /// the on-disk `prefs.toml`. Unlike a hand-edit of `prefs.toml`, the
+    /// new name is persisted in `state.toml` so subsequent
+    /// `reapply-config` / `upgrade` passes preserve it.
+    Rename(RenameArgs),
+
     /// Live multi-node dashboard (ratatui). Better-than-termui replacement.
     Dashboard(DashboardArgs),
 
@@ -442,6 +448,21 @@ pub struct ReapplyConfigArgs {
     #[arg(long)] pub restart: bool,
     /// Limit which nodes get the new edits. Default: all known nodes.
     #[arg(long)] pub node: Vec<u16>,
+}
+
+#[derive(Debug, Args)]
+pub struct RenameArgs {
+    /// Node index to rename. Must exist in `state.toml`.
+    #[arg(long)]
+    pub node: u16,
+    /// New `NodeDisplayName` value. Trimmed; rejected if empty.
+    #[arg(long, value_name = "NAME")]
+    pub to: String,
+    /// Restart the unit after the rename. Off by default —
+    /// `NodeDisplayName` only refreshes on the next natural restart, and
+    /// we don't want a rename to surprise validators with a roll.
+    #[arg(long)]
+    pub restart: bool,
 }
 
 #[cfg(test)]

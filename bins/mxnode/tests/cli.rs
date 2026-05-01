@@ -990,3 +990,127 @@ fn state_path_falls_under_tempdir_state_home() {
         sandbox.home.display(),
     );
 }
+
+#[test]
+fn rename_persists_to_state_and_prefs_toml() {
+    let sb = Sandbox::new();
+
+    // 1. Seed state.toml via migrate-bash --execute. infer_state_from_bash
+    //    populates one validator pointing at <home>/elrond-nodes/node-0.
+    std::fs::write(sb.home.join(".installedenv"), "mainnet").unwrap();
+    std::fs::write(sb.home.join(".numberofnodes"), "1").unwrap();
+
+    let migrate = sb
+        .cmd()
+        .args(["migrate-bash", "--from"])
+        .arg(&sb.home)
+        .arg("--execute")
+        .output()
+        .expect("spawn mxnode migrate-bash");
+    assert!(
+        migrate.status.success(),
+        "migrate-bash --execute failed: stderr={}",
+        String::from_utf8_lossy(&migrate.stderr),
+    );
+
+    // 2. The bash importer leaves NodeState.display_name empty (cache-derived
+    //    invariant). Pre-create the node's prefs.toml with the upstream
+    //    NodeDisplayName="" placeholder so `rename` has a file to rewrite.
+    let workdir = sb.home.join("elrond-nodes/node-0");
+    std::fs::create_dir_all(workdir.join("config")).unwrap();
+    std::fs::write(
+        workdir.join("config/prefs.toml"),
+        "[Preferences]\nNodeDisplayName = \"\"\nDestinationShardAsObserver = \"disabled\"\n",
+    )
+    .unwrap();
+
+    // 3. Rename the node. JSON output for assertion ergonomics.
+    let rename = sb
+        .cmd()
+        .args(["--json", "rename", "--node", "0", "--to", "renamed-validator"])
+        .output()
+        .expect("spawn mxnode rename");
+    assert!(
+        rename.status.success(),
+        "rename failed: stderr={}",
+        String::from_utf8_lossy(&rename.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&rename.stdout);
+    assert!(stdout.contains("\"ok\":true"), "rename JSON missing ok:true: {stdout}");
+    assert!(
+        stdout.contains("\"new_display_name\":\"renamed-validator\""),
+        "rename JSON missing new_display_name: {stdout}",
+    );
+    assert!(stdout.contains("\"restarted\":false"));
+
+    // 4. prefs.toml on disk now has the new value with comments preserved.
+    let prefs_body = std::fs::read_to_string(workdir.join("config/prefs.toml")).unwrap();
+    assert!(
+        prefs_body.contains("NodeDisplayName = \"renamed-validator\""),
+        "prefs.toml missing renamed value:\n{prefs_body}",
+    );
+    assert!(
+        prefs_body.contains("DestinationShardAsObserver = \"disabled\""),
+        "rename clobbered an unrelated prefs key:\n{prefs_body}",
+    );
+
+    // 5. state.toml persists the new display_name so reapply-config /
+    //    upgrade preserve it on subsequent re-stamp passes.
+    let state_body = std::fs::read_to_string(sb.state_path()).unwrap();
+    assert!(
+        state_body.contains("display_name = \"renamed-validator\""),
+        "state.toml missing persisted display_name:\n{state_body}",
+    );
+}
+
+#[test]
+fn rename_rejects_empty_name() {
+    let sb = Sandbox::new();
+    std::fs::write(sb.home.join(".installedenv"), "mainnet").unwrap();
+    std::fs::write(sb.home.join(".numberofnodes"), "1").unwrap();
+    let _ = sb
+        .cmd()
+        .args(["migrate-bash", "--from"])
+        .arg(&sb.home)
+        .arg("--execute")
+        .output()
+        .expect("spawn migrate-bash");
+
+    let output = sb
+        .cmd()
+        .args(["rename", "--node", "0", "--to", "   "])
+        .output()
+        .expect("spawn rename");
+    assert!(!output.status.success(), "expected non-zero exit on empty name");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("empty NodeDisplayName") || stderr.contains("--to"),
+        "stderr should explain the empty-name refusal: {stderr}",
+    );
+}
+
+#[test]
+fn rename_errors_when_node_index_unknown() {
+    let sb = Sandbox::new();
+    std::fs::write(sb.home.join(".installedenv"), "mainnet").unwrap();
+    std::fs::write(sb.home.join(".numberofnodes"), "1").unwrap();
+    let _ = sb
+        .cmd()
+        .args(["migrate-bash", "--from"])
+        .arg(&sb.home)
+        .arg("--execute")
+        .output()
+        .expect("spawn migrate-bash");
+
+    let output = sb
+        .cmd()
+        .args(["rename", "--node", "42", "--to", "nope"])
+        .output()
+        .expect("spawn rename");
+    assert!(!output.status.success(), "expected non-zero exit on unknown index");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("no node with index 42"),
+        "stderr should name the missing index: {stderr}",
+    );
+}
