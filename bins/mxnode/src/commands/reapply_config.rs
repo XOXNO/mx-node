@@ -19,7 +19,7 @@ use serde::Serialize;
 use crate::cli::{GlobalArgs, ReapplyConfigArgs};
 use crate::errors::CliError;
 use crate::events::global_op;
-use crate::orchestrator::install::{apply_node_tomledit, ConfigEdits};
+use crate::orchestrator::install::{apply_node_tomledit, ConfigEdits, NodeTomlEdit};
 use crate::orchestrator::runtime::{CliErrorExt, Runtime};
 use crate::orchestrator::supervisor::build_supervisor;
 
@@ -114,16 +114,16 @@ pub async fn run(args: ReapplyConfigArgs, global: &GlobalArgs) -> Result<(), Cli
         // re-applying overrides should never silently reset it.
         // Operators who need to flip primary↔backup edit prefs.toml
         // directly or via `[overrides.prefs]` in config.toml.
-        apply_node_tomledit(
-            &node.workdir,
-            &display_name,
-            node.shard,
+        apply_node_tomledit(NodeTomlEdit {
+            workdir: &node.workdir,
+            display_name: &display_name,
+            shard: node.shard,
             edits,
-            node.role,
-            None,
+            role: node.role,
+            redundancy_level: None,
             prefs_overrides,
             config_overrides,
-        )
+        })
         .map_err(|e| {
             CliError::new(
                 format!("re-apply failed on node {}", node.index),

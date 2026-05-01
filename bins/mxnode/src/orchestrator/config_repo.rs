@@ -49,9 +49,10 @@ pub async fn acquire_config_repo(
     // Cache hit: skip the clone. Treat any non-empty directory as
     // populated — operators on hand-edited hosts can prep their own
     // config dir under this path before running install.
-    if dest.exists() && std::fs::read_dir(&dest)
-        .map(|mut it| it.next().is_some())
-        .unwrap_or(false)
+    if dest.exists()
+        && std::fs::read_dir(&dest)
+            .map(|mut it| it.next().is_some())
+            .unwrap_or(false)
     {
         return Ok(dest);
     }
@@ -62,7 +63,11 @@ pub async fn acquire_config_repo(
         })?;
     }
 
-    let repo_url = format!("https://github.com/{}/mx-chain-{}-config.git", github_org, env.as_str());
+    let repo_url = format!(
+        "https://github.com/{}/mx-chain-{}-config.git",
+        github_org,
+        env.as_str()
+    );
     clone_shallow(&repo_url, tag, &dest)
         .await
         .map_err(|e| ConfigRepoError::Clone(e.to_string()))?;
@@ -146,7 +151,9 @@ mod tests {
         let cached = cache_dir(tmp.path(), env, &tag);
         std::fs::create_dir_all(&cached).unwrap();
         std::fs::write(cached.join("placeholder"), b"already cloned").unwrap();
-        let result = acquire_config_repo(tmp.path(), "myfork", env, &tag).await.unwrap();
+        let result = acquire_config_repo(tmp.path(), "myfork", env, &tag)
+            .await
+            .unwrap();
         assert_eq!(result, cached);
     }
 
@@ -157,7 +164,9 @@ mod tests {
         let cached = proxy_cache_dir(tmp.path(), &tag);
         std::fs::create_dir_all(&cached).unwrap();
         std::fs::write(cached.join("placeholder"), b"already cloned").unwrap();
-        let result = acquire_proxy_repo(tmp.path(), "myfork", &tag).await.unwrap();
+        let result = acquire_proxy_repo(tmp.path(), "myfork", &tag)
+            .await
+            .unwrap();
         assert_eq!(result, cached);
     }
 
@@ -166,7 +175,10 @@ mod tests {
         let root = std::path::PathBuf::from("/srv/mxnode/binaries");
         let tag = Tag::from_str("v1.1.51").unwrap();
         let dir = proxy_cache_dir(&root, &tag);
-        assert_eq!(dir, std::path::PathBuf::from("/srv/mxnode/binaries/proxy-repos/v1.1.51"));
+        assert_eq!(
+            dir,
+            std::path::PathBuf::from("/srv/mxnode/binaries/proxy-repos/v1.1.51")
+        );
     }
 
     #[test]

@@ -66,7 +66,6 @@ impl Sandbox {
     fn state_path(&self) -> PathBuf {
         self.xdg_state_home.join("mxnode/state.toml")
     }
-
 }
 
 /// Render a canonical `elrond-node-{INDEX}.service` text matching what
@@ -102,7 +101,11 @@ WantedBy=multi-user.target\n",
 fn version_emits_stable_json_schema() {
     let sandbox = Sandbox::new();
     let output = sandbox.cmd().args(["--json", "version"]).output().unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let v: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
     assert_eq!(v["name"], "mxnode");
     assert!(v["version"].is_string());
@@ -153,11 +156,7 @@ fn config_show_origin_annotates_each_leaf() {
 fn config_validate_passes_for_minimal_config() {
     let sandbox = Sandbox::new();
     sandbox.cmd().args(["status"]).status().unwrap();
-    let output = sandbox
-        .cmd()
-        .args(["config", "validate"])
-        .output()
-        .unwrap();
+    let output = sandbox.cmd().args(["config", "validate"]).output().unwrap();
     assert!(
         output.status.success(),
         "validate failed:\n{}",
@@ -180,31 +179,29 @@ fn status_without_state_emits_3_line_error() {
 #[test]
 fn status_with_no_state_returns_typed_json_error() {
     let sandbox = Sandbox::new();
-    let output = sandbox
-        .cmd()
-        .args(["--json", "status"])
-        .output()
-        .unwrap();
+    let output = sandbox.cmd().args(["--json", "status"]).output().unwrap();
     assert!(!output.status.success());
     // JSON should land on stdout per our `--json` contract.
     let v: serde_json::Value = serde_json::from_slice(&output.stdout).expect("JSON on stdout");
-    assert!(v["error"]["summary"].as_str().unwrap().contains("no state.toml"));
+    assert!(v["error"]["summary"]
+        .as_str()
+        .unwrap()
+        .contains("no state.toml"));
 }
 
 #[test]
 fn doctor_reports_findings_in_json() {
     let sandbox = Sandbox::new();
-    let output = sandbox
-        .cmd()
-        .args(["--json", "doctor"])
-        .output()
-        .unwrap();
+    let output = sandbox.cmd().args(["--json", "doctor"]).output().unwrap();
     // Doctor exits non-zero when systemctl/journalctl aren't on PATH (e.g.
     // on macOS), but the JSON payload still lands on stdout.
     let v: serde_json::Value = serde_json::from_slice(&output.stdout).expect("JSON on stdout");
     assert!(v["findings"].is_array());
     let findings = v["findings"].as_array().unwrap();
-    assert!(!findings.is_empty(), "doctor should always emit at least one finding");
+    assert!(
+        !findings.is_empty(),
+        "doctor should always emit at least one finding"
+    );
     let checks: Vec<&str> = findings
         .iter()
         .filter_map(|f| f["check"].as_str())
@@ -272,7 +269,9 @@ fn synthetic_units_can_be_rendered_for_a_real_world_smoke_check() {
     // by piping it through `config validate` indirectly: at minimum, the
     // file we constructed must be valid TOML when round-tripped (it
     // isn't — it's systemd. We just ensure the bytes are written).
-    let bytes = std::fs::metadata(units_dir.join("elrond-node-0.service")).unwrap().len();
+    let bytes = std::fs::metadata(units_dir.join("elrond-node-0.service"))
+        .unwrap()
+        .len();
     assert!(bytes > 0);
 }
 
@@ -475,13 +474,7 @@ entries = []
 
     let output = sandbox
         .cmd()
-        .args([
-            "--json",
-            "upgrade",
-            "--binary-tag",
-            "v1.7.13",
-            "--dry-run",
-        ])
+        .args(["--json", "upgrade", "--binary-tag", "v1.7.13", "--dry-run"])
         .output()
         .unwrap();
     assert!(
@@ -749,13 +742,7 @@ entries = []
 
     let output = sandbox
         .cmd()
-        .args([
-            "upgrade",
-            "--dry-run",
-            "proxy",
-            "--proxy-tag",
-            "v1.1.50",
-        ])
+        .args(["upgrade", "--dry-run", "proxy", "--proxy-tag", "v1.1.50"])
         .output()
         .unwrap();
     assert!(!output.status.success());
@@ -899,11 +886,7 @@ started_token = 0
 #[test]
 fn lifecycle_start_without_state_errors_clearly() {
     let sandbox = Sandbox::new();
-    let output = sandbox
-        .cmd()
-        .args(["start", "--all"])
-        .output()
-        .unwrap();
+    let output = sandbox.cmd().args(["start", "--all"]).output().unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -934,9 +917,18 @@ fn migrate_bash_dry_run_prints_summary() {
         String::from_utf8_lossy(&output.stderr),
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("dry-run"), "stdout missing 'dry-run' marker: {stdout}");
-    assert!(stdout.contains("4 nodes"), "stdout missing node count: {stdout}");
-    assert!(stdout.contains("+ proxy"), "stdout missing proxy line: {stdout}");
+    assert!(
+        stdout.contains("dry-run"),
+        "stdout missing 'dry-run' marker: {stdout}"
+    );
+    assert!(
+        stdout.contains("4 nodes"),
+        "stdout missing node count: {stdout}"
+    );
+    assert!(
+        stdout.contains("+ proxy"),
+        "stdout missing proxy line: {stdout}"
+    );
     // Dry-run path must not have written state.toml.
     assert!(
         !sb.state_path().exists(),
@@ -962,7 +954,10 @@ fn migrate_bash_execute_refuses_when_state_toml_exists() {
         .arg("--execute")
         .output()
         .expect("spawn mxnode");
-    assert!(!output.status.success(), "expected non-zero exit when state.toml exists");
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit when state.toml exists"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("refusing to overwrite") || stderr.contains("already exists"),
@@ -980,7 +975,10 @@ fn state_path_falls_under_tempdir_state_home() {
     // silently writes to the developer's real home.
     let sandbox = Sandbox::new();
     sandbox.cmd().args(["status"]).status().unwrap();
-    assert!(sandbox.config_path().exists(), "config must land inside the sandbox");
+    assert!(
+        sandbox.config_path().exists(),
+        "config must land inside the sandbox"
+    );
     let state_path = sandbox.state_path();
     let state_dir = state_path.parent().unwrap();
     assert!(
@@ -1027,7 +1025,14 @@ fn rename_persists_to_state_and_prefs_toml() {
     // 3. Rename the node. JSON output for assertion ergonomics.
     let rename = sb
         .cmd()
-        .args(["--json", "rename", "--node", "0", "--to", "renamed-validator"])
+        .args([
+            "--json",
+            "rename",
+            "--node",
+            "0",
+            "--to",
+            "renamed-validator",
+        ])
         .output()
         .expect("spawn mxnode rename");
     assert!(
@@ -1036,7 +1041,10 @@ fn rename_persists_to_state_and_prefs_toml() {
         String::from_utf8_lossy(&rename.stderr),
     );
     let stdout = String::from_utf8_lossy(&rename.stdout);
-    assert!(stdout.contains("\"ok\":true"), "rename JSON missing ok:true: {stdout}");
+    assert!(
+        stdout.contains("\"ok\":true"),
+        "rename JSON missing ok:true: {stdout}"
+    );
     assert!(
         stdout.contains("\"new_display_name\":\"renamed-validator\""),
         "rename JSON missing new_display_name: {stdout}",
@@ -1081,7 +1089,10 @@ fn rename_rejects_empty_name() {
         .args(["rename", "--node", "0", "--to", "   "])
         .output()
         .expect("spawn rename");
-    assert!(!output.status.success(), "expected non-zero exit on empty name");
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit on empty name"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("empty NodeDisplayName") || stderr.contains("--to"),
@@ -1107,7 +1118,10 @@ fn rename_errors_when_node_index_unknown() {
         .args(["rename", "--node", "42", "--to", "nope"])
         .output()
         .expect("spawn rename");
-    assert!(!output.status.success(), "expected non-zero exit on unknown index");
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit on unknown index"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("no node with index 42"),

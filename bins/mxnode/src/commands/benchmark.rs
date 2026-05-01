@@ -78,7 +78,9 @@ pub fn run(global: &GlobalArgs) -> Result<(), CliError> {
 }
 
 fn check_cpu() -> Check {
-    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0);
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(0);
     let model = parse_proc_cpuinfo("model name").unwrap_or_else(|| "unknown".to_string());
     let severity = if cores >= MIN_CPU_CORES {
         Severity::Ok
@@ -112,7 +114,14 @@ fn check_memory() -> Check {
 fn check_disk() -> Check {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
     let (free_gb, severity) = match free_disk_gb(&home) {
-        Some(gb) => (gb, if gb >= MIN_FREE_DISK_GB { Severity::Ok } else { Severity::Warn }),
+        Some(gb) => (
+            gb,
+            if gb >= MIN_FREE_DISK_GB {
+                Severity::Ok
+            } else {
+                Severity::Warn
+            },
+        ),
         None => (0, Severity::Warn),
     };
     Check {
@@ -127,10 +136,14 @@ fn check_gateway_latency() -> Check {
     use std::net::TcpStream;
     let start = Instant::now();
     match TcpStream::connect_timeout(
-        &GATEWAY_HOST.to_socket_addrs().ok().and_then(|mut a| a.next()).unwrap_or_else(|| {
-            // Fallback: 1.1.1.1:443 — we don't fail the check on DNS issues.
-            "1.1.1.1:443".parse().expect("hardcoded address parses")
-        }),
+        &GATEWAY_HOST
+            .to_socket_addrs()
+            .ok()
+            .and_then(|mut a| a.next())
+            .unwrap_or_else(|| {
+                // Fallback: 1.1.1.1:443 — we don't fail the check on DNS issues.
+                "1.1.1.1:443".parse().expect("hardcoded address parses")
+            }),
         Duration::from_secs(5),
     ) {
         Ok(_) => {
@@ -185,7 +198,7 @@ fn free_disk_gb(path: &str) -> Option<u64> {
         return None;
     }
     let stat = unsafe { stat.assume_init() };
-    Some((stat.f_bavail as u64).saturating_mul(stat.f_frsize as u64) / 1024 / 1024 / 1024)
+    Some((stat.f_bavail as u64).saturating_mul(stat.f_frsize) / 1024 / 1024 / 1024)
 }
 
 use std::net::ToSocketAddrs;

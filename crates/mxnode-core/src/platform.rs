@@ -98,7 +98,10 @@ mod tests {
     #[test]
     fn detect_returns_one_of_known_variants() {
         let p = Platform::detect();
-        assert!(matches!(p, Platform::Linux | Platform::Macos | Platform::Unsupported));
+        assert!(matches!(
+            p,
+            Platform::Linux | Platform::Macos | Platform::Unsupported
+        ));
     }
 
     #[test]

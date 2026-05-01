@@ -49,7 +49,11 @@ pub fn merge_with_origin(
     let src_table = src.as_table().expect("src is_table checked above");
 
     for (k, src_v) in src_table.iter() {
-        let path = if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") };
+        let path = if prefix.is_empty() {
+            k.clone()
+        } else {
+            format!("{prefix}.{k}")
+        };
         let descend = matches!(dst_table.get(k), Some(v) if v.is_table()) && src_v.is_table();
         if descend {
             let existing = dst_table.get_mut(k).expect("existence checked");
@@ -65,7 +69,11 @@ fn record_leaf(value: &toml::Value, prefix: &str, origin: Origin, out: &mut Orig
     match value {
         toml::Value::Table(t) => {
             for (k, v) in t.iter() {
-                let path = if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") };
+                let path = if prefix.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{prefix}.{k}")
+                };
                 record_leaf(v, &path, origin, out);
             }
         }

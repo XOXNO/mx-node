@@ -103,7 +103,10 @@ pub fn run(args: DoctorArgs, global: &GlobalArgs) -> Result<(), CliError> {
     }
 
     let any_error = findings.iter().any(|f| f.severity == Severity::Error);
-    let error_count = findings.iter().filter(|f| f.severity == Severity::Error).count();
+    let error_count = findings
+        .iter()
+        .filter(|f| f.severity == Severity::Error)
+        .count();
 
     if global.json {
         // Emit the unified JSON payload once. The `error` block is only
@@ -228,7 +231,9 @@ fn check_p2p_ports() -> Vec<Finding> {
                      OR `sudo pfctl` rules; macOS port-binding errors usually mean another \
                      process holds the port, not a firewall block"
                 }
-                Platform::Unsupported => "configure your firewall to allow inbound 37373..38383/tcp",
+                Platform::Unsupported => {
+                    "configure your firewall to allow inbound 37373..38383/tcp"
+                }
             };
             vec![Finding::warn(
                 "p2p ports",
@@ -251,10 +256,7 @@ fn check_journald() -> Vec<Finding> {
     let path = "/etc/systemd/journald.conf";
     let existing = std::fs::read_to_string(path).unwrap_or_default();
     if existing.contains("# >>> mxnode journald managed block >>>") {
-        vec![Finding::ok(
-            "journald",
-            "managed retention block present",
-        )]
+        vec![Finding::ok("journald", "managed retention block present")]
     } else {
         vec![Finding::warn(
             "journald",
@@ -288,8 +290,11 @@ fn apply_journald_fix(global: &GlobalArgs) -> Result<(), CliError> {
             .json_if(global.json));
         }
     };
-    let new_body =
-        apply_managed_block(&existing, DEFAULT_SYSTEM_MAX_USE, DEFAULT_SYSTEM_MAX_FILE_SIZE);
+    let new_body = apply_managed_block(
+        &existing,
+        DEFAULT_SYSTEM_MAX_USE,
+        DEFAULT_SYSTEM_MAX_FILE_SIZE,
+    );
     if new_body == existing {
         // Stderr — stdout is reserved for the structured doctor output
         // (findings table or --json payload). Fix-step status messages go
@@ -450,7 +455,10 @@ fn check_directories(runtime: &Runtime) -> Vec<Finding> {
             }
         } else {
             // Non-existence is fine — the orchestrator creates dirs on demand.
-            out.push(Finding::ok(label, format!("{} (will be created on demand)", dir.display())));
+            out.push(Finding::ok(
+                label,
+                format!("{} (will be created on demand)", dir.display()),
+            ));
         }
     }
     out
@@ -459,13 +467,10 @@ fn check_directories(runtime: &Runtime) -> Vec<Finding> {
 fn dir_is_writable(dir: &Path) -> bool {
     // Try to create a tempfile inside; remove it on drop. We don't rely on
     // metadata-mode bits because they're not authoritative on macOS APFS.
-    match tempfile::Builder::new()
+    tempfile::Builder::new()
         .prefix(".mxnode-doctor-write-probe.")
         .tempfile_in(dir)
-    {
-        Ok(_) => true,
-        Err(_) => false,
-    }
+        .is_ok()
 }
 
 fn check_inflight(runtime: &Runtime) -> Vec<Finding> {

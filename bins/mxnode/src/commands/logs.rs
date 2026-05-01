@@ -17,8 +17,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
 use mxnode_core::NodeState;
-use mxnode_rpc::NodeClient;
 use mxnode_core::Platform;
+use mxnode_rpc::NodeClient;
 use mxnode_state::StateStore;
 use mxnode_systemd::{scan_supervisor_dir, DiscoveredKind};
 use serde::Serialize;
@@ -91,7 +91,11 @@ pub fn run(args: LogsArgs, global: &GlobalArgs) -> Result<(), CliError> {
     Ok(())
 }
 
-fn pick_units(runtime: &Runtime, requested_indices: &[u16], global: &GlobalArgs) -> Result<Vec<String>, CliError> {
+fn pick_units(
+    runtime: &Runtime,
+    requested_indices: &[u16],
+    global: &GlobalArgs,
+) -> Result<Vec<String>, CliError> {
     let store = StateStore::new(&runtime.paths.state);
 
     // Source 1: state.toml (preferred — exact unit names).
@@ -377,12 +381,14 @@ async fn run_save_archive(args: LogsArgs, global: &GlobalArgs) -> Result<(), Cli
     // logs_dir so the archive contains relative paths.
     let stamp = OffsetDateTime::now_utc()
         .format(&Rfc3339)
-        .map_err(|e| CliError::new(
-            "failed to format timestamp",
-            e.to_string(),
-            "report this as a bug",
-        )
-        .json_if(global.json))?
+        .map_err(|e| {
+            CliError::new(
+                "failed to format timestamp",
+                e.to_string(),
+                "report this as a bug",
+            )
+            .json_if(global.json)
+        })?
         .replace(':', "");
     let archive_name = format!("mx-chain-node-logs-{stamp}.tar.gz");
     let archive_path = logs_dir.join(&archive_name);

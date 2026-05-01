@@ -120,8 +120,7 @@ fn cleanup_with_no_state(
     if !args.keep_binaries {
         candidates.push(runtime.paths.custom_home.join("mxnode"));
     }
-    let mut dirs_present: Vec<PathBuf> =
-        candidates.into_iter().filter(|p| p.exists()).collect();
+    let mut dirs_present: Vec<PathBuf> = candidates.into_iter().filter(|p| p.exists()).collect();
     let mut config_to_remove: Option<PathBuf> = None;
     if !args.keep_config {
         if let Ok(target) = user_config_path() {
@@ -245,7 +244,12 @@ impl Step {
             Step::RemoveUnitFile { path, sudo } => {
                 if *sudo {
                     let _ = Command::new("sudo")
-                        .args(["--non-interactive", "rm", "-f", path.to_string_lossy().as_ref()])
+                        .args([
+                            "--non-interactive",
+                            "rm",
+                            "-f",
+                            path.to_string_lossy().as_ref(),
+                        ])
                         .stdout(Stdio::null())
                         .stderr(Stdio::null())
                         .stdin(Stdio::null())
@@ -301,10 +305,14 @@ fn build_plan(state: &State, paths: &mxnode_core::Paths, args: &CleanupArgs) -> 
 
     let mut plan: Vec<Step> = Vec::new();
     for node in &state.nodes {
-        plan.push(Step::StopUnit { unit: node.unit.clone() });
+        plan.push(Step::StopUnit {
+            unit: node.unit.clone(),
+        });
         // launchd has no `disable` verb; emit the step on Linux only.
         if matches!(platform, Platform::Linux) {
-            plan.push(Step::DisableUnit { unit: node.unit.clone() });
+            plan.push(Step::DisableUnit {
+                unit: node.unit.clone(),
+            });
         }
         if let Some(dir) = &unit_dir {
             plan.push(Step::RemoveUnitFile {
@@ -312,12 +320,18 @@ fn build_plan(state: &State, paths: &mxnode_core::Paths, args: &CleanupArgs) -> 
                 sudo: needs_sudo,
             });
         }
-        plan.push(Step::RemoveDir { path: workdir_for(node) });
+        plan.push(Step::RemoveDir {
+            path: workdir_for(node),
+        });
     }
     if let Some(proxy) = &state.proxy {
-        plan.push(Step::StopUnit { unit: proxy.unit.clone() });
+        plan.push(Step::StopUnit {
+            unit: proxy.unit.clone(),
+        });
         if matches!(platform, Platform::Linux) {
-            plan.push(Step::DisableUnit { unit: proxy.unit.clone() });
+            plan.push(Step::DisableUnit {
+                unit: proxy.unit.clone(),
+            });
         }
         if let Some(dir) = &unit_dir {
             plan.push(Step::RemoveUnitFile {
@@ -325,10 +339,16 @@ fn build_plan(state: &State, paths: &mxnode_core::Paths, args: &CleanupArgs) -> 
                 sudo: needs_sudo,
             });
         }
-        plan.push(Step::RemoveDir { path: paths.elrond_proxy_root() });
+        plan.push(Step::RemoveDir {
+            path: paths.elrond_proxy_root(),
+        });
     }
-    plan.push(Step::RemoveDir { path: paths.elrond_utils_root() });
-    plan.push(Step::RemoveDir { path: paths.elrond_nodes_root() });
+    plan.push(Step::RemoveDir {
+        path: paths.elrond_utils_root(),
+    });
+    plan.push(Step::RemoveDir {
+        path: paths.elrond_nodes_root(),
+    });
 
     // Remove mxnode's own footprint by default. Operators can opt out
     // per-category with `--keep-binaries` / `--keep-config`. Without

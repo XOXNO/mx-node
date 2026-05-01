@@ -58,10 +58,10 @@ pub fn draw(
     // is 2 rows (tabs + thin separator).
     let constraints: Vec<Constraint> = if body_focus {
         vec![
-            Constraint::Length(3),  // header bordered
-            Constraint::Length(2),  // tabs + underline
-            Constraint::Min(10),    // log panel
-            Constraint::Length(1),  // status bar
+            Constraint::Length(3), // header bordered
+            Constraint::Length(2), // tabs + underline
+            Constraint::Min(10),   // log panel
+            Constraint::Length(1), // status bar
         ]
     } else if app.show_logs {
         vec![
@@ -162,7 +162,11 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
             .add_modifier(Modifier::BOLD),
     ));
     left.push(Span::styled(
-        if app.nodes.len() == 1 { "node" } else { "nodes" },
+        if app.nodes.len() == 1 {
+            "node"
+        } else {
+            "nodes"
+        },
         theme::label(),
     ));
 
@@ -201,17 +205,18 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
             ));
         } else {
             let mut first = true;
-            let mut push_part = |out: &mut Vec<Span>, n: usize, glyph: &str, word: &str, style: Style| {
-                if n == 0 {
-                    return;
-                }
-                if !first {
-                    out.push(Span::styled(" · ", theme::label()));
-                }
-                first = false;
-                out.push(Span::styled(format!("{n} "), style));
-                out.push(Span::styled(format!("{glyph} {word}"), style));
-            };
+            let mut push_part =
+                |out: &mut Vec<Span>, n: usize, glyph: &str, word: &str, style: Style| {
+                    if n == 0 {
+                        return;
+                    }
+                    if !first {
+                        out.push(Span::styled(" · ", theme::label()));
+                    }
+                    first = false;
+                    out.push(Span::styled(format!("{n} "), style));
+                    out.push(Span::styled(format!("{glyph} {word}"), style));
+                };
             push_part(
                 &mut left,
                 ok,
@@ -285,8 +290,7 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
         halves[0],
     );
     frame.render_widget(
-        Paragraph::new(Line::from(right).alignment(Alignment::Right))
-            .style(theme::header_bar()),
+        Paragraph::new(Line::from(right).alignment(Alignment::Right)).style(theme::header_bar()),
         halves[1],
     );
 }
@@ -340,9 +344,7 @@ fn fleet_health(app: &App) -> (usize, usize, usize, usize) {
         };
         match &snap.state {
             Some(SyncState::Synced { .. }) => ok += 1,
-            Some(SyncState::BlockSync { .. }) | Some(SyncState::TrieSync { .. }) => {
-                syncing += 1
-            }
+            Some(SyncState::BlockSync { .. }) | Some(SyncState::TrieSync { .. }) => syncing += 1,
             Some(SyncState::Unreachable) => fail += 1,
             Some(SyncState::Starting) | None => starting += 1,
         }
@@ -372,7 +374,10 @@ fn draw_tabs(frame: &mut Frame, area: Rect, app: &App, ctx: &mut DrawContext) {
             };
             Line::from(vec![
                 Span::styled(format!("{} ", i + 1), theme::dim()),
-                Span::styled(h.label.clone(), Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    h.label.clone(),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(" "),
                 Span::styled(glyph, glyph_style(glyph)),
             ])
@@ -383,8 +388,7 @@ fn draw_tabs(frame: &mut Frame, area: Rect, app: &App, ctx: &mut DrawContext) {
     let mut cursor: u16 = area.x + 1;
     for h in &app.nodes {
         let glyph = h.snapshot.try_lock().map(|s| glyph_for(&s)).unwrap_or("?");
-        let label_width =
-            2 + h.label.chars().count() as u16 + 1 + glyph.chars().count() as u16 + 2;
+        let label_width = 2 + h.label.chars().count() as u16 + 1 + glyph.chars().count() as u16 + 2;
         ctx.tab_columns.push((cursor, cursor + label_width));
         cursor += label_width + 1;
     }
@@ -471,11 +475,11 @@ fn draw_body(frame: &mut Frame, area: Rect, label: &str, snap: &NodeSnapshot) {
     let right = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(9),     // block info
-            Constraint::Length(3),  // cpu+mem row
-            Constraint::Length(3),  // epoch progress
-            Constraint::Length(3),  // epoch traffic
-            Constraint::Length(3),  // network rx+tx
+            Constraint::Min(9),    // block info
+            Constraint::Length(3), // cpu+mem row
+            Constraint::Length(3), // epoch progress
+            Constraint::Length(3), // epoch traffic
+            Constraint::Length(3), // network rx+tx
         ])
         .split(halves[1]);
     draw_block_info(frame, right[0], snap);
@@ -553,7 +557,9 @@ fn draw_instance(frame: &mut Frame, area: Rect, label: &str, snap: &NodeSnapshot
         pubkey.to_string()
     };
     let signed = m.get_u64("erd_count_consensus").unwrap_or(0);
-    let accepted = m.get_u64("erd_count_consensus_accepted_blocks").unwrap_or(0);
+    let accepted = m
+        .get_u64("erd_count_consensus_accepted_blocks")
+        .unwrap_or(0);
     let proposed = m.get_u64("erd_count_leader").unwrap_or(0);
     let proposed_acc = m.get_u64("erd_count_accepted_blocks").unwrap_or(0);
     let chain_id = m.get_str("erd_chain_id").unwrap_or("?");
@@ -585,7 +591,10 @@ fn draw_instance(frame: &mut Frame, area: Rect, label: &str, snap: &NodeSnapshot
                 theme::ok(),
             ))),
         ]),
-        Row::new(vec![Cell::from(lbl("PubKey")), Cell::from(val(pubkey_short))]),
+        Row::new(vec![
+            Cell::from(lbl("PubKey")),
+            Cell::from(val(pubkey_short)),
+        ]),
         Row::new(vec![
             Cell::from(lbl("Validator")),
             Cell::from(Line::from(vec![
@@ -606,7 +615,10 @@ fn draw_instance(frame: &mut Frame, area: Rect, label: &str, snap: &NodeSnapshot
                 Span::styled(" Accepted", theme::dim()),
             ])),
         ]),
-        Row::new(vec![Cell::from(lbl("Chain")), Cell::from(val(chain_id.to_string()))]),
+        Row::new(vec![
+            Cell::from(lbl("Chain")),
+            Cell::from(val(chain_id.to_string())),
+        ]),
         Row::new(vec![
             Cell::from(lbl("Redundancy")),
             Cell::from(val(redundancy_text)),
@@ -625,10 +637,7 @@ fn draw_instance(frame: &mut Frame, area: Rect, label: &str, snap: &NodeSnapshot
                         .fg(theme::HIGHLIGHT)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(
-                    if n == 1 { " key" } else { " keys" },
-                    theme::label(),
-                ),
+                Span::styled(if n == 1 { " key" } else { " keys" }, theme::label()),
             ])),
         ]));
     }
@@ -641,7 +650,7 @@ fn draw_instance(frame: &mut Frame, area: Rect, label: &str, snap: &NodeSnapshot
 ///   < 0 → "Inactive"
 ///   = 0 → "Main machine"
 ///   > 0 → "Back-up #N (main active: <flag>)"
-/// `is_main_active` is `"true"` / `"false"` / `"N/A"` from the metric.
+/// > `is_main_active` is `"true"` / `"false"` / `"N/A"` from the metric.
 fn format_redundancy(level: Option<i64>, is_main_active: Option<&str>) -> String {
     match level {
         None => "—".to_string(),
@@ -696,7 +705,10 @@ fn draw_chain(frame: &mut Frame, area: Rect, snap: &NodeSnapshot) {
                 (None, Some(t)) => format!("Trie sync — {} / {} nodes", processed, t),
                 (None, None) => format!("Trie sync — {} nodes processed", processed),
             };
-            vec![Span::styled(body, theme::warn().add_modifier(Modifier::BOLD))]
+            vec![Span::styled(
+                body,
+                theme::warn().add_modifier(Modifier::BOLD),
+            )]
         }
         Some(SyncState::Starting) => vec![Span::styled(
             "Node is starting",
@@ -938,10 +950,22 @@ fn draw_network_row(frame: &mut Frame, area: Rect, snap: &NodeSnapshot) {
         .split(area);
     let rx = snap.netin_hist.last().unwrap_or(0);
     let tx = snap.netout_hist.last().unwrap_or(0);
-    let rx_peak = snap.metrics.get_u64("erd_network_recv_bps_peak").unwrap_or(0);
-    let tx_peak = snap.metrics.get_u64("erd_network_sent_bps_peak").unwrap_or(0);
-    let rx_pct = snap.metrics.get_u64("erd_network_recv_percent").unwrap_or(0);
-    let tx_pct = snap.metrics.get_u64("erd_network_sent_percent").unwrap_or(0);
+    let rx_peak = snap
+        .metrics
+        .get_u64("erd_network_recv_bps_peak")
+        .unwrap_or(0);
+    let tx_peak = snap
+        .metrics
+        .get_u64("erd_network_sent_bps_peak")
+        .unwrap_or(0);
+    let rx_pct = snap
+        .metrics
+        .get_u64("erd_network_recv_percent")
+        .unwrap_or(0);
+    let tx_pct = snap
+        .metrics
+        .get_u64("erd_network_sent_percent")
+        .unwrap_or(0);
     let rx_data = snap.netin_hist.as_vec();
     let tx_data = snap.netout_hist.as_vec();
     frame.render_widget(
@@ -951,10 +975,7 @@ fn draw_network_row(frame: &mut Frame, area: Rect, snap: &NodeSnapshot) {
                 Span::styled("Rx ", Style::default().add_modifier(Modifier::BOLD)),
                 Span::styled(format!("{}/s", human_bytes(rx)), theme::ok()),
                 Span::styled(format!("  ({}%)", rx_pct), theme::dim()),
-                Span::styled(
-                    format!("  peak {}/s ", human_bytes(rx_peak)),
-                    theme::dim(),
-                ),
+                Span::styled(format!("  peak {}/s ", human_bytes(rx_peak)), theme::dim()),
             ])))
             .style(theme::ok())
             .data(&rx_data),
@@ -967,10 +988,7 @@ fn draw_network_row(frame: &mut Frame, area: Rect, snap: &NodeSnapshot) {
                 Span::styled("Tx ", Style::default().add_modifier(Modifier::BOLD)),
                 Span::styled(format!("{}/s", human_bytes(tx)), theme::warn()),
                 Span::styled(format!("  ({}%)", tx_pct), theme::dim()),
-                Span::styled(
-                    format!("  peak {}/s ", human_bytes(tx_peak)),
-                    theme::dim(),
-                ),
+                Span::styled(format!("  peak {}/s ", human_bytes(tx_peak)), theme::dim()),
             ])))
             .style(theme::warn())
             .data(&tx_data),
@@ -1020,12 +1038,11 @@ fn draw_trie_sync_row(frame: &mut Frame, area: Rect, snap: &NodeSnapshot) {
             p
         ),
         (Some(p), None) => format!("{} nodes  ({}%)", human_count(processed), p),
-        (None, Some(t)) => format!(
-            "{} / {} nodes",
-            human_count(processed),
-            human_count(t)
+        (None, Some(t)) => format!("{} / {} nodes", human_count(processed), human_count(t)),
+        (None, None) => format!(
+            "{} nodes processed (gateway unreachable)",
+            human_count(processed)
         ),
-        (None, None) => format!("{} nodes processed (gateway unreachable)", human_count(processed)),
     };
     frame.render_widget(
         Gauge::default()
@@ -1044,7 +1061,7 @@ fn human_count(n: u64) -> String {
     let bytes = s.as_bytes();
     let mut out = String::with_capacity(s.len() + s.len() / 3);
     for (i, b) in bytes.iter().enumerate() {
-        if i > 0 && (bytes.len() - i) % 3 == 0 {
+        if i > 0 && (bytes.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(*b as char);
@@ -1147,10 +1164,7 @@ fn draw_log_panel(frame: &mut Frame, area: Rect, app: &App, snap: &NodeSnapshot)
         Span::raw(": "),
         Span::styled(path_hint, theme::dim()),
         Span::raw(" "),
-        Span::styled(
-            format!("[≥{}]", app.log_min_level.label()),
-            theme::title(),
-        ),
+        Span::styled(format!("[≥{}]", app.log_min_level.label()), theme::title()),
     ];
     if let Some(filter) = &app.log_text_filter {
         title_spans.push(Span::raw(" "));
@@ -1233,20 +1247,14 @@ fn draw_log_panel(frame: &mut Frame, area: Rect, app: &App, snap: &NodeSnapshot)
     if let Some(area) = prompt_area {
         let prompt = Line::from(vec![
             Span::styled(" / ", theme::title().add_modifier(Modifier::BOLD)),
-            Span::styled(
-                app.filter_buffer.clone(),
-                Style::default().fg(Color::White),
-            ),
+            Span::styled(app.filter_buffer.clone(), Style::default().fg(Color::White)),
             Span::styled("█", Style::default().fg(theme::ACCENT)),
             Span::styled(
                 "    Enter to apply · Esc to cancel · Backspace to edit",
                 theme::dim(),
             ),
         ]);
-        frame.render_widget(
-            Paragraph::new(prompt).style(theme::status_bar()),
-            area,
-        );
+        frame.render_widget(Paragraph::new(prompt).style(theme::status_bar()), area);
     }
 }
 
@@ -1297,8 +1305,7 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     push_sep(&mut spans);
     let filter_chip = filter_chip(app);
     spans.extend(filter_chip);
-    let filters_active =
-        app.log_min_level != LogLevel::Info || app.log_text_filter.is_some();
+    let filters_active = app.log_min_level != LogLevel::Info || app.log_text_filter.is_some();
     if filters_active {
         push_sep(&mut spans);
         push_chip(&mut spans, "c", "clear", ChipState::Action);

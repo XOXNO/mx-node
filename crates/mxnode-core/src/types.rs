@@ -312,7 +312,11 @@ mod tests {
 
     #[test]
     fn environment_round_trip() {
-        for env in [Environment::Mainnet, Environment::Testnet, Environment::Devnet] {
+        for env in [
+            Environment::Mainnet,
+            Environment::Testnet,
+            Environment::Devnet,
+        ] {
             assert_eq!(env, env.as_str().parse().unwrap());
         }
         assert!("nope".parse::<Environment>().is_err());
@@ -320,13 +324,23 @@ mod tests {
 
     #[test]
     fn environment_config_repo() {
-        assert_eq!(Environment::Mainnet.config_repo(), "mx-chain-mainnet-config");
+        assert_eq!(
+            Environment::Mainnet.config_repo(),
+            "mx-chain-mainnet-config"
+        );
         assert_eq!(Environment::Devnet.config_repo(), "mx-chain-devnet-config");
     }
 
     #[test]
     fn shard_round_trip_and_protocol_id() {
-        for shard in [Shard::Zero, Shard::One, Shard::Two, Shard::Metachain, Shard::Disabled, Shard::Auto] {
+        for shard in [
+            Shard::Zero,
+            Shard::One,
+            Shard::Two,
+            Shard::Metachain,
+            Shard::Disabled,
+            Shard::Auto,
+        ] {
             assert_eq!(shard, shard.as_str().parse().unwrap());
         }
         assert_eq!(Shard::Zero.protocol_id(), Some(0));

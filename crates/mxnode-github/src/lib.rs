@@ -101,7 +101,10 @@ impl Client {
 
     /// `GET /repos/{org}/{repo}/releases/latest`.
     pub async fn latest_release(&self, org: &str, repo: &str) -> Result<Release, GithubError> {
-        let url = format!("{}/repos/{}/{}/releases/latest", self.cfg.api_base, org, repo);
+        let url = format!(
+            "{}/repos/{}/{}/releases/latest",
+            self.cfg.api_base, org, repo
+        );
         let resp = self.send(&url).await?;
         let release: Release = resp.json().await?;
         Ok(release)
@@ -151,11 +154,7 @@ impl Client {
     /// Operators on hosts where multiple matching zips exist (the bash
     /// observed `multiversx_*_linux_amd64.zip` with several inner-version
     /// suffixes per release) get the deterministic pick: highest scorer.
-    pub fn pick_asset<'a, F, S>(
-        release: &'a Release,
-        predicate: F,
-        scorer: S,
-    ) -> Option<&'a ReleaseAsset>
+    pub fn pick_asset<F, S>(release: &Release, predicate: F, scorer: S) -> Option<&ReleaseAsset>
     where
         F: Fn(&str) -> bool,
         S: Fn(&str) -> i64,

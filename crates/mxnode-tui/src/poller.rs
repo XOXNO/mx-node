@@ -68,7 +68,10 @@ impl Poller {
         {
             let snap = self.snapshot.lock().await;
             if snap.trie_total_nodes.is_none() {
-                let from_status = status_res.as_ref().ok().and_then(|m| m.get_u64("erd_shard_id"));
+                let from_status = status_res
+                    .as_ref()
+                    .ok()
+                    .and_then(|m| m.get_u64("erd_shard_id"));
                 let from_bootstrap = bootstrap_res
                     .as_ref()
                     .ok()
@@ -147,33 +150,18 @@ fn push_history(snap: &mut NodeSnapshot) {
     let nonce = snap.metrics.get_u64("erd_nonce").unwrap_or(0);
     snap.nonce_hist.push(nonce);
 
-    let peers = snap
-        .metrics
-        .get_u64("erd_num_connected_peers")
-        .unwrap_or(0);
+    let peers = snap.metrics.get_u64("erd_num_connected_peers").unwrap_or(0);
     snap.peers_hist.push(peers);
 
-    let cpu = snap
-        .metrics
-        .get_u64("erd_cpu_load_percent")
-        .unwrap_or(0);
+    let cpu = snap.metrics.get_u64("erd_cpu_load_percent").unwrap_or(0);
     snap.cpu_hist.push(cpu);
 
-    let mem = snap
-        .metrics
-        .get_u64("erd_mem_load_percent")
-        .unwrap_or(0);
+    let mem = snap.metrics.get_u64("erd_mem_load_percent").unwrap_or(0);
     snap.mem_hist.push(mem);
 
-    let netin = snap
-        .metrics
-        .get_u64("erd_network_recv_bps")
-        .unwrap_or(0);
+    let netin = snap.metrics.get_u64("erd_network_recv_bps").unwrap_or(0);
     snap.netin_hist.push(netin);
 
-    let netout = snap
-        .metrics
-        .get_u64("erd_network_sent_bps")
-        .unwrap_or(0);
+    let netout = snap.metrics.get_u64("erd_network_sent_bps").unwrap_or(0);
     snap.netout_hist.push(netout);
 }

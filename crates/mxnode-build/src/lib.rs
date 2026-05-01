@@ -137,7 +137,10 @@ pub async fn build_artifact(
 /// usable binary.
 pub fn build_ldflags(version_tag: &Tag, git_commit_suffix: Option<&str>) -> String {
     let suffix = git_commit_suffix.unwrap_or("0-mxnode");
-    format!("-X main.appVersion={tag}-0-{suffix}", tag = version_tag.as_str())
+    format!(
+        "-X main.appVersion={tag}-0-{suffix}",
+        tag = version_tag.as_str()
+    )
 }
 
 #[cfg(test)]
@@ -171,12 +174,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("clone");
         let tag = Tag::from_str("v0.0.0").unwrap();
-        let err = clone_shallow(
-            "https://example.invalid/does-not-exist.git",
-            &tag,
-            &dest,
-        )
-        .await;
+        let err = clone_shallow("https://example.invalid/does-not-exist.git", &tag, &dest).await;
         // Could be NonZero (git ran and failed) or Spawn (git missing).
         // Both are acceptable failure shapes; we only assert it's not Ok.
         assert!(err.is_err());

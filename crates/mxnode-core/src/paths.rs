@@ -32,7 +32,8 @@ impl Paths {
     /// Working directory for one node, matching the bash
     /// `$CUSTOM_HOME/elrond-nodes/node-$INDEX` convention.
     pub fn node_workdir(&self, index: NodeIndex) -> PathBuf {
-        self.elrond_nodes_root().join(format!("node-{}", index.get()))
+        self.elrond_nodes_root()
+            .join(format!("node-{}", index.get()))
     }
 
     pub fn elrond_nodes_root(&self) -> PathBuf {
@@ -126,7 +127,10 @@ mod tests {
         assert_eq!(p.custom_home, PathBuf::from("/home/ubuntu"));
         assert_eq!(p.custom_user, "ubuntu");
         assert_eq!(p.node_keys, PathBuf::from("/home/ubuntu/VALIDATOR_KEYS"));
-        assert_eq!(p.elrond_nodes_root(), PathBuf::from("/home/ubuntu/elrond-nodes"));
+        assert_eq!(
+            p.elrond_nodes_root(),
+            PathBuf::from("/home/ubuntu/elrond-nodes")
+        );
     }
 
     #[test]
@@ -138,8 +142,14 @@ mod tests {
 
     #[test]
     fn unit_names_preserved() {
-        assert_eq!(Paths::node_unit_name(NodeIndex::new(0)), "elrond-node-0.service");
-        assert_eq!(Paths::node_unit_name(NodeIndex::new(7)), "elrond-node-7.service");
+        assert_eq!(
+            Paths::node_unit_name(NodeIndex::new(0)),
+            "elrond-node-0.service"
+        );
+        assert_eq!(
+            Paths::node_unit_name(NodeIndex::new(7)),
+            "elrond-node-7.service"
+        );
         assert_eq!(Paths::proxy_unit_name(), "elrond-proxy.service");
     }
 
@@ -147,6 +157,9 @@ mod tests {
     fn binary_path_is_versioned() {
         let p = Paths::default();
         let bp = p.binary_path("node", "v1.7.13");
-        assert_eq!(bp, PathBuf::from("/home/ubuntu/mxnode/binaries/node/v1.7.13/node"));
+        assert_eq!(
+            bp,
+            PathBuf::from("/home/ubuntu/mxnode/binaries/node/v1.7.13/node")
+        );
     }
 }

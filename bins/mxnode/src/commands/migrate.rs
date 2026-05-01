@@ -6,8 +6,8 @@ use std::path::Path;
 
 use clap::Args;
 use mxnode_core::{
-    state::InstallSection, DEFAULT_API_PORT_BASE, DEFAULT_PROXY_PORT, Environment, InstallKind,
-    NodeIndex, NodeState, Paths, ProxyState, Role, Shard, State,
+    state::InstallSection, Environment, InstallKind, NodeIndex, NodeState, Paths, ProxyState, Role,
+    Shard, State, DEFAULT_API_PORT_BASE, DEFAULT_PROXY_PORT,
 };
 use thiserror::Error;
 
@@ -131,7 +131,12 @@ pub fn infer_state_from_bash(custom_home: &Path) -> Result<State, MigrateError> 
 
     let mut state = State::empty("mxnode/migrate-bash");
     state.discovered = true;
-    state.install = Some(InstallSection::observed(kind, environment, "multiversx", count));
+    state.install = Some(InstallSection::observed(
+        kind,
+        environment,
+        "multiversx",
+        count,
+    ));
     state.nodes = nodes;
     state.proxy = proxy;
     Ok(state)
@@ -318,7 +323,13 @@ mod tests {
     fn errors_on_unknown_environment() {
         let dir = bash_fixture("", 1, "mythicnet");
         let err = infer_state_from_bash(dir.path()).unwrap_err();
-        assert!(matches!(err, MigrateError::Parse { field: ".installedenv", .. }));
+        assert!(matches!(
+            err,
+            MigrateError::Parse {
+                field: ".installedenv",
+                ..
+            }
+        ));
     }
 
     #[test]

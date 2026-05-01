@@ -49,13 +49,21 @@ async fn run(host: String, port: u16, snapshot: Arc<Mutex<NodeSnapshot>>) {
     loop {
         match connect_and_stream(&url, &snapshot).await {
             Ok(()) => {
-                push(&snapshot, LogLevel::Other, format!("--- {} closed ---", url)).await;
+                push(
+                    &snapshot,
+                    LogLevel::Other,
+                    format!("--- {} closed ---", url),
+                )
+                .await;
             }
             Err(e) => {
                 push(
                     &snapshot,
                     LogLevel::Warn,
-                    format!("--- WS error: {e}; retrying in {}s ---", RETRY_BACKOFF.as_secs()),
+                    format!(
+                        "--- WS error: {e}; retrying in {}s ---",
+                        RETRY_BACKOFF.as_secs()
+                    ),
                 )
                 .await;
             }
@@ -64,10 +72,7 @@ async fn run(host: String, port: u16, snapshot: Arc<Mutex<NodeSnapshot>>) {
     }
 }
 
-async fn connect_and_stream(
-    url: &str,
-    snapshot: &Arc<Mutex<NodeSnapshot>>,
-) -> Result<(), String> {
+async fn connect_and_stream(url: &str, snapshot: &Arc<Mutex<NodeSnapshot>>) -> Result<(), String> {
     let (mut stream, _) = tokio_tungstenite::connect_async(url)
         .await
         .map_err(|e| e.to_string())?;
@@ -151,8 +156,8 @@ fn format_line(line: &LogLineMessage) -> String {
     out.push_str(&line.message);
     if !line.args.is_empty() {
         out.push(' ');
-        let mut chunks = line.args.chunks(2);
-        while let Some(pair) = chunks.next() {
+        let chunks = line.args.chunks(2);
+        for pair in chunks {
             if let [k, v] = pair {
                 out.push_str(&format!("{k} = {v} "));
             }
@@ -187,9 +192,7 @@ fn level_from_int(level: i32) -> LogLevel {
 
 fn format_ts(ts_secs: i64) -> String {
     let dt = time::OffsetDateTime::from_unix_timestamp(ts_secs).ok();
-    let fmt = time::macros::format_description!(
-        "[year]-[month]-[day] [hour]:[minute]:[second]"
-    );
+    let fmt = time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]:[second]");
     dt.and_then(|d| d.format(&fmt).ok())
         .unwrap_or_else(|| ts_secs.to_string())
 }

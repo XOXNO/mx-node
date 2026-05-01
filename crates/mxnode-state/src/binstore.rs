@@ -39,7 +39,7 @@ impl From<StateError> for BinStoreError {
             StateError::Io { path, source } => BinStoreError::Io { path, source },
             other => BinStoreError::Io {
                 path: "<state>".to_string(),
-                source: std::io::Error::new(std::io::ErrorKind::Other, other.to_string()),
+                source: std::io::Error::other(other.to_string()),
             },
         }
     }
@@ -167,11 +167,7 @@ impl BinStore {
     /// `keep`. The caller decides retention policy (typically
     /// `binary_keep` newest tags). Returns the list of directories we
     /// actually removed.
-    pub fn prune(
-        &self,
-        artifact: &str,
-        keep: &[String],
-    ) -> Result<Vec<PathBuf>, BinStoreError> {
+    pub fn prune(&self, artifact: &str, keep: &[String]) -> Result<Vec<PathBuf>, BinStoreError> {
         if keep.is_empty() {
             return Err(BinStoreError::InvalidRetention);
         }
@@ -215,7 +211,10 @@ impl BinStore {
 pub fn swap_symlink(link_path: &Path, target: &Path) -> Result<(), BinStoreError> {
     let parent = link_path.parent().ok_or_else(|| BinStoreError::Io {
         path: link_path.display().to_string(),
-        source: std::io::Error::new(std::io::ErrorKind::InvalidInput, "symlink path has no parent"),
+        source: std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "symlink path has no parent",
+        ),
     })?;
     if !parent.exists() {
         fs::create_dir_all(parent).map_err(|e| BinStoreError::Io {
@@ -290,10 +289,7 @@ mod tests {
 
         let dest = store.install_binary("node", "v1.0.0", &src).unwrap();
         assert!(dest.exists());
-        assert_eq!(
-            dest,
-            tmp.path().join("binaries/node/v1.0.0/node"),
-        );
+        assert_eq!(dest, tmp.path().join("binaries/node/v1.0.0/node"),);
         assert_eq!(fs::read_to_string(&dest).unwrap(), "fake-binary-v1");
     }
 

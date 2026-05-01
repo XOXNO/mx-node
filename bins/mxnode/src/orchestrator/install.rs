@@ -24,10 +24,10 @@ use mxnode_core::{
 };
 use mxnode_state::{swap_symlink, BinStore, StateStore};
 use mxnode_systemd::{
-    apply_overrides, clear_cpu_flags, enable_db_lookup_extensions, set_redundancy_level,
-    render_canonical_node_plist,
+    apply_overrides, clear_cpu_flags, enable_db_lookup_extensions, render_canonical_node_plist,
     render_canonical_node_unit, render_canonical_proxy_unit, rewrite_proxy_config,
-    set_destination_shard, set_node_display_name, NodeUnitSpec, ObserverEntry, ProxyUnitSpec,
+    set_destination_shard, set_node_display_name, set_redundancy_level, NodeUnitSpec,
+    ObserverEntry, ProxyUnitSpec,
 };
 use thiserror::Error;
 use toml_edit::DocumentMut;
@@ -181,11 +181,12 @@ pub async fn run_install(
     {
         use std::os::unix::fs::PermissionsExt;
         let kg = utils_dir.join("keygenerator");
-        let mut perms = fs::metadata(&kg).map_err(|e| InstallError::Io {
-            path: kg.display().to_string(),
-            source: e,
-        })?
-        .permissions();
+        let mut perms = fs::metadata(&kg)
+            .map_err(|e| InstallError::Io {
+                path: kg.display().to_string(),
+                source: e,
+            })?
+            .permissions();
         perms.set_mode(0o755);
         let _ = fs::set_permissions(&kg, perms);
     }
@@ -214,9 +215,8 @@ pub async fn run_install(
         })?;
         // Symlink the active proxy binary into the proxy dir.
         let proxy_link = proxy_dir.join("proxy");
-        swap_symlink(&proxy_link, &proxy_installed).map_err(|e| {
-            InstallError::Acquire(format!("symlink proxy binary: {e}"))
-        })?;
+        swap_symlink(&proxy_link, &proxy_installed)
+            .map_err(|e| InstallError::Acquire(format!("symlink proxy binary: {e}")))?;
 
         // Render canonical proxy unit. Returned to the caller via
         // `unit_files` below; the bash flow installs it alongside the
@@ -265,12 +265,14 @@ pub async fn run_install(
 
         rewrite_proxy_config(&mut proxy_config, DEFAULT_PROXY_PORT, &observers)
             .map_err(|e| InstallError::Toml(format!("proxy config: {e}")))?;
-        fs::write(proxy_dir.join("config/config.toml"), proxy_config.to_string()).map_err(
-            |e| InstallError::Io {
-                path: proxy_dir.join("config/config.toml").display().to_string(),
-                source: e,
-            },
-        )?;
+        fs::write(
+            proxy_dir.join("config/config.toml"),
+            proxy_config.to_string(),
+        )
+        .map_err(|e| InstallError::Io {
+            path: proxy_dir.join("config/config.toml").display().to_string(),
+            source: e,
+        })?;
 
         proxy_state = Some(ProxyState {
             present: true,
@@ -317,21 +319,24 @@ pub async fn run_install(
         };
 
         // Apply per-node tomledit.
-        apply_node_tomledit(
-            &workdir,
-            &display_name,
-            node.shard,
-            plan.config_edits,
-            node.role,
-            Some(plan.redundancy_level),
-            plan.prefs_overrides,
-            plan.config_overrides,
-        )?;
+        apply_node_tomledit(NodeTomlEdit {
+            workdir: &workdir,
+            display_name: &display_name,
+            shard: node.shard,
+            edits: plan.config_edits,
+            role: node.role,
+            redundancy_level: Some(plan.redundancy_level),
+            prefs_overrides: plan.prefs_overrides,
+            config_overrides: plan.config_overrides,
+        })?;
 
         // Symlink node binary.
         let symlink = workdir.join("node");
         swap_symlink(&symlink, &node_installed).map_err(|e| {
-            InstallError::Acquire(format!("symlink node binary for index {}: {e}", node.index.get()))
+            InstallError::Acquire(format!(
+                "symlink node binary for index {}: {e}",
+                node.index.get()
+            ))
         })?;
 
         // Install keys per role:
@@ -497,12 +502,10 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), InstallError> {
             continue;
         }
         let to = dst.join(&name);
-        let ft = entry
-            .file_type()
-            .map_err(|e| InstallError::Io {
-                path: from.display().to_string(),
-                source: e,
-            })?;
+        let ft = entry.file_type().map_err(|e| InstallError::Io {
+            path: from.display().to_string(),
+            source: e,
+        })?;
         if ft.is_dir() {
             copy_dir_recursive(&from, &to)?;
         } else if ft.is_file() {
@@ -516,20 +519,39 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), InstallError> {
     Ok(())
 }
 
+/// Inputs for [`apply_node_tomledit`]. Bundled into a struct so the
+/// function stays under clippy's `too_many_arguments` floor; every
+/// field has a single, well-documented role and call sites read more
+/// like an init record than a parameter avalanche.
+pub(crate) struct NodeTomlEdit<'a> {
+    pub workdir: &'a Path,
+    pub display_name: &'a str,
+    pub shard: Shard,
+    pub edits: ConfigEdits,
+    pub role: Role,
+    /// `Some(level)` stamps `RedundancyLevel = level` for multikey roles.
+    /// `None` means "don't touch" — used by `reapply-config` so an
+    /// operator's hand-edited value survives a re-apply pass.
+    pub redundancy_level: Option<u8>,
+    pub prefs_overrides: &'a BTreeMap<String, toml::Value>,
+    pub config_overrides: &'a BTreeMap<String, toml::Value>,
+}
+
 /// Apply the well-known + operator-defined TOML edits to one node's
 /// `config/` directory. Operator overrides are applied **after** the
 /// well-known edits so they always win — operators can intentionally
 /// undo a default mxnode chooses.
-pub(crate) fn apply_node_tomledit(
-    workdir: &Path,
-    display_name: &str,
-    shard: Shard,
-    edits: ConfigEdits,
-    role: Role,
-    redundancy_level: Option<u8>,
-    prefs_overrides: &BTreeMap<String, toml::Value>,
-    config_overrides: &BTreeMap<String, toml::Value>,
-) -> Result<(), InstallError> {
+pub(crate) fn apply_node_tomledit(input: NodeTomlEdit<'_>) -> Result<(), InstallError> {
+    let NodeTomlEdit {
+        workdir,
+        display_name,
+        shard,
+        edits,
+        role,
+        redundancy_level,
+        prefs_overrides,
+        config_overrides,
+    } = input;
     // Index/shard substitutions for string overrides. We derive
     // `index` from the workdir's last segment (`node-N`) so we don't
     // need a separate parameter — the install orchestrator stamps the
@@ -551,9 +573,11 @@ pub(crate) fn apply_node_tomledit(
         let mut doc: DocumentMut = body
             .parse()
             .map_err(|e| InstallError::Toml(format!("parse {}: {e}", prefs_path.display())))?;
-        set_node_display_name(&mut doc, display_name).map_err(|e| InstallError::Toml(e.to_string()))?;
+        set_node_display_name(&mut doc, display_name)
+            .map_err(|e| InstallError::Toml(e.to_string()))?;
         if matches!(edits, ConfigEdits::Observer) {
-            set_destination_shard(&mut doc, shard).map_err(|e| InstallError::Toml(e.to_string()))?;
+            set_destination_shard(&mut doc, shard)
+                .map_err(|e| InstallError::Toml(e.to_string()))?;
         }
         // Multikey is the only role for which RedundancyLevel is
         // load-bearing — validators historically hand-edit if they
@@ -705,10 +729,9 @@ pub async fn install_units(units: &[UnitFile], enable: bool) -> Result<(), Insta
         if let Err(e) = install_one_unit(platform, &unit.name, &unit.contents, enable).await {
             return Err(match e {
                 InstallUnitError::Io { path, source } => InstallError::Io { path, source },
-                InstallUnitError::UnsupportedPlatform => InstallError::Invalid(format!(
-                    "platform {:?} is not yet supported",
-                    platform,
-                )),
+                InstallUnitError::UnsupportedPlatform => {
+                    InstallError::Invalid(format!("platform {:?} is not yet supported", platform,))
+                }
             });
         }
     }
@@ -719,8 +742,12 @@ pub async fn install_units(units: &[UnitFile], enable: bool) -> Result<(), Insta
 /// write contract enforced by [`StateStore`].
 pub fn persist_state(paths: &Paths, state: &State) -> Result<PathBuf, InstallError> {
     let store = StateStore::new(&paths.state);
-    let guard = store.lock().map_err(|e| InstallError::State(e.to_string()))?;
-    store.save(state, &guard).map_err(|e| InstallError::State(e.to_string()))?;
+    let guard = store
+        .lock()
+        .map_err(|e| InstallError::State(e.to_string()))?;
+    store
+        .save(state, &guard)
+        .map_err(|e| InstallError::State(e.to_string()))?;
     drop(guard);
     Ok(store.state_path().to_path_buf())
 }
@@ -737,7 +764,10 @@ mod tests {
         assert_eq!(observers[0].shard_id, 0);
         assert_eq!(observers[1].shard_id, 1);
         assert_eq!(observers[2].shard_id, 2);
-        assert_eq!(observers[3].shard_id, mxnode_core::Shard::Metachain.protocol_id().unwrap());
+        assert_eq!(
+            observers[3].shard_id,
+            mxnode_core::Shard::Metachain.protocol_id().unwrap()
+        );
         assert!(observers[0].address.ends_with(":8080"));
         assert!(observers[3].address.ends_with(":8083"));
     }
@@ -782,16 +812,16 @@ mod tests {
         )
         .unwrap();
 
-        apply_node_tomledit(
-            &workdir,
-            "test-name",
-            Shard::Auto,
-            ConfigEdits::Validator,
-            Role::Validator,
-            Some(0),
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-        )
+        apply_node_tomledit(NodeTomlEdit {
+            workdir: &workdir,
+            display_name: "test-name",
+            shard: Shard::Auto,
+            edits: ConfigEdits::Validator,
+            role: Role::Validator,
+            redundancy_level: Some(0),
+            prefs_overrides: &BTreeMap::new(),
+            config_overrides: &BTreeMap::new(),
+        })
         .unwrap();
 
         let body = std::fs::read_to_string(workdir.join("config/prefs.toml")).unwrap();
@@ -819,16 +849,16 @@ mod tests {
         )
         .unwrap();
 
-        apply_node_tomledit(
-            &workdir,
-            "obs-0",
-            Shard::Metachain,
-            ConfigEdits::Observer,
-            Role::Observer,
-            Some(0),
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-        )
+        apply_node_tomledit(NodeTomlEdit {
+            workdir: &workdir,
+            display_name: "obs-0",
+            shard: Shard::Metachain,
+            edits: ConfigEdits::Observer,
+            role: Role::Observer,
+            redundancy_level: Some(0),
+            prefs_overrides: &BTreeMap::new(),
+            config_overrides: &BTreeMap::new(),
+        })
         .unwrap();
 
         let prefs = std::fs::read_to_string(workdir.join("config/prefs.toml")).unwrap();
@@ -848,16 +878,16 @@ mod tests {
         )
         .unwrap();
 
-        apply_node_tomledit(
-            &workdir,
-            "mk-0",
-            Shard::Zero,
-            ConfigEdits::Observer,
-            Role::Multikey,
-            Some(2), // backup-of-backup
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-        )
+        apply_node_tomledit(NodeTomlEdit {
+            workdir: &workdir,
+            display_name: "mk-0",
+            shard: Shard::Zero,
+            edits: ConfigEdits::Observer,
+            role: Role::Multikey,
+            redundancy_level: Some(2), // backup-of-backup
+            prefs_overrides: &BTreeMap::new(),
+            config_overrides: &BTreeMap::new(),
+        })
         .unwrap();
 
         let prefs = std::fs::read_to_string(workdir.join("config/prefs.toml")).unwrap();
@@ -880,16 +910,16 @@ mod tests {
         )
         .unwrap();
 
-        apply_node_tomledit(
-            &workdir,
-            "mk-0",
-            Shard::Zero,
-            ConfigEdits::Observer,
-            Role::Multikey,
-            None,
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-        )
+        apply_node_tomledit(NodeTomlEdit {
+            workdir: &workdir,
+            display_name: "mk-0",
+            shard: Shard::Zero,
+            edits: ConfigEdits::Observer,
+            role: Role::Multikey,
+            redundancy_level: None,
+            prefs_overrides: &BTreeMap::new(),
+            config_overrides: &BTreeMap::new(),
+        })
         .unwrap();
 
         let prefs = std::fs::read_to_string(workdir.join("config/prefs.toml")).unwrap();
@@ -935,10 +965,16 @@ ThresholdInMicroSeconds = 10000
         fs::write(proxy_config_dir.join("config.toml"), doc.to_string()).unwrap();
 
         let out = fs::read_to_string(proxy_config_dir.join("config.toml")).unwrap();
-        assert!(out.contains("RequestTimeoutSec = 60"), "upstream value lost: {out}");
+        assert!(
+            out.contains("RequestTimeoutSec = 60"),
+            "upstream value lost: {out}"
+        );
         assert!(out.contains("[ApiLogging]"), "upstream section lost: {out}");
         assert!(out.contains("ThresholdInMicroSeconds = 10000"));
         assert!(out.contains("ServerPort = 8079"), "port not patched: {out}");
-        assert!(out.contains("http://127.0.0.1:8080"), "observer not stamped: {out}");
+        assert!(
+            out.contains("http://127.0.0.1:8080"),
+            "observer not stamped: {out}"
+        );
     }
 }

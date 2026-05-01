@@ -13,7 +13,7 @@
 //! (`systemctl stop` on a stopped unit, symlink swap to the same
 //! target, etc.).
 
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -32,9 +32,7 @@ use serde::Serialize;
 use crate::cli::{GlobalArgs, Strategy, UpgradeArgs, UpgradeTarget};
 use crate::errors::CliError;
 use crate::events::{node_op_end, node_op_start, Outcome};
-use crate::orchestrator::acquirer::{
-    AcquireError, Artifact, BinaryAcquirer, SourceBuildAcquirer,
-};
+use crate::orchestrator::acquirer::{Artifact, BinaryAcquirer, SourceBuildAcquirer};
 use crate::orchestrator::runtime::{CliErrorExt, Runtime};
 
 #[tokio::main(flavor = "current_thread")]
@@ -139,7 +137,11 @@ pub async fn run(mut args: UpgradeArgs, global: &GlobalArgs) -> Result<(), CliEr
     // so a crash leaves a "where did we die" breadcrumb behind for
     // post-mortem inspection. The next mxnode invocation auto-clears
     // the file if our pid has gone away.
-    let mut inflight = Inflight::new(OpKind::Upgrade, strategy_label(args.strategy), plan.selected.clone());
+    let mut inflight = Inflight::new(
+        OpKind::Upgrade,
+        strategy_label(args.strategy),
+        plan.selected.clone(),
+    );
     inflight.target_binary_tag = Some(plan.binary_tag.clone());
     inflight.target_config_tag = plan.config_tag.clone();
     inflight.target_proxy_tag = plan.proxy_tag.clone();
@@ -165,8 +167,8 @@ pub async fn run(mut args: UpgradeArgs, global: &GlobalArgs) -> Result<(), CliEr
     // Always clear the inflight on a clean run; `execute_upgrade` returns
     // the migration entry plus per-node results regardless of partial
     // failure status.
-    let result = persist_migration(&store, outcome, &inflight_loc, global);
-    result
+
+    persist_migration(&store, outcome, &inflight_loc, global)
 }
 
 struct Plan {
@@ -205,64 +207,63 @@ async fn build_plan(
     // untouched". Resolve only when the operator actually passed the flag
     // OR set [overrides], otherwise the upgrade flow doesn't touch them.
     let environment = state.install.as_ref().map(|i| i.environment);
-    let config_tag = if args.config_tag.is_some()
-        || runtime.loaded.config.overrides.configver().is_some()
-    {
-        let env = environment.ok_or_else(|| {
-            CliError::new(
-                "cannot resolve --config-tag without an environment",
-                "state.install.environment is missing",
-                "run hand-edit and re-run or pass --config-tag explicitly",
-            )
-            .json_if(global.json)
-        })?;
-        let r = resolve_config_tag(runtime, env, args.config_tag.as_deref())
-            .await
-            .map_err(|e| crate::commands::install::resolve_err(e, global))?;
-        crate::commands::install::announce_resolved(global, "config", &r);
-        Some(r.tag)
-    } else {
-        None
-    };
-    let proxy_tag = if args.proxy_tag.is_some()
-        || runtime.loaded.config.overrides.proxyver().is_some()
-    {
-        let r = resolve_proxy_tag(runtime, args.proxy_tag.as_deref())
-            .await
-            .map_err(|e| crate::commands::install::resolve_err(e, global))?;
-        crate::commands::install::announce_resolved(global, "proxy", &r);
-        Some(r.tag)
-    } else {
-        None
-    };
+    let config_tag =
+        if args.config_tag.is_some() || runtime.loaded.config.overrides.configver().is_some() {
+            let env = environment.ok_or_else(|| {
+                CliError::new(
+                    "cannot resolve --config-tag without an environment",
+                    "state.install.environment is missing",
+                    "run hand-edit and re-run or pass --config-tag explicitly",
+                )
+                .json_if(global.json)
+            })?;
+            let r = resolve_config_tag(runtime, env, args.config_tag.as_deref())
+                .await
+                .map_err(|e| crate::commands::install::resolve_err(e, global))?;
+            crate::commands::install::announce_resolved(global, "config", &r);
+            Some(r.tag)
+        } else {
+            None
+        };
+    let proxy_tag =
+        if args.proxy_tag.is_some() || runtime.loaded.config.overrides.proxyver().is_some() {
+            let r = resolve_proxy_tag(runtime, args.proxy_tag.as_deref())
+                .await
+                .map_err(|e| crate::commands::install::resolve_err(e, global))?;
+            crate::commands::install::announce_resolved(global, "proxy", &r);
+            Some(r.tag)
+        } else {
+            None
+        };
 
     // Selection: route every form through the same resolver as the
     // lifecycle commands so behaviour stays consistent. Default with
     // no selector is "every node". `--select`, `--node`, and `--shard`
     // are mutually exclusive (clap enforces).
-    let selected: Vec<NodeIndex> = if args.select.is_some() || !args.node.is_empty() || args.shard.is_some() {
-        use crate::orchestrator::selector::{resolve, DefaultSelection};
-        let lifecycle_args = crate::cli::LifecycleArgs {
-            all: false,
-            select: args.select.clone(),
-            validators_only: false,
-            observers_only: false,
-            shard: args.shard.clone(),
-            node: args.node.clone(),
+    let selected: Vec<NodeIndex> =
+        if args.select.is_some() || !args.node.is_empty() || args.shard.is_some() {
+            use crate::orchestrator::selector::resolve;
+            let lifecycle_args = crate::cli::LifecycleArgs {
+                all: false,
+                select: args.select.clone(),
+                validators_only: false,
+                observers_only: false,
+                shard: args.shard.clone(),
+                node: args.node.clone(),
+            };
+            resolve(state, &lifecycle_args).map_err(|e| {
+                CliError::new(
+                    "selector did not resolve",
+                    e.to_string(),
+                    "see `mxnode status` for valid indices and shards",
+                )
+                .json_if(global.json)
+            })?
+        } else {
+            let mut v: Vec<NodeIndex> = state.nodes.iter().map(|n| n.index).collect();
+            v.sort();
+            v
         };
-        resolve(state, &lifecycle_args, DefaultSelection::All).map_err(|e| {
-            CliError::new(
-                "selector did not resolve",
-                e.to_string(),
-                "see `mxnode status` for valid indices and shards",
-            )
-            .json_if(global.json)
-        })?
-    } else {
-        let mut v: Vec<NodeIndex> = state.nodes.iter().map(|n| n.index).collect();
-        v.sort();
-        v
-    };
 
     if selected.is_empty() {
         return Err(CliError::new(
@@ -347,7 +348,7 @@ async fn execute_upgrade(
     plan: &Plan,
     state: &State,
     runtime: &Runtime,
-    inflight_loc: &PathBuf,
+    inflight_loc: &Path,
     inflight: &mut Inflight,
     _global: &GlobalArgs,
 ) -> UpgradeOutcome {
@@ -364,33 +365,8 @@ async fn execute_upgrade(
     let ctl = crate::orchestrator::supervisor::build_supervisor();
 
     // Acquire the binary once; reuse for every node.
-    let acquired = acquirer
-        .acquire(Artifact::Node, &plan.binary_tag)
-        .await;
-    let acquired_path = match acquired {
+    let acquired_path = match acquirer.acquire(Artifact::Node, &plan.binary_tag).await {
         Ok(p) => p,
-        Err(AcquireError::NotImplemented(reason)) => {
-            // Acquirer stub returned: nothing to do for any node.
-            // The outer `run` clears inflight.toml on its way out.
-            return UpgradeOutcome {
-                binary_tag: plan.binary_tag.clone(),
-                started_at: started,
-                duration_secs: 0,
-                nodes_done: Vec::new(),
-                nodes_failed: plan.selected.clone(),
-                rolled_back: false,
-                per_node: plan
-                    .selected
-                    .iter()
-                    .map(|i| NodeResult {
-                        index: i.get(),
-                        unit: format!("elrond-node-{}.service", i.get()),
-                        ok: false,
-                        error: Some(format!("acquire: {reason}")),
-                    })
-                    .collect(),
-            };
-        }
         Err(e) => {
             return UpgradeOutcome {
                 binary_tag: plan.binary_tag.clone(),
@@ -413,29 +389,30 @@ async fn execute_upgrade(
         }
     };
 
-    let installed_path = match bin_store.install_binary("node", plan.binary_tag.as_str(), &acquired_path) {
-        Ok(p) => p,
-        Err(e) => {
-            return UpgradeOutcome {
-                binary_tag: plan.binary_tag.clone(),
-                started_at: started,
-                duration_secs: 0,
-                nodes_done: Vec::new(),
-                nodes_failed: plan.selected.clone(),
-                rolled_back: false,
-                per_node: plan
-                    .selected
-                    .iter()
-                    .map(|i| NodeResult {
-                        index: i.get(),
-                        unit: format!("elrond-node-{}.service", i.get()),
-                        ok: false,
-                        error: Some(format!("install_binary: {e}")),
-                    })
-                    .collect(),
-            };
-        }
-    };
+    let installed_path =
+        match bin_store.install_binary("node", plan.binary_tag.as_str(), &acquired_path) {
+            Ok(p) => p,
+            Err(e) => {
+                return UpgradeOutcome {
+                    binary_tag: plan.binary_tag.clone(),
+                    started_at: started,
+                    duration_secs: 0,
+                    nodes_done: Vec::new(),
+                    nodes_failed: plan.selected.clone(),
+                    rolled_back: false,
+                    per_node: plan
+                        .selected
+                        .iter()
+                        .map(|i| NodeResult {
+                            index: i.get(),
+                            unit: format!("elrond-node-{}.service", i.get()),
+                            ok: false,
+                            error: Some(format!("install_binary: {e}")),
+                        })
+                        .collect(),
+                };
+            }
+        };
 
     let mut nodes_done: Vec<NodeIndex> = Vec::new();
     let mut nodes_failed: Vec<NodeIndex> = Vec::new();
@@ -456,7 +433,17 @@ async fn execute_upgrade(
         inflight.current_step = InflightStep::Resolving;
         let _ = inflight.save(inflight_loc);
 
-        match upgrade_one_node(&ctl, state, node, &installed_path, inflight, inflight_loc, plan.is_squad).await {
+        match upgrade_one_node(
+            &ctl,
+            state,
+            node,
+            &installed_path,
+            inflight,
+            inflight_loc,
+            plan.is_squad,
+        )
+        .await
+        {
             Ok(()) => {
                 nodes_done.push(node.index);
                 per_node.push(NodeResult {
@@ -501,9 +488,9 @@ async fn upgrade_one_node(
     ctl: &Arc<dyn Ctl>,
     state: &State,
     node: &NodeState,
-    installed_binary: &PathBuf,
+    installed_binary: &Path,
     inflight: &mut Inflight,
-    inflight_loc: &PathBuf,
+    inflight_loc: &Path,
     is_squad: bool,
 ) -> Result<(), String> {
     use InflightStep::*;
@@ -519,7 +506,12 @@ async fn upgrade_one_node(
     let _ = inflight.save(inflight_loc);
     if let Err(e) = ctl.stop(&node.unit).await {
         let cause = e.to_string();
-        node_op_end("upgrade", node.index, &node.unit, Outcome::Fail { cause: &cause });
+        node_op_end(
+            "upgrade",
+            node.index,
+            &node.unit,
+            Outcome::Fail { cause: &cause },
+        );
         return Err(format!("systemctl stop failed: {cause}"));
     }
 
@@ -543,7 +535,12 @@ async fn upgrade_one_node(
     let symlink = node.workdir.join("node");
     if let Err(e) = swap_symlink(&symlink, installed_binary) {
         let cause = e.to_string();
-        node_op_end("upgrade", node.index, &node.unit, Outcome::Fail { cause: &cause });
+        node_op_end(
+            "upgrade",
+            node.index,
+            &node.unit,
+            Outcome::Fail { cause: &cause },
+        );
         return Err(format!("symlink swap failed: {cause}"));
     }
 
@@ -551,7 +548,12 @@ async fn upgrade_one_node(
     let _ = inflight.save(inflight_loc);
     if let Err(e) = ctl.start(&node.unit).await {
         let cause = e.to_string();
-        node_op_end("upgrade", node.index, &node.unit, Outcome::Fail { cause: &cause });
+        node_op_end(
+            "upgrade",
+            node.index,
+            &node.unit,
+            Outcome::Fail { cause: &cause },
+        );
         return Err(format!("systemctl start failed: {cause}"));
     }
 
@@ -563,7 +565,12 @@ async fn upgrade_one_node(
     // hosts skip the cross-sibling comparison.
     if let Err(e) = wait_for_node_ready(state, node).await {
         let cause = format!("readiness probe: {e}");
-        node_op_end("upgrade", node.index, &node.unit, Outcome::Fail { cause: &cause });
+        node_op_end(
+            "upgrade",
+            node.index,
+            &node.unit,
+            Outcome::Fail { cause: &cause },
+        );
         return Err(cause);
     }
 
@@ -604,7 +611,6 @@ fn apply_squad_config_edits(node: &NodeState) -> Result<(), String> {
     Ok(())
 }
 
-
 /// Probe the node's local REST API until either:
 ///   - `erd_nonce` is within `K` of the highest sibling's
 ///     `erd_probable_highest_nonce`, OR
@@ -616,8 +622,8 @@ const NONCE_POLL_INTERVAL_SECS: u64 = 3;
 
 async fn wait_for_node_ready(state: &State, node: &NodeState) -> Result<(), String> {
     let deadline = std::time::Instant::now() + Duration::from_secs(NONCE_PROBE_TIMEOUT_SECS);
-    let target = NodeClient::new("127.0.0.1", node.api_port)
-        .map_err(|e| format!("rpc client init: {e}"))?;
+    let target =
+        NodeClient::new("127.0.0.1", node.api_port).map_err(|e| format!("rpc client init: {e}"))?;
 
     loop {
         let now = std::time::Instant::now();
@@ -628,10 +634,11 @@ async fn wait_for_node_ready(state: &State, node: &NodeState) -> Result<(), Stri
             ));
         }
 
-        let target_status = match tokio::time::timeout(Duration::from_secs(2), target.status()).await {
-            Ok(Ok(s)) => Some(s),
-            _ => None,
-        };
+        let target_status =
+            match tokio::time::timeout(Duration::from_secs(2), target.status()).await {
+                Ok(Ok(s)) => Some(s),
+                _ => None,
+            };
 
         if let Some(status) = target_status {
             let nonce = status.data.metrics.erd_nonce.unwrap_or(0);
@@ -685,7 +692,7 @@ async fn highest_sibling_nonce(state: &State, me: &NodeState) -> Option<u64> {
 fn persist_migration(
     store: &StateStore,
     outcome: UpgradeOutcome,
-    inflight_loc: &PathBuf,
+    inflight_loc: &Path,
     global: &GlobalArgs,
 ) -> Result<(), CliError> {
     let entry = MigrationEntry {
@@ -919,7 +926,9 @@ async fn upgrade_proxy(
             "upgrade.proxy",
             NodeIndex::new(0),
             &proxy.unit,
-            Outcome::Fail { cause: &e.to_string() },
+            Outcome::Fail {
+                cause: &e.to_string(),
+            },
         );
         return Err(CliError::new(
             "symlink swap failed for proxy",
@@ -1001,4 +1010,3 @@ async fn upgrade_proxy(
     }
     Ok(())
 }
-

@@ -21,12 +21,6 @@
 //! that pull in large transitive deps and require a real Linux host
 //! to validate. The orchestration spine is testable without them.
 
-// Some variants/methods (release acquirer's path, multi-asset selection
-// helpers) are consumed only by tests or by Phase 3 install plumbing.
-// We allow dead-code on those rather than churn the module surface every
-// time the orchestrator gains a new consumer.
-#![allow(dead_code)]
-
 use std::path::PathBuf;
 
 use async_trait::async_trait;
@@ -37,8 +31,6 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum AcquireError {
-    #[error("not implemented yet (scheduled for Phase 2b): {0}")]
-    NotImplemented(&'static str),
     #[error("io error at {path}: {source}")]
     Io {
         path: String,
@@ -84,9 +76,12 @@ pub trait BinaryAcquirer: Send + Sync {
     async fn acquire(&self, artifact: Artifact, tag: &Tag) -> Result<PathBuf, AcquireError>;
 }
 
-/// In-memory acquirer used by integration tests. Maps `(artifact, tag)`
-/// → bytes; on `acquire`, materialises the bytes into a tempfile that
-/// the caller is responsible for moving into the `BinStore`.
+/// In-memory acquirer used by tests. Maps `(artifact, tag)` → bytes; on
+/// `acquire`, materialises the bytes into a tempfile that the caller is
+/// responsible for moving into the `BinStore`. Test-only — production
+/// callers always go through [`SourceBuildAcquirer`] / [`ReleaseAcquirer`]
+/// via the factory.
+#[cfg(test)]
 pub struct MockAcquirer {
     map: std::sync::Mutex<std::collections::HashMap<(Artifact, String), Vec<u8>>>,
     /// Optional override directory. Tests typically pass a tempdir so
@@ -95,6 +90,7 @@ pub struct MockAcquirer {
     pub workdir: Option<PathBuf>,
 }
 
+#[cfg(test)]
 impl MockAcquirer {
     pub fn new() -> Self {
         Self {
@@ -116,38 +112,36 @@ impl MockAcquirer {
     }
 }
 
+#[cfg(test)]
 impl Default for MockAcquirer {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(test)]
 #[async_trait]
 impl BinaryAcquirer for MockAcquirer {
     async fn acquire(&self, artifact: Artifact, tag: &Tag) -> Result<PathBuf, AcquireError> {
         let key = (artifact, tag.as_str().to_string());
-        let bytes = self
-            .map
-            .lock()
-            .unwrap()
-            .get(&key)
-            .cloned()
-            .ok_or_else(|| {
-                AcquireError::Other(format!(
-                    "MockAcquirer has no entry for {} @ {tag}",
-                    artifact.binary_name(),
-                ))
-            })?;
+        let bytes = self.map.lock().unwrap().get(&key).cloned().ok_or_else(|| {
+            AcquireError::Other(format!(
+                "MockAcquirer has no entry for {} @ {tag}",
+                artifact.binary_name(),
+            ))
+        })?;
 
-        let dir = self
-            .workdir
-            .clone()
-            .unwrap_or_else(std::env::temp_dir);
+        let dir = self.workdir.clone().unwrap_or_else(std::env::temp_dir);
         std::fs::create_dir_all(&dir).map_err(|e| AcquireError::Io {
             path: dir.display().to_string(),
             source: e,
         })?;
-        let path = dir.join(format!("{}-{}-{}", artifact.binary_name(), tag, std::process::id()));
+        let path = dir.join(format!(
+            "{}-{}-{}",
+            artifact.binary_name(),
+            tag,
+            std::process::id()
+        ));
         std::fs::write(&path, &bytes).map_err(|e| AcquireError::Io {
             path: path.display().to_string(),
             source: e,
@@ -232,8 +226,7 @@ impl BinaryAcquirer for SourceBuildAcquirer {
         // git/go. `bootstrap` auto-installs apt deps + Go on Linux
         // (matching the bash flow), short-circuits to a detect on
         // subsequent calls in the same process via OnceLock.
-        bootstrap(&self.min_go_version)
-            .map_err(|e| AcquireError::Toolchain(e.to_string()))?;
+        bootstrap(&self.min_go_version).map_err(|e| AcquireError::Toolchain(e.to_string()))?;
 
         // Use a per-artifact + per-tag clone dir so concurrent
         // acquisitions don't trample each other.
@@ -295,11 +288,6 @@ impl ReleaseAcquirer {
             arch: detect_arch(),
             token: None,
         }
-    }
-
-    pub fn with_arch(mut self, arch: impl Into<String>) -> Self {
-        self.arch = arch.into();
-        self
     }
 
     pub fn with_token(mut self, token: Option<String>) -> Self {
@@ -404,11 +392,9 @@ impl BinaryAcquirer for ReleaseAcquirer {
                 .download_asset(sums_asset, &sums_path)
                 .await
                 .map_err(|e| AcquireError::Other(e.to_string()))?;
-            let sums_text = std::fs::read_to_string(&sums_path).map_err(|e| {
-                AcquireError::Io {
-                    path: sums_path.display().to_string(),
-                    source: e,
-                }
+            let sums_text = std::fs::read_to_string(&sums_path).map_err(|e| AcquireError::Io {
+                path: sums_path.display().to_string(),
+                source: e,
             })?;
             mxnode_github::verify_against_sums(&sums_text, &asset.name, &archive_path)
                 .map_err(|e| AcquireError::Other(format!("sha256 verification failed: {e}")))?;
@@ -526,8 +512,8 @@ mod tests {
         let tag = Tag::from_str("v0.0.0").unwrap();
         let err = acquirer.acquire(Artifact::Node, &tag).await.unwrap_err();
         // Either toolchain (no Go) or build (clone failed) is acceptable;
-        // we only assert that we don't get NotImplemented (which would
-        // mean the stub is still in place) or a panic.
+        // we only assert that the call surfaces a typed error rather
+        // than panicking.
         match err {
             AcquireError::Toolchain(_) | AcquireError::Build(_) | AcquireError::Other(_) => {}
             other => panic!("expected Toolchain/Build/Other, got {other:?}"),
@@ -537,7 +523,8 @@ mod tests {
     #[tokio::test]
     async fn release_acquirer_surfaces_failure_for_bogus_org() {
         let tmp = tempfile::tempdir().unwrap();
-        let acquirer = ReleaseAcquirer::new("definitely-not-a-real-org-xyz", tmp.path().to_path_buf());
+        let acquirer =
+            ReleaseAcquirer::new("definitely-not-a-real-org-xyz", tmp.path().to_path_buf());
         let tag = Tag::from_str("v0.0.0").unwrap();
         let err = acquirer.acquire(Artifact::Node, &tag).await.unwrap_err();
         match err {

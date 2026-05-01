@@ -7,7 +7,7 @@
 //! `--json` from v0.1 + structured journald events":
 //!
 //!   - `op` — short verb: "start", "stop", "restart", "db.remove",
-//!            "db.prune", "logs.archive", "cleanup", "metrics.start"
+//!     "db.prune", "logs.archive", "cleanup", "metrics.start"
 //!   - `node` — `NodeIndex.get()` when the op targets exactly one node
 //!   - `unit` — systemd unit name when applicable
 //!   - `result` — "ok" | "fail" (post-action only)
@@ -62,10 +62,6 @@ pub fn node_op_end(op: &'static str, node: NodeIndex, unit: &str, outcome: Outco
 
 /// Emit a global event (no specific node), e.g. `cleanup` or
 /// `metrics.start`. Same shape as the per-node events minus the node fields.
-/// Currently only consumed by Phase 1 commands shipped after lifecycle —
-/// `dead_code` allow keeps the warning quiet until those land in this same
-/// merge window.
-#[allow(dead_code)]
 pub fn global_op(op: &'static str, summary: &str) {
     tracing::info!(
         target: "mxnode.event",

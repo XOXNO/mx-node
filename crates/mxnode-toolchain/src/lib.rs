@@ -241,7 +241,10 @@ pub fn install_go(version: &str) -> Result<GoInstall, ToolchainError> {
     let tarball = std::env::temp_dir().join(&tarball_name);
 
     eprintln!("→ downloading {url}");
-    run_visible("curl", &["-fsSL", "-o", tarball.to_string_lossy().as_ref(), &url])?;
+    run_visible(
+        "curl",
+        &["-fsSL", "-o", tarball.to_string_lossy().as_ref(), &url],
+    )?;
 
     // Marker present → this is a previous mxnode install we own; the
     // bash also clobbered, so we do too. Marker absent + path absent
@@ -254,7 +257,13 @@ pub fn install_go(version: &str) -> Result<GoInstall, ToolchainError> {
     eprintln!("→ extracting to /usr/local (sudo)");
     run_visible(
         "sudo",
-        &["tar", "-C", "/usr/local", "-xzf", tarball.to_string_lossy().as_ref()],
+        &[
+            "tar",
+            "-C",
+            "/usr/local",
+            "-xzf",
+            tarball.to_string_lossy().as_ref(),
+        ],
     )?;
     let _ = std::fs::remove_file(&tarball);
 
@@ -351,20 +360,20 @@ fn update_profile_for_go() -> Result<(), ToolchainError> {
         .open(&profile)
         .map_err(ToolchainError::Io)?;
     writeln!(f, "\n# Added by mxnode bootstrap").map_err(ToolchainError::Io)?;
-    writeln!(f, "export PATH=$PATH:/usr/local/go/bin:$GOPATH/bin")
-        .map_err(ToolchainError::Io)?;
+    writeln!(f, "export PATH=$PATH:/usr/local/go/bin:$GOPATH/bin").map_err(ToolchainError::Io)?;
     writeln!(f, "export GOPATH=$HOME/go").map_err(ToolchainError::Io)?;
     Ok(())
 }
 
 /// `uname -m` → Go-style arch token (`amd64`, `arm64`).
 fn detect_arch() -> Result<&'static str, ToolchainError> {
-    let out = Command::new("uname").arg("-m").output().map_err(|e| {
-        ToolchainError::Spawn {
+    let out = Command::new("uname")
+        .arg("-m")
+        .output()
+        .map_err(|e| ToolchainError::Spawn {
             cmd: "uname".to_string(),
             source: e,
-        }
-    })?;
+        })?;
     let raw = String::from_utf8_lossy(&out.stdout).trim().to_string();
     Ok(match raw.as_str() {
         "x86_64" | "amd64" => "amd64",
@@ -384,12 +393,13 @@ fn is_debian_like() -> bool {
 /// Spawn a child whose stdout/stderr inherit our terminal, so the
 /// operator sees apt + curl + tar progress in real time.
 fn run_visible(cmd: &str, args: &[&str]) -> Result<(), ToolchainError> {
-    let status = Command::new(cmd).args(args).status().map_err(|e| {
-        ToolchainError::Spawn {
+    let status = Command::new(cmd)
+        .args(args)
+        .status()
+        .map_err(|e| ToolchainError::Spawn {
             cmd: cmd.to_string(),
             source: e,
-        }
-    })?;
+        })?;
     if !status.success() {
         return Err(ToolchainError::NonZero {
             cmd: format!("{cmd} {}", args.join(" ")),
@@ -408,12 +418,13 @@ fn which_go() -> Result<PathBuf, ToolchainError> {
     if well_known.exists() {
         return Ok(well_known);
     }
-    let output = Command::new("which").arg("go").output().map_err(|e| {
-        ToolchainError::Spawn {
+    let output = Command::new("which")
+        .arg("go")
+        .output()
+        .map_err(|e| ToolchainError::Spawn {
             cmd: "which".to_string(),
             source: e,
-        }
-    })?;
+        })?;
     if !output.status.success() {
         return Err(ToolchainError::NotInstalled);
     }
@@ -425,12 +436,13 @@ fn which_go() -> Result<PathBuf, ToolchainError> {
 }
 
 fn read_go_version(bin: &std::path::Path) -> Result<String, ToolchainError> {
-    let output = Command::new(bin).arg("version").output().map_err(|e| {
-        ToolchainError::Spawn {
+    let output = Command::new(bin)
+        .arg("version")
+        .output()
+        .map_err(|e| ToolchainError::Spawn {
             cmd: bin.display().to_string(),
             source: e,
-        }
-    })?;
+        })?;
     if !output.status.success() {
         return Err(ToolchainError::NonZero {
             cmd: bin.display().to_string(),

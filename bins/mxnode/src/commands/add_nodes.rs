@@ -91,13 +91,12 @@ pub async fn run(args: AddNodesArgs, global: &GlobalArgs) -> Result<(), CliError
     };
 
     // Compute the next-N indices.
-    let highest_existing = state
-        .nodes
-        .iter()
-        .map(|n| n.index.get())
-        .max()
-        .unwrap_or(0);
-    let start = if state.nodes.is_empty() { 0 } else { highest_existing + 1 };
+    let highest_existing = state.nodes.iter().map(|n| n.index.get()).max().unwrap_or(0);
+    let start = if state.nodes.is_empty() {
+        0
+    } else {
+        highest_existing + 1
+    };
 
     // Resolve per-node display names. Interactive when stdin is a TTY
     // and the operator did not pass `--non-interactive`; mirrors the
@@ -106,8 +105,7 @@ pub async fn run(args: AddNodesArgs, global: &GlobalArgs) -> Result<(), CliError
         .name_template
         .as_deref()
         .unwrap_or(&runtime.loaded.config.node.name_template);
-    let interactive =
-        !args.non_interactive && std::io::IsTerminal::is_terminal(&std::io::stdin());
+    let interactive = !args.non_interactive && std::io::IsTerminal::is_terminal(&std::io::stdin());
     let display_names = if count == 0 {
         Vec::new()
     } else {
@@ -142,18 +140,14 @@ pub async fn run(args: AddNodesArgs, global: &GlobalArgs) -> Result<(), CliError
         })
         .collect();
 
-    let binary_tag = install
-        .versions
-        .binary_tag
-        .clone()
-        .ok_or_else(|| {
-            CliError::new(
-                "state.install.versions.binary_tag is unset",
-                "cannot extend without knowing the deployed tag",
-                "run hand-edit and re-run to refresh, or pass an explicit override in config",
-            )
-            .json_if(global.json)
-        })?;
+    let binary_tag = install.versions.binary_tag.clone().ok_or_else(|| {
+        CliError::new(
+            "state.install.versions.binary_tag is unset",
+            "cannot extend without knowing the deployed tag",
+            "run hand-edit and re-run to refresh, or pass an explicit override in config",
+        )
+        .json_if(global.json)
+    })?;
     let config_tag = install
         .versions
         .config_tag

@@ -125,7 +125,9 @@ impl NodeClient {
             return Ok(None);
         }
         if !resp.status().is_success() {
-            return Err(RpcError::Status { status: resp.status().as_u16() });
+            return Err(RpcError::Status {
+                status: resp.status().as_u16(),
+            });
         }
         let body: serde_json::Value = resp.json().await?;
         // Shape: { "data": { "count": N }, "error": "", "code": "successful" }
@@ -144,7 +146,9 @@ impl NodeClient {
             // Bootstrap endpoint returns 500 with `node is starting` JSON
             // while the node is initialising. Surface as Status so the
             // caller can label it specifically without a parse attempt.
-            return Err(RpcError::Status { status: status.as_u16() });
+            return Err(RpcError::Status {
+                status: status.as_u16(),
+            });
         }
         let body: serde_json::Value = resp.json().await?;
         let metrics = body
@@ -192,7 +196,9 @@ impl GatewayClient {
         let url = format!("{}/network/trie-statistics/{}", self.base_url, shard);
         let resp = self.http.get(&url).send().await?;
         if !resp.status().is_success() {
-            return Err(RpcError::Status { status: resp.status().as_u16() });
+            return Err(RpcError::Status {
+                status: resp.status().as_u16(),
+            });
         }
         let body: serde_json::Value = resp.json().await?;
         let n = body

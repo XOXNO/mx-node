@@ -24,9 +24,9 @@ pub fn validate(cfg: &Config) -> ValidationReport {
     let mut report = ValidationReport::default();
 
     if cfg.network.environment.is_none() {
-        report.errors.push(
-            "network.environment is unset; choose one of mainnet|testnet|devnet".to_string(),
-        );
+        report
+            .errors
+            .push("network.environment is unset; choose one of mainnet|testnet|devnet".to_string());
     }
 
     if cfg.paths.custom_user.trim().is_empty() {
@@ -48,9 +48,9 @@ pub fn validate(cfg: &Config) -> ValidationReport {
     }
 
     if cfg.install.binary_keep == 0 {
-        report.errors.push(
-            "install.binary_keep must be at least 1 to allow rollback".to_string(),
-        );
+        report
+            .errors
+            .push("install.binary_keep must be at least 1 to allow rollback".to_string());
     }
 
     if cfg.proxy.observers_shards.is_empty() {
@@ -95,7 +95,7 @@ fn invalid_extra_flags(flags: &str) -> Option<String> {
     // try to track full shell quoting; a perfectly-balanced shell quote
     // sequence is fine, an obviously-broken one isn't.
     let quote_count = flags.matches('"').count();
-    if quote_count % 2 != 0 {
+    if !quote_count.is_multiple_of(2) {
         return Some("contains an unbalanced double-quote".to_string());
     }
     None
@@ -167,7 +167,10 @@ mod tests {
         cfg.node.extra_flags = "-display-name \"unterminated".to_string();
         let r = validate(&cfg);
         assert!(!r.ok());
-        assert!(r.errors.iter().any(|e| e.contains("unbalanced double-quote")));
+        assert!(r
+            .errors
+            .iter()
+            .any(|e| e.contains("unbalanced double-quote")));
     }
 
     #[test]

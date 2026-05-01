@@ -242,7 +242,7 @@ fn render_table(state: &State, probes: &[Probe], color: bool) {
     for (node, probe) in state.nodes.iter().zip(probes.iter()) {
         let nonce = probe
             .nonce
-            .map(|n| format_nonce(n))
+            .map(format_nonce)
             .unwrap_or_else(|| "-".to_string());
         let pubkey = probe
             .pubkey_prefix
@@ -393,12 +393,27 @@ mod tests {
     #[test]
     fn health_summary_counts_categories() {
         let probes = vec![
-            Probe { health: Health::Ok, nonce: Some(1), pubkey_prefix: None },
-            Probe { health: Health::Ok, nonce: Some(2), pubkey_prefix: None },
-            Probe { health: Health::Lagging, nonce: Some(3), pubkey_prefix: None },
-            Probe { health: Health::Failed, nonce: None, pubkey_prefix: None },
+            Probe {
+                health: Health::Ok,
+                nonce: Some(1),
+                pubkey_prefix: None,
+            },
+            Probe {
+                health: Health::Ok,
+                nonce: Some(2),
+                pubkey_prefix: None,
+            },
+            Probe {
+                health: Health::Lagging,
+                nonce: Some(3),
+                pubkey_prefix: None,
+            },
+            Probe {
+                health: Health::Failed,
+                nonce: None,
+                pubkey_prefix: None,
+            },
         ];
         assert_eq!(summarize(&probes), "2 ok, 1 lagging, 1 failed, 0 unknown");
     }
-
 }

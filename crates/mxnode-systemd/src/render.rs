@@ -32,7 +32,10 @@ pub fn render_canonical_node_unit(spec: &NodeUnitSpec<'_>) -> String {
     let workdir = spec.workdir.display();
     let mut out = String::new();
     out.push_str("[Unit]\n");
-    out.push_str(&format!("Description=MultiversX Node-{}\n", spec.index.get()));
+    out.push_str(&format!(
+        "Description=MultiversX Node-{}\n",
+        spec.index.get()
+    ));
     out.push_str("After=network-online.target\n");
     out.push('\n');
     out.push_str("[Service]\n");
@@ -114,7 +117,10 @@ WantedBy=multi-user.target
     }
 
     fn node_spec_0() -> (PathBuf, NodeIndex) {
-        (PathBuf::from("/home/ubuntu/elrond-nodes/node-0"), NodeIndex::new(0))
+        (
+            PathBuf::from("/home/ubuntu/elrond-nodes/node-0"),
+            NodeIndex::new(0),
+        )
     }
 
     #[test]

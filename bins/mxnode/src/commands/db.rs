@@ -302,7 +302,11 @@ fn prune_old_epochs(workdir: &Path, keep: u32) -> std::io::Result<String> {
     ))
 }
 
-fn prompt_confirm(verb: DbVerb, targets: &[&NodeState], global: &GlobalArgs) -> Result<(), CliError> {
+fn prompt_confirm(
+    verb: DbVerb,
+    targets: &[&NodeState],
+    global: &GlobalArgs,
+) -> Result<(), CliError> {
     let stdout = std::io::stdout();
     let mut handle = stdout.lock();
     let indices: Vec<u16> = targets.iter().map(|n| n.index.get()).collect();
@@ -313,11 +317,8 @@ fn prompt_confirm(verb: DbVerb, targets: &[&NodeState], global: &GlobalArgs) -> 
         verb.description()
     )
     .map_err(|e| io_err(e, global))?;
-    write!(
-        handle,
-        "Type the indices back to confirm (e.g. {label}): "
-    )
-    .map_err(|e| io_err(e, global))?;
+    write!(handle, "Type the indices back to confirm (e.g. {label}): ")
+        .map_err(|e| io_err(e, global))?;
     handle.flush().map_err(|e| io_err(e, global))?;
     let mut line = String::new();
     std::io::stdin()

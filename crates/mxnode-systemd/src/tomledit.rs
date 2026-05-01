@@ -145,9 +145,7 @@ fn set_dotted_path(doc: &mut DocumentMut, dotted: &str, value: Item) {
     // Walk to the parent of the leaf.
     let mut cursor: &mut Item = {
         let head = segments[0];
-        if !doc.as_table().contains_key(head)
-            || !doc[head].is_table()
-        {
+        if !doc.as_table().contains_key(head) || !doc[head].is_table() {
             doc[head] = Item::Table(Table::new());
         }
         &mut doc[head]
@@ -177,12 +175,13 @@ fn toml_value_to_edit_item(v: &toml::Value, path: &str) -> Result<Item, TomlEdit
         reason: e,
     })?;
     let wrapped = format!("__tmp = {literal}\n");
-    let doc: DocumentMut = wrapped
-        .parse()
-        .map_err(|e: toml_edit::TomlError| TomlEditError::OverrideConvert {
-            path: path.to_string(),
-            reason: e.to_string(),
-        })?;
+    let doc: DocumentMut =
+        wrapped
+            .parse()
+            .map_err(|e: toml_edit::TomlError| TomlEditError::OverrideConvert {
+                path: path.to_string(),
+                reason: e.to_string(),
+            })?;
     Ok(doc["__tmp"].clone())
 }
 
@@ -298,10 +297,7 @@ pub fn rewrite_proxy_config(
     Ok(())
 }
 
-fn ensure_table<'a>(
-    doc: &'a mut DocumentMut,
-    name: &str,
-) -> Result<&'a mut Table, TomlEditError> {
+fn ensure_table<'a>(doc: &'a mut DocumentMut, name: &str) -> Result<&'a mut Table, TomlEditError> {
     if !doc.as_table().contains_key(name) {
         doc[name] = Item::Table(Table::new());
     }
@@ -351,10 +347,14 @@ SomethingElse = 42
     fn set_destination_shard_writes_protocol_string() {
         let mut doc = parse("[Preferences]\nDestinationShardAsObserver = \"disabled\"\n");
         set_destination_shard(&mut doc, Shard::Metachain).unwrap();
-        assert!(doc.to_string().contains("DestinationShardAsObserver = \"metachain\""));
+        assert!(doc
+            .to_string()
+            .contains("DestinationShardAsObserver = \"metachain\""));
 
         set_destination_shard(&mut doc, Shard::Zero).unwrap();
-        assert!(doc.to_string().contains("DestinationShardAsObserver = \"0\""));
+        assert!(doc
+            .to_string()
+            .contains("DestinationShardAsObserver = \"0\""));
     }
 
     #[test]
@@ -453,7 +453,10 @@ ExistingKey = 1
     fn apply_overrides_is_idempotent() {
         let mut doc = parse("[Preferences]\nFullArchive = false\n");
         let mut map: BTreeMap<String, toml::Value> = BTreeMap::new();
-        map.insert("Preferences.FullArchive".to_string(), toml::Value::Boolean(true));
+        map.insert(
+            "Preferences.FullArchive".to_string(),
+            toml::Value::Boolean(true),
+        );
         apply_overrides(&mut doc, &map, &[]).unwrap();
         let after_first = doc.to_string();
         apply_overrides(&mut doc, &map, &[]).unwrap();
@@ -502,4 +505,3 @@ key = 1
         assert!(out.contains("key = 1"));
     }
 }
-

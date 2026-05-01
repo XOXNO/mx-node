@@ -30,7 +30,7 @@ pub const BORDER: Color = Color::Rgb(110, 122, 150); // bumped from #50586e
 // which makes every "dim" colour render as the same flat grey.
 // Distinct fg colours at full brightness keep level differentiation
 // visible without sacrificing readability.
-pub const LOG_INFO: Color = Color::Rgb(232, 236, 244);  // near-white
+pub const LOG_INFO: Color = Color::Rgb(232, 236, 244); // near-white
 pub const LOG_DEBUG: Color = Color::Rgb(135, 200, 230); // cyan-blue (Go termui DEBUG)
 pub const LOG_TRACE: Color = Color::Rgb(165, 175, 200); // bumped from #767c91
 pub const LOG_OTHER: Color = Color::Rgb(210, 216, 232); // bumped from #aab0c3

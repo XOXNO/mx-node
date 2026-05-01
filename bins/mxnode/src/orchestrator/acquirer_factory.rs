@@ -74,9 +74,9 @@ pub fn build_acquirer(
 
     match runtime.loaded.config.install.artifact_source {
         ArtifactSource::Source => Arc::new(make_source()),
-        ArtifactSource::Release => Arc::new(
-            ReleaseAcquirer::new(github_org, workdir).with_token(token),
-        ),
+        ArtifactSource::Release => {
+            Arc::new(ReleaseAcquirer::new(github_org, workdir).with_token(token))
+        }
         ArtifactSource::Auto => {
             let release = Arc::new(
                 ReleaseAcquirer::new(github_org.clone(), workdir.clone()).with_token(token),
@@ -133,7 +133,10 @@ mod tests {
 
     #[test]
     fn cli_override_wins_over_upstream() {
-        assert_eq!(pick_go(Some("1.24.0"), Some("1.23.4")).as_deref(), Some("1.24.0"));
+        assert_eq!(
+            pick_go(Some("1.24.0"), Some("1.23.4")).as_deref(),
+            Some("1.24.0")
+        );
     }
 
     #[test]

@@ -17,7 +17,7 @@ use crate::cli::{GlobalArgs, LifecycleArgs, RestartArgs, Strategy};
 use crate::errors::CliError;
 use crate::events::{node_op_end, node_op_start, Outcome};
 use crate::orchestrator::runtime::{CliErrorExt, Runtime};
-use crate::orchestrator::selector::{resolve, DefaultSelection, SelectorError};
+use crate::orchestrator::selector::{resolve, SelectorError};
 
 /// Verb supported by this module — matches the systemctl op we'll fire.
 #[derive(Debug, Clone, Copy)]
@@ -73,9 +73,7 @@ async fn drive(
     // `--observers-only`, or `--select <expr>`. The clap `ArgGroup` on
     // `LifecycleArgs` keeps "at most one of these" enforcement so the
     // CLI fails fast if multiple selectors are mixed.
-    let indices = resolve(&state, &args, DefaultSelection::All).map_err(|e| {
-        selector_error_to_cli(e, global)
-    })?;
+    let indices = resolve(&state, &args).map_err(|e| selector_error_to_cli(e, global))?;
     if indices.is_empty() {
         return Err(CliError::new(
             "selector matched zero nodes",
@@ -113,9 +111,7 @@ async fn drive(
                 for node in chunk {
                     let ctl_clone = Arc::clone(&ctl);
                     let node_handle = node.clone();
-                    set.spawn(async move {
-                        run_one(ctl_clone.as_ref(), verb, &node_handle).await
-                    });
+                    set.spawn(async move { run_one(ctl_clone.as_ref(), verb, &node_handle).await });
                 }
                 while let Some(joined) = set.join_next().await {
                     match joined {
@@ -216,9 +212,7 @@ fn unexpected_state_suffix(verb: Verb, after: ActiveStateView) -> Option<&'stati
         (Verb::Start, ActiveStateView::Inactive)
         | (Verb::Start, ActiveStateView::Failed)
         | (Verb::Restart, ActiveStateView::Inactive)
-        | (Verb::Restart, ActiveStateView::Failed) => {
-            Some("(supervisor reports unit not running)")
-        }
+        | (Verb::Restart, ActiveStateView::Failed) => Some("(supervisor reports unit not running)"),
         (Verb::Stop, ActiveStateView::Active) => Some("(supervisor reports unit still active)"),
         _ => None,
     }
@@ -355,7 +349,6 @@ fn load_state_or_err(store: &StateStore, global: &GlobalArgs) -> Result<State, C
 
 fn selector_error_to_cli(e: SelectorError, global: &GlobalArgs) -> CliError {
     let summary = match &e {
-        SelectorError::NoSelector => "no selector supplied",
         SelectorError::NodeMissing { .. } => "no such node",
         SelectorError::BadExpression(_) => "invalid --select expression",
         SelectorError::EmptyState => "no nodes recorded",

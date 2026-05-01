@@ -281,7 +281,10 @@ fn read_plist_value(s: &str) -> (String, usize) {
         }
     }
     if let Some(rest) = s.strip_prefix("<true/>") {
-        return ("true".to_string(), "<true/>".len() + (s.len() - rest.len() - "<true/>".len()));
+        return (
+            "true".to_string(),
+            "<true/>".len() + (s.len() - rest.len() - "<true/>".len()),
+        );
     }
     if s.starts_with("<true/>") {
         return ("true".to_string(), "<true/>".len());
@@ -303,10 +306,7 @@ fn read_plist_value(s: &str) -> (String, usize) {
                     break;
                 }
             }
-            return (
-                tokens.join(" "),
-                "<array>".len() + end + "</array>".len(),
-            );
+            return (tokens.join(" "), "<array>".len() + end + "</array>".len());
         }
     }
     if let Some(rest) = s.strip_prefix("<dict>") {
@@ -467,10 +467,9 @@ impl UnitView {
     /// Convenience: extract the per-section list as a flat
     /// "section.key=value" iterator. Useful for diffing.
     pub fn flatten(&self) -> impl Iterator<Item = String> + '_ {
-        self.directives.iter().flat_map(|(section, kvs)| {
-            kvs.iter()
-                .map(move |(k, v)| format!("{section}.{k}={v}"))
-        })
+        self.directives
+            .iter()
+            .flat_map(|(section, kvs)| kvs.iter().map(move |(k, v)| format!("{section}.{k}={v}")))
     }
 }
 
@@ -530,7 +529,10 @@ pub fn parse_unit_text(text: &str) -> Result<UnitView, ParseError> {
             if let Some(stripped) = value.strip_suffix('\\') {
                 continuation = Some((section.clone(), key, stripped.trim().to_string()));
             } else {
-                directives.entry(section.clone()).or_default().push((key, value));
+                directives
+                    .entry(section.clone())
+                    .or_default()
+                    .push((key, value));
             }
         }
     }
@@ -691,7 +693,10 @@ User=ubuntu
 
     #[test]
     fn missing_rest_api_interface_returns_none() {
-        assert_eq!(parse_api_port_from_exec_start("/path/to/node -no-port-flag"), None);
+        assert_eq!(
+            parse_api_port_from_exec_start("/path/to/node -no-port-flag"),
+            None
+        );
     }
 
     #[test]
@@ -793,7 +798,10 @@ ExecStart=/bin/true
         assert_eq!(found.len(), 1);
         let d = &found[0];
         assert!(d.has_drop_ins);
-        assert_eq!(d.drop_ins, vec!["local.conf".to_string(), "override.conf".to_string()]);
+        assert_eq!(
+            d.drop_ins,
+            vec!["local.conf".to_string(), "override.conf".to_string()]
+        );
     }
 
     #[test]
@@ -844,7 +852,9 @@ ExecStart=/bin/true
         let view = parse_plist_text(&plist);
         assert_eq!(view.working_directory, Some(workdir));
         assert_eq!(view.api_port, Some(8083));
-        let exec = view.exec_start.expect("ExecStart populated from ProgramArguments");
+        let exec = view
+            .exec_start
+            .expect("ExecStart populated from ProgramArguments");
         assert!(exec.contains("/node "));
         assert!(exec.contains("localhost:8083"));
     }
@@ -856,7 +866,10 @@ ExecStart=/bin/true
         // the orchestrator doesn't have to branch.
         let tmp = tempfile::tempdir().unwrap();
         let found = scan_supervisor_dir(tmp.path()).unwrap();
-        assert!(found.is_empty(), "empty dir → empty result regardless of platform");
+        assert!(
+            found.is_empty(),
+            "empty dir → empty result regardless of platform"
+        );
     }
 
     #[test]

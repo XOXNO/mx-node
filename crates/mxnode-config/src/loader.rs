@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
 
 use mxnode_core::Config;
-use serde::{Deserialize, Serialize};
 
 use crate::origin::{merge_with_origin, Origin, OriginMap};
 use crate::ConfigError;
@@ -65,28 +64,46 @@ pub fn load(opts: &LoadOptions) -> Result<Loaded, ConfigError> {
     let defaults_value = serialize(&defaults)?;
 
     let (file_value, source) = read_file_layer(opts)?;
-    let flags_value = opts.flags_overlay.clone().unwrap_or(toml::Value::Table(toml::map::Map::new()));
+    let flags_value = opts
+        .flags_overlay
+        .clone()
+        .unwrap_or(toml::Value::Table(toml::map::Map::new()));
 
     let mut merged = defaults_value.clone();
     let mut origins = OriginMap::new();
     record_origins(&defaults_value, "", Origin::Default, &mut origins);
 
     if let Some(file_value) = &file_value {
-        merge_with_origin(&mut merged, file_value, "", layer_origin(&source), &mut origins);
+        merge_with_origin(
+            &mut merged,
+            file_value,
+            "",
+            layer_origin(&source),
+            &mut origins,
+        );
     }
     merge_with_origin(&mut merged, &flags_value, "", Origin::Flag, &mut origins);
 
     let config: Config = toml::Value::try_into(merged)
         .map_err(|e| ConfigError::Invalid(format!("merged config did not match schema: {e}")))?;
 
-    Ok(Loaded { config, source, origins })
+    Ok(Loaded {
+        config,
+        source,
+        origins,
+    })
 }
 
 fn layer_origin(source: &ConfigSource) -> Origin {
     match source {
         ConfigSource::None => Origin::Default,
-        ConfigSource::File { scope: Scope::User, .. } => Origin::User,
-        ConfigSource::File { scope: Scope::System, .. } => Origin::System,
+        ConfigSource::File {
+            scope: Scope::User, ..
+        } => Origin::User,
+        ConfigSource::File {
+            scope: Scope::System,
+            ..
+        } => Origin::System,
         ConfigSource::Explicit(_) => Origin::Explicit,
     }
 }
@@ -95,7 +112,11 @@ fn record_origins(value: &toml::Value, prefix: &str, origin: Origin, out: &mut O
     match value {
         toml::Value::Table(t) => {
             for (k, v) in t.iter() {
-                let path = if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") };
+                let path = if prefix.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{prefix}.{k}")
+                };
                 record_origins(v, &path, origin, out);
             }
         }
@@ -115,13 +136,25 @@ fn read_file_layer(opts: &LoadOptions) -> Result<(Option<toml::Value>, ConfigSou
     // (so the operator can still rely on /etc) or the file simply isn't there.
     if let Ok(path) = user_config_path() {
         if path.exists() {
-            return Ok((Some(parse_file(&path)?), ConfigSource::File { scope: Scope::User, path }));
+            return Ok((
+                Some(parse_file(&path)?),
+                ConfigSource::File {
+                    scope: Scope::User,
+                    path,
+                },
+            ));
         }
     }
 
     let system = system_config_path();
     if system.exists() {
-        return Ok((Some(parse_file(&system)?), ConfigSource::File { scope: Scope::System, path: system }));
+        return Ok((
+            Some(parse_file(&system)?),
+            ConfigSource::File {
+                scope: Scope::System,
+                path: system,
+            },
+        ));
     }
 
     Ok((None, ConfigSource::None))
@@ -150,7 +183,9 @@ fn serialize(cfg: &Config) -> Result<toml::Value, ConfigError> {
 /// resolution error if neither HOME nor `XDG_CONFIG_HOME` is set — callers
 /// must surface this to the operator instead of silently using a default.
 pub fn user_config_path() -> Result<PathBuf, ConfigError> {
-    Ok(crate::xdg::xdg_config_home()?.join("mxnode").join("config.toml"))
+    Ok(crate::xdg::xdg_config_home()?
+        .join("mxnode")
+        .join("config.toml"))
 }
 
 /// Convenience alias used by commands that just want a writable path
@@ -161,25 +196,6 @@ pub fn user_config_path_or_default() -> Result<PathBuf, ConfigError> {
 
 pub fn system_config_path() -> PathBuf {
     PathBuf::from("/etc/mxnode/config.toml")
-}
-
-/// Convenience wrapper used by `mxnode config set` to write into a chosen
-/// scope without losing untouched fields. Phase 0 doesn't ship `set`, so the
-/// type is a public placeholder.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PartialConfig(toml::Value);
-
-impl PartialConfig {
-    #[allow(dead_code)]
-    pub fn empty() -> Self {
-        Self(toml::Value::Table(toml::map::Map::new()))
-    }
-
-    #[allow(dead_code)]
-    pub fn into_inner(self) -> toml::Value {
-        self.0
-    }
 }
 
 #[cfg(test)]
@@ -210,11 +226,15 @@ mod tests {
     #[test]
     fn load_explicit_file_wins_over_defaults() {
         let dir = TempDir::new().unwrap();
-        let path = write_file(&dir, "test.toml", r#"
+        let path = write_file(
+            &dir,
+            "test.toml",
+            r#"
 [network]
 environment = "testnet"
 github_org = "myfork"
-"#);
+"#,
+        );
         let opts = LoadOptions {
             config_path: Some(path.clone()),
             flags_overlay: None,
@@ -227,22 +247,38 @@ github_org = "myfork"
         );
         assert_eq!(loaded.config.network.github_org, "myfork");
         // Origin tracking: keys we set should be Explicit; untouched should stay Default.
-        assert_eq!(loaded.origins.get("network.environment"), Some(&Origin::Explicit));
-        assert_eq!(loaded.origins.get("network.github_org"), Some(&Origin::Explicit));
-        assert_eq!(loaded.origins.get("node.api_port_base"), Some(&Origin::Default));
+        assert_eq!(
+            loaded.origins.get("network.environment"),
+            Some(&Origin::Explicit)
+        );
+        assert_eq!(
+            loaded.origins.get("network.github_org"),
+            Some(&Origin::Explicit)
+        );
+        assert_eq!(
+            loaded.origins.get("node.api_port_base"),
+            Some(&Origin::Default)
+        );
     }
 
     #[test]
     fn flags_layer_wins_over_file() {
         let dir = TempDir::new().unwrap();
-        let path = write_file(&dir, "test.toml", r#"
+        let path = write_file(
+            &dir,
+            "test.toml",
+            r#"
 [network]
 environment = "testnet"
 github_org = "fromfile"
-"#);
+"#,
+        );
         let mut overlay = toml::map::Map::new();
         let mut net = toml::map::Map::new();
-        net.insert("github_org".to_string(), toml::Value::String("fromflag".to_string()));
+        net.insert(
+            "github_org".to_string(),
+            toml::Value::String("fromflag".to_string()),
+        );
         overlay.insert("network".to_string(), toml::Value::Table(net));
 
         let opts = LoadOptions {
@@ -256,8 +292,14 @@ github_org = "fromfile"
             loaded.config.network.environment,
             Some(mxnode_core::Environment::Testnet)
         );
-        assert_eq!(loaded.origins.get("network.github_org"), Some(&Origin::Flag));
-        assert_eq!(loaded.origins.get("network.environment"), Some(&Origin::Explicit));
+        assert_eq!(
+            loaded.origins.get("network.github_org"),
+            Some(&Origin::Flag)
+        );
+        assert_eq!(
+            loaded.origins.get("network.environment"),
+            Some(&Origin::Explicit)
+        );
     }
 
     #[test]

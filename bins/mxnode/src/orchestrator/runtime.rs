@@ -5,7 +5,7 @@
 //! every command picks the same `--config` flag and the same global
 //! `--no-validate` semantics for free.
 
-use mxnode_config::{load, resolve_paths, user_config_path, ConfigSource, Loaded, LoadOptions};
+use mxnode_config::{load, resolve_paths, user_config_path, ConfigSource, LoadOptions, Loaded};
 use mxnode_core::Paths;
 
 use crate::cli::GlobalArgs;

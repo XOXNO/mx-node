@@ -102,10 +102,7 @@ pub enum SyncState {
     ///   2. `processed / NodeSnapshot::trie_total_nodes` — when the
     ///      gateway responded to `/network/trie-statistics/<shard>`.
     ///   3. None — show a marquee / spinner instead of a fixed bar.
-    TrieSync {
-        processed: u64,
-        pct: Option<u64>,
-    },
+    TrieSync { processed: u64, pct: Option<u64> },
     /// Block sync — node is catching up to the network's tip.
     BlockSync { nonce: u64, target: u64 },
     /// Caught up to within K blocks of the tip.

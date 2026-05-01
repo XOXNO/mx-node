@@ -112,7 +112,9 @@ pub async fn run(args: InstallArgs, global: &GlobalArgs) -> Result<(), CliError>
     // ~3x what concurrent does on a typical install.
     let proxy_fut = async {
         if args.with_proxy {
-            resolve_proxy_tag(&runtime, args.proxy_tag.as_deref()).await.map(Some)
+            resolve_proxy_tag(&runtime, args.proxy_tag.as_deref())
+                .await
+                .map(Some)
         } else {
             Ok(None)
         }
@@ -248,8 +250,8 @@ pub async fn run(args: InstallArgs, global: &GlobalArgs) -> Result<(), CliError>
         .await
         .map_err(|e| install_err(e, global))?;
 
-    let state_path = persist_state(&runtime.paths, &outcome.state)
-        .map_err(|e| install_err(e, global))?;
+    let state_path =
+        persist_state(&runtime.paths, &outcome.state).map_err(|e| install_err(e, global))?;
 
     emit_success(global, &outcome, &state_path, &runtime.paths.node_keys)
 }
@@ -313,7 +315,10 @@ fn announce_keys_file(global: &GlobalArgs, path: &std::path::Path) {
     if global.json {
         return;
     }
-    println!("multikey keys → {} (will be copied into every node)", path.display());
+    println!(
+        "multikey keys → {} (will be copied into every node)",
+        path.display()
+    );
 }
 
 fn announce_redundancy(global: &GlobalArgs, level: u8) {
@@ -481,7 +486,10 @@ pub(super) fn emit_success(
             println!("  names:");
             for n in &node_names {
                 if n.display_name.is_empty() {
-                    println!("    node-{} → (none — set node.name_template in config)", n.index);
+                    println!(
+                        "    node-{} → (none — set node.name_template in config)",
+                        n.index
+                    );
                 } else {
                     println!("    node-{} → {}", n.index, n.display_name);
                 }

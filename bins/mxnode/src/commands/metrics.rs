@@ -113,7 +113,10 @@ async fn render_metrics(store: &StateStore) -> Result<String, String> {
     out.push_str("# HELP mxnode_node_active 1 if the systemd unit is active\n");
     out.push_str("# TYPE mxnode_node_active gauge\n");
     for node in &state.nodes {
-        let v = active_map.get(node.index.get() as usize).copied().unwrap_or(0);
+        let v = active_map
+            .get(node.index.get() as usize)
+            .copied()
+            .unwrap_or(0);
         out.push_str(&format!(
             "mxnode_node_active{{index=\"{}\",unit=\"{}\"}} {}\n",
             node.index.get(),
@@ -121,7 +124,9 @@ async fn render_metrics(store: &StateStore) -> Result<String, String> {
             v,
         ));
     }
-    out.push_str("# HELP mxnode_node_nonce latest erd_nonce from /node/status (0 when unreachable)\n");
+    out.push_str(
+        "# HELP mxnode_node_nonce latest erd_nonce from /node/status (0 when unreachable)\n",
+    );
     out.push_str("# TYPE mxnode_node_nonce gauge\n");
     for node in &state.nodes {
         let nonce = nonce_map
@@ -138,11 +143,11 @@ async fn render_metrics(store: &StateStore) -> Result<String, String> {
     out.push_str("# HELP mxnode_node_health 0=failed 1=lagging 2=ok 3=unknown\n");
     out.push_str("# TYPE mxnode_node_health gauge\n");
     for node in &state.nodes {
-        let active = active_map.get(node.index.get() as usize).copied().unwrap_or(0);
-        let nonce = nonce_map
+        let active = active_map
             .get(node.index.get() as usize)
             .copied()
-            .flatten();
+            .unwrap_or(0);
+        let nonce = nonce_map.get(node.index.get() as usize).copied().flatten();
         let health = match (active, nonce) {
             (1, Some(n)) if n > 0 => 2, // ok
             (1, _) => 1,                // lagging
@@ -161,7 +166,12 @@ async fn render_metrics(store: &StateStore) -> Result<String, String> {
 /// Per-node `is-active` probe in parallel. Result vec is indexed by
 /// `node.index.get() as usize`; entries default to 0 (inactive/unknown).
 async fn probe_active(state: &State) -> Vec<u8> {
-    let max_idx = state.nodes.iter().map(|n| n.index.get() as usize).max().unwrap_or(0);
+    let max_idx = state
+        .nodes
+        .iter()
+        .map(|n| n.index.get() as usize)
+        .max()
+        .unwrap_or(0);
     let mut result = vec![0u8; max_idx + 1];
     let ctl = crate::orchestrator::supervisor::build_supervisor();
     let mut set: JoinSet<(usize, ActiveState)> = JoinSet::new();
@@ -188,7 +198,12 @@ async fn probe_active(state: &State) -> Vec<u8> {
 }
 
 async fn probe_nonces(state: &State) -> Vec<Option<u64>> {
-    let max_idx = state.nodes.iter().map(|n| n.index.get() as usize).max().unwrap_or(0);
+    let max_idx = state
+        .nodes
+        .iter()
+        .map(|n| n.index.get() as usize)
+        .max()
+        .unwrap_or(0);
     let mut result: Vec<Option<u64>> = vec![None; max_idx + 1];
     let mut set: JoinSet<(usize, Option<u64>)> = JoinSet::new();
     for node in &state.nodes {
@@ -237,14 +252,8 @@ mod tests {
 
     #[test]
     fn escape_label_escapes_quotes_and_backslash() {
-        assert_eq!(
-            escape_label("normal-unit.service"),
-            "normal-unit.service",
-        );
-        assert_eq!(
-            escape_label("weird\"unit\\name"),
-            "weird\\\"unit\\\\name",
-        );
+        assert_eq!(escape_label("normal-unit.service"), "normal-unit.service",);
+        assert_eq!(escape_label("weird\"unit\\name"), "weird\\\"unit\\\\name",);
         assert_eq!(escape_label("with\nnewline"), "with\\nnewline");
     }
 }

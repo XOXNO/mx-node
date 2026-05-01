@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 use mxnode_config::{
@@ -77,7 +77,10 @@ fn show(origin: bool, format: Format, global: &GlobalArgs) -> Result<(), CliErro
             })?;
             if origin {
                 let source = SourceView::from(&loaded.source);
-                println!("# config source: {}", serde_json::to_string(&source).unwrap_or_default());
+                println!(
+                    "# config source: {}",
+                    serde_json::to_string(&source).unwrap_or_default()
+                );
                 println!("# per-leaf origins:");
                 for (path, origin) in loaded.origins.iter() {
                     println!("#   {} = {}", path, origin.label());
@@ -161,7 +164,8 @@ fn run_validate(strict: bool, global: &GlobalArgs) -> Result<(), CliError> {
     if strict {
         report.warnings.push(
             "--strict checks (network reachability, token validity) are not yet wired up; \
-             add them once mxnode-github gains an offline-tolerant probe path".to_string(),
+             add them once mxnode-github gains an offline-tolerant probe path"
+                .to_string(),
         );
     }
 
@@ -423,17 +427,14 @@ fn edit(scope: ScopeArg, global: &GlobalArgs) -> Result<(), CliError> {
     let editor = std::env::var("EDITOR")
         .or_else(|_| std::env::var("VISUAL"))
         .unwrap_or_else(|_| "vi".to_string());
-    let status = Command::new(&editor)
-        .arg(&target)
-        .status()
-        .map_err(|e| {
-            CliError::new(
-                "could not launch editor",
-                format!("{editor} {}: {e}", target.display()),
-                "set $EDITOR to a known-good editor and retry",
-            )
-            .json_if(global.json)
-        })?;
+    let status = Command::new(&editor).arg(&target).status().map_err(|e| {
+        CliError::new(
+            "could not launch editor",
+            format!("{editor} {}: {e}", target.display()),
+            "set $EDITOR to a known-good editor and retry",
+        )
+        .json_if(global.json)
+    })?;
     if !status.success() {
         return Err(CliError::new(
             "editor exited non-zero",
@@ -480,6 +481,3 @@ fn scope_label(scope: ScopeArg) -> &'static str {
         ScopeArg::System => "system",
     }
 }
-
-#[allow(dead_code)]
-fn _path_marker(_p: &Path) {}

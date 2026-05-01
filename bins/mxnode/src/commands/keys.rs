@@ -24,10 +24,7 @@ pub fn run_keys(cmd: KeysCommand, global: &GlobalArgs) -> Result<(), CliError> {
 
 pub fn run_keygen(args: KeygenArgs, global: &GlobalArgs) -> Result<(), CliError> {
     let runtime = Runtime::from_global(global)?;
-    let binary = runtime
-        .paths
-        .elrond_utils_root()
-        .join("keygenerator");
+    let binary = runtime.paths.elrond_utils_root().join("keygenerator");
     if !binary.exists() {
         return Err(CliError::new(
             "keygenerator binary is not installed",
@@ -157,7 +154,10 @@ fn check(global: &GlobalArgs) -> Result<(), CliError> {
             println!(
                 "  {glyph} node-{}: {} ({})",
                 e.index,
-                e.zip_path.file_name().and_then(|n| n.to_str()).unwrap_or(""),
+                e.zip_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(""),
                 if e.present { "present" } else { "missing" },
             );
         }

@@ -11,7 +11,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
     version,
     about = "MultiversX node operator CLI",
     long_about = "Install, upgrade, and operate MultiversX nodes (validators, observer squads, multikey nodes, the proxy) on Linux hosts via systemd.\n\nmxnode does NOT phone home. The only outbound network requests it makes are to GitHub Releases (for upgrades) and the local node REST API.",
-    propagate_version = true,
+    propagate_version = true
 )]
 pub struct Cli {
     #[command(flatten)]
@@ -134,8 +134,10 @@ pub enum Command {
 pub enum ConfigCommand {
     /// Print the merged config.
     Show {
-        #[arg(long)] origin: bool,
-        #[arg(long, value_enum, default_value_t = Format::Toml)] format: Format,
+        #[arg(long)]
+        origin: bool,
+        #[arg(long, value_enum, default_value_t = Format::Toml)]
+        format: Format,
     },
     /// Print one dotted-path value.
     Get { path: String },
@@ -143,16 +145,19 @@ pub enum ConfigCommand {
     Set {
         path: String,
         value: String,
-        #[arg(long, value_enum, default_value_t = Scope::User)] scope: Scope,
+        #[arg(long, value_enum, default_value_t = Scope::User)]
+        scope: Scope,
     },
     /// Open the chosen scope's file in $EDITOR.
     Edit {
-        #[arg(long, value_enum, default_value_t = Scope::User)] scope: Scope,
+        #[arg(long, value_enum, default_value_t = Scope::User)]
+        scope: Scope,
     },
     /// Run pre-flight validation.
     Validate {
         /// Also check network reachability (token, repos).
-        #[arg(long)] strict: bool,
+        #[arg(long)]
+        strict: bool,
     },
 }
 
@@ -173,11 +178,16 @@ pub struct InstallArgs {
     /// Number of nodes to install. Ignored when `--squad` is set, and
     /// rejected for `--role multikey` (multikey is always a 4-shard
     /// squad by design). Defaults to 1.
-    #[arg(long, conflicts_with = "squad")] pub count: Option<u16>,
-    #[arg(long)] pub config_tag: Option<String>,
-    #[arg(long)] pub binary_tag: Option<String>,
-    #[arg(long)] pub proxy_tag: Option<String>,
-    #[arg(long)] pub name_template: Option<String>,
+    #[arg(long, conflicts_with = "squad")]
+    pub count: Option<u16>,
+    #[arg(long)]
+    pub config_tag: Option<String>,
+    #[arg(long)]
+    pub binary_tag: Option<String>,
+    #[arg(long)]
+    pub proxy_tag: Option<String>,
+    #[arg(long)]
+    pub name_template: Option<String>,
     /// Role for every node in this install. Validator (default) expects
     /// an operator-supplied `node-{i}.zip` per node. Observer
     /// auto-generates a throwaway BLS key on first start. Multikey
@@ -188,11 +198,13 @@ pub struct InstallArgs {
     /// Install a 4-node squad pinned to shards 0, 1, 2, and metachain.
     /// Use with `--role validator` or `--role observer` to opt into
     /// the squad layout. Implicit and unnecessary for `--role multikey`.
-    #[arg(long)] pub squad: bool,
+    #[arg(long)]
+    pub squad: bool,
     /// Also install the MultiversX proxy alongside the nodes. Off by
     /// default — many operators host the proxy on a separate box and
     /// point their squads at it over the network.
-    #[arg(long)] pub with_proxy: bool,
+    #[arg(long)]
+    pub with_proxy: bool,
     /// Path to the operator's `allValidatorsKeys.pem` (the bundle of
     /// every BLS key the multikey nodes will sign for). Required for
     /// `--role multikey`; rejected for any other role.
@@ -200,7 +212,8 @@ pub struct InstallArgs {
     /// If omitted on a multikey install, mxnode looks for
     /// `<node_keys>/allValidatorsKeys.pem` (the same directory that
     /// holds validator zips by convention) and uses it if present.
-    #[arg(long, value_name = "PATH")] pub keys_file: Option<PathBuf>,
+    #[arg(long, value_name = "PATH")]
+    pub keys_file: Option<PathBuf>,
     /// Mark this multikey host as a backup for an existing primary.
     /// Both machines must share the **same** `allValidatorsKeys.pem`;
     /// only the redundancy level differs. Pass `--backup` for level 1
@@ -214,29 +227,35 @@ pub struct InstallArgs {
         default_missing_value = "1",
     )]
     pub backup: Option<u8>,
-    #[arg(long)] pub dry_run: bool,
+    #[arg(long)]
+    pub dry_run: bool,
     /// Skip per-node `NodeDisplayName` prompts — every node gets its
     /// template-expanded default. Set automatically when stdin is not a
     /// TTY (CI, piped input, `< /dev/null`); pass explicitly to suppress
     /// prompts in an interactive terminal too.
-    #[arg(long)] pub non_interactive: bool,
+    #[arg(long)]
+    pub non_interactive: bool,
 }
 
 #[derive(Debug, Args)]
 pub struct AddNodesArgs {
-    #[arg(long, default_value_t = 1)] pub count: u16,
-    #[arg(long, value_enum)] pub role: Option<RoleArg>,
+    #[arg(long, default_value_t = 1)]
+    pub count: u16,
+    #[arg(long, value_enum)]
+    pub role: Option<RoleArg>,
     /// Override the `node.name_template` config value for the new nodes
     /// only. Existing nodes keep their persisted `display_name`. Useful
     /// when the second wave should be named differently from the first
     /// (e.g. `--name-template "extra-{index}"` while the original install
     /// used `mx-chain-mainnet-validator-{index}`).
-    #[arg(long)] pub name_template: Option<String>,
+    #[arg(long)]
+    pub name_template: Option<String>,
     /// Skip per-node `NodeDisplayName` prompts — every new node gets its
     /// template-expanded default. Set automatically when stdin is not a
     /// TTY (CI, piped input, `< /dev/null`); pass explicitly to suppress
     /// prompts in an interactive terminal too.
-    #[arg(long)] pub non_interactive: bool,
+    #[arg(long)]
+    pub non_interactive: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -258,19 +277,28 @@ pub enum RoleArg {
     .multiple(false)
     .args(["all", "select", "validators_only", "observers_only", "shard", "node"]))]
 pub struct LifecycleArgs {
-    #[arg(long, group = "lifecycle_selector")] pub all: bool,
-    #[arg(long, group = "lifecycle_selector")] pub select: Option<String>,
-    #[arg(long, group = "lifecycle_selector")] pub validators_only: bool,
-    #[arg(long, group = "lifecycle_selector")] pub observers_only: bool,
-    #[arg(long, group = "lifecycle_selector")] pub shard: Option<String>,
-    #[arg(long, group = "lifecycle_selector")] pub node: Vec<u16>,
+    #[arg(long, group = "lifecycle_selector")]
+    pub all: bool,
+    #[arg(long, group = "lifecycle_selector")]
+    pub select: Option<String>,
+    #[arg(long, group = "lifecycle_selector")]
+    pub validators_only: bool,
+    #[arg(long, group = "lifecycle_selector")]
+    pub observers_only: bool,
+    #[arg(long, group = "lifecycle_selector")]
+    pub shard: Option<String>,
+    #[arg(long, group = "lifecycle_selector")]
+    pub node: Vec<u16>,
 }
 
 #[derive(Debug, Args)]
 pub struct RestartArgs {
-    #[command(flatten)] pub select: LifecycleArgs,
-    #[arg(long, value_enum, default_value_t = Strategy::Rolling)] pub strategy: Strategy,
-    #[arg(long, default_value_t = 1)] pub max_parallel: u16,
+    #[command(flatten)]
+    pub select: LifecycleArgs,
+    #[arg(long, value_enum, default_value_t = Strategy::Rolling)]
+    pub strategy: Strategy,
+    #[arg(long, default_value_t = 1)]
+    pub max_parallel: u16,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -281,10 +309,13 @@ pub enum Strategy {
 
 #[derive(Debug, Args)]
 pub struct StatusArgs {
-    #[arg(long)] pub watch: bool,
+    #[arg(long)]
+    pub watch: bool,
     /// Refresh interval in seconds when `--watch` is set. Ignored otherwise.
-    #[arg(long, default_value_t = 5, value_name = "SECS")] pub interval: u64,
-    #[arg(long, value_enum, default_value_t = StatusFormat::Table)] pub format: StatusFormat,
+    #[arg(long, default_value_t = 5, value_name = "SECS")]
+    pub interval: u64,
+    #[arg(long, value_enum, default_value_t = StatusFormat::Table)]
+    pub format: StatusFormat,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -295,18 +326,23 @@ pub enum StatusFormat {
 
 #[derive(Debug, Args)]
 pub struct LogsArgs {
-    #[arg(long)] pub node: Vec<u16>,
-    #[arg(long)] pub since: Option<String>,
+    #[arg(long)]
+    pub node: Vec<u16>,
+    #[arg(long)]
+    pub since: Option<String>,
     /// Tail logs as they arrive. Cannot be combined with `--save-archive`.
-    #[arg(long, short = 'f', conflicts_with = "save_archive")] pub follow: bool,
+    #[arg(long, short = 'f', conflicts_with = "save_archive")]
+    pub follow: bool,
     /// Replicates `get_logs` — produces a tar.gz under $CUSTOM_HOME/mx-chain-logs.
     /// Cannot be combined with `--follow`.
-    #[arg(long)] pub save_archive: bool,
+    #[arg(long)]
+    pub save_archive: bool,
 }
 
 #[derive(Debug, Args)]
 pub struct MetricsArgs {
-    #[arg(long, default_value_t = 9090)] pub port: u16,
+    #[arg(long, default_value_t = 9090)]
+    pub port: u16,
 }
 
 /// Mutually-exclusive selector flags on `mxnode upgrade`. `clap`'s
@@ -322,20 +358,30 @@ pub struct UpgradeArgs {
     #[command(subcommand)]
     pub target: Option<UpgradeTarget>,
 
-    #[arg(long)] pub config_tag: Option<String>,
-    #[arg(long)] pub binary_tag: Option<String>,
-    #[arg(long)] pub proxy_tag: Option<String>,
-    #[arg(long, value_enum, default_value_t = Strategy::Rolling)] pub strategy: Strategy,
-    #[arg(long, default_value_t = 1)] pub max_parallel: u16,
+    #[arg(long)]
+    pub config_tag: Option<String>,
+    #[arg(long)]
+    pub binary_tag: Option<String>,
+    #[arg(long)]
+    pub proxy_tag: Option<String>,
+    #[arg(long, value_enum, default_value_t = Strategy::Rolling)]
+    pub strategy: Strategy,
+    #[arg(long, default_value_t = 1)]
+    pub max_parallel: u16,
     /// Free-form selector expression, same grammar as lifecycle commands
     /// (e.g. `role=validator AND shard=0`).
-    #[arg(long, group = "upgrade_selector")] pub select: Option<String>,
+    #[arg(long, group = "upgrade_selector")]
+    pub select: Option<String>,
     /// Limit the upgrade to specific node indices. Repeatable.
-    #[arg(long, group = "upgrade_selector")] pub node: Vec<u16>,
+    #[arg(long, group = "upgrade_selector")]
+    pub node: Vec<u16>,
     /// Limit the upgrade to one shard (`0`, `1`, `2`, or `metachain`).
-    #[arg(long, group = "upgrade_selector")] pub shard: Option<String>,
-    #[arg(long)] pub skip_validators: bool,
-    #[arg(long)] pub dry_run: bool,
+    #[arg(long, group = "upgrade_selector")]
+    pub shard: Option<String>,
+    #[arg(long)]
+    pub skip_validators: bool,
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -343,40 +389,52 @@ pub enum UpgradeTarget {
     /// Upgrade only the proxy. Reads `--proxy-tag` from the subcommand
     /// (or falls back to the parent `mxnode upgrade --proxy-tag`).
     Proxy {
-        #[arg(long)] proxy_tag: Option<String>,
+        #[arg(long)]
+        proxy_tag: Option<String>,
     },
     /// Upgrade the squad: every node + the proxy if installed. The
     /// observer-shape config edits (`[DbLookupExtensions] Enabled`,
     /// shard pinning) are re-applied during the upgrade — useful when
     /// the upstream config repo changed a knob you've been overriding.
     Squad {
-        #[arg(long)] binary_tag: Option<String>,
-        #[arg(long)] config_tag: Option<String>,
-        #[arg(long)] proxy_tag: Option<String>,
+        #[arg(long)]
+        binary_tag: Option<String>,
+        #[arg(long)]
+        config_tag: Option<String>,
+        #[arg(long)]
+        proxy_tag: Option<String>,
     },
 }
 
 #[derive(Debug, Subcommand)]
 pub enum DbCommand {
     Prune {
-        #[arg(long)] node: Vec<u16>,
-        #[arg(long)] epochs: Option<u32>,
+        #[arg(long)]
+        node: Vec<u16>,
+        #[arg(long)]
+        epochs: Option<u32>,
     },
     Remove {
-        #[arg(long)] node: Vec<u16>,
+        #[arg(long)]
+        node: Vec<u16>,
         /// Required to confirm intent. Without it, the command refuses.
-        #[arg(long)] yes: bool,
+        #[arg(long)]
+        yes: bool,
     },
     Reseed {
-        #[arg(long)] node: Vec<u16>,
-        #[arg(long)] yes: bool,
+        #[arg(long)]
+        node: Vec<u16>,
+        #[arg(long)]
+        yes: bool,
     },
 }
 
 #[derive(Debug, Args)]
 pub struct KeygenArgs {
-    #[arg(long, value_name = "INDEX")] pub r#for: Option<u16>,
-    #[arg(long)] pub output: Option<PathBuf>,
+    #[arg(long, value_name = "INDEX")]
+    pub r#for: Option<u16>,
+    #[arg(long)]
+    pub output: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -404,30 +462,32 @@ pub enum KeysCommand {
 #[derive(Debug, Args)]
 pub struct CleanupArgs {
     /// Required to confirm intent. Without it, the command refuses.
-    #[arg(long)] pub yes: bool,
+    #[arg(long)]
+    pub yes: bool,
     /// Keep the versioned binstore (`{custom_home}/mxnode/binaries`)
     /// and the build cache around. Useful when re-installing
     /// immediately after cleanup to avoid re-downloading + re-building.
-    #[arg(long)] pub keep_binaries: bool,
+    #[arg(long)]
+    pub keep_binaries: bool,
     /// Keep the operator's `~/.config/mxnode/config.toml` so a
     /// subsequent `mxnode install` does not have to re-prompt /
     /// re-auto-init. Default cleanup removes it along with the rest
     /// of the mxnode footprint.
-    #[arg(long)] pub keep_config: bool,
+    #[arg(long)]
+    pub keep_config: bool,
     /// Actually perform the cleanup. Cleanup is dry-run by default —
     /// pass `--execute` to opt in to real deletion. Cannot be combined
     /// with `--dry-run`.
-    #[arg(long, conflicts_with = "dry_run")] pub execute: bool,
+    #[arg(long, conflicts_with = "dry_run")]
+    pub execute: bool,
     /// Force dry-run even if `--execute` is also set in some upstream
     /// wrapper. Default behaviour anyway; the flag exists for clarity.
-    #[arg(long)] pub dry_run: bool,
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 impl CleanupArgs {
     /// Returns true when cleanup should actually mutate the host.
-    /// The orchestrator will call this when Phase 1 wires `cleanup`; the
-    /// `dead_code` allow keeps the warning quiet until then.
-    #[allow(dead_code)]
     pub fn should_execute(&self) -> bool {
         self.execute && !self.dry_run
     }
@@ -437,16 +497,20 @@ impl CleanupArgs {
 pub struct DashboardArgs {
     /// Limit the dashboard to a subset of nodes (default: every node in
     /// state.toml). Repeat for multiple, e.g. `--node 0 --node 2`.
-    #[arg(long)] pub node: Vec<u16>,
+    #[arg(long)]
+    pub node: Vec<u16>,
     /// REST poll cadence per node, in milliseconds.
-    #[arg(long, default_value_t = 1000)] pub interval: u64,
+    #[arg(long, default_value_t = 1000)]
+    pub interval: u64,
     /// Override the host the dashboard talks to. Default: 127.0.0.1.
-    #[arg(long, default_value = "127.0.0.1")] pub host: String,
+    #[arg(long, default_value = "127.0.0.1")]
+    pub host: String,
     /// Stream logs over the node's `/log` WebSocket. WS gives structured
     /// level-tagged lines straight from the logger. Default source is
     /// `journalctl --unit <unit> --follow` on Linux (matching `mxnode
     /// logs`) and a tail of `<workdir>/logs/*.log` on macOS.
-    #[arg(long)] pub ws_logs: bool,
+    #[arg(long)]
+    pub ws_logs: bool,
 }
 
 #[derive(Debug, Args)]
@@ -455,9 +519,11 @@ pub struct ReapplyConfigArgs {
     /// operator overrides take effect on the next natural restart, and we
     /// don't want a config-only command surprising validators with a
     /// rolling restart.
-    #[arg(long)] pub restart: bool,
+    #[arg(long)]
+    pub restart: bool,
     /// Limit which nodes get the new edits. Default: all known nodes.
-    #[arg(long)] pub node: Vec<u16>,
+    #[arg(long)]
+    pub node: Vec<u16>,
 }
 
 #[derive(Debug, Args)]
@@ -482,7 +548,7 @@ mod tests {
 
     #[test]
     fn cli_help_text_renders() {
-        let mut cmd = Cli::command();
+        let cmd = Cli::command();
         // Force `Command` to do its full validation pass; this catches
         // mistakes like duplicate arg names or invalid arg-group references
         // at test time rather than first user invocation.
@@ -511,8 +577,11 @@ mod tests {
     #[test]
     fn install_backup_flag_defaults_to_one() {
         let no_backup = Cli::try_parse_from(["mxnode", "install", "--role", "multikey"]).unwrap();
-        let bare = Cli::try_parse_from(["mxnode", "install", "--role", "multikey", "--backup"]).unwrap();
-        let level2 = Cli::try_parse_from(["mxnode", "install", "--role", "multikey", "--backup", "2"]).unwrap();
+        let bare =
+            Cli::try_parse_from(["mxnode", "install", "--role", "multikey", "--backup"]).unwrap();
+        let level2 =
+            Cli::try_parse_from(["mxnode", "install", "--role", "multikey", "--backup", "2"])
+                .unwrap();
         for (cli, expected) in [(no_backup, None), (bare, Some(1)), (level2, Some(2))] {
             match cli.command {
                 Command::Install(args) => assert_eq!(args.backup, expected),
@@ -560,12 +629,7 @@ mod tests {
 
     #[test]
     fn logs_follow_and_save_archive_conflict() {
-        let result = Cli::try_parse_from([
-            "mxnode",
-            "logs",
-            "--follow",
-            "--save-archive",
-        ]);
+        let result = Cli::try_parse_from(["mxnode", "logs", "--follow", "--save-archive"]);
         assert!(result.is_err(), "follow + save-archive must conflict");
     }
 
@@ -599,14 +663,11 @@ mod tests {
 
     #[test]
     fn cleanup_execute_and_dry_run_conflict() {
-        let result = Cli::try_parse_from([
-            "mxnode",
-            "cleanup",
-            "--yes",
-            "--execute",
-            "--dry-run",
-        ]);
-        assert!(result.is_err(), "--execute and --dry-run must be mutually exclusive");
+        let result = Cli::try_parse_from(["mxnode", "cleanup", "--yes", "--execute", "--dry-run"]);
+        assert!(
+            result.is_err(),
+            "--execute and --dry-run must be mutually exclusive"
+        );
     }
 
     #[test]
@@ -639,7 +700,9 @@ mod tests {
         // we do verify the flag exists and parses through.
         let cli = Cli::try_parse_from(["mxnode", "db", "remove", "--yes", "--node", "0"]).unwrap();
         match cli.command {
-            Command::Db { command: DbCommand::Remove { yes, node } } => {
+            Command::Db {
+                command: DbCommand::Remove { yes, node },
+            } => {
                 assert!(yes);
                 assert_eq!(node, vec![0]);
             }

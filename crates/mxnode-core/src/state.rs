@@ -214,8 +214,12 @@ mod tests {
 
     #[test]
     fn install_section_observed_records_supplied_values() {
-        let install =
-            InstallSection::observed(InstallKind::ObserversSquad, Environment::Testnet, "myfork", 4);
+        let install = InstallSection::observed(
+            InstallKind::ObserversSquad,
+            Environment::Testnet,
+            "myfork",
+            4,
+        );
         assert_eq!(install.environment, Environment::Testnet);
         assert_eq!(install.kind, InstallKind::ObserversSquad);
         assert_eq!(install.github_org, "myfork");

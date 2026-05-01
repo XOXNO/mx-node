@@ -78,10 +78,7 @@ pub fn render_canonical_node_plist(spec: &NodeUnitSpec<'_>) -> String {
 
 fn build_exec_args(spec: &NodeUnitSpec<'_>) -> Vec<String> {
     let mut args: Vec<String> = vec![
-        spec.workdir
-            .join("node")
-            .display()
-            .to_string(),
+        spec.workdir.join("node").display().to_string(),
         "-use-log-view".to_string(),
         "-log-logger-name".to_string(),
         "-log-correlation".to_string(),
@@ -267,8 +264,14 @@ mod tests {
 
     #[test]
     fn label_and_filename_match_convention() {
-        assert_eq!(launchd_label(NodeIndex::new(0)), "com.multiversx.elrond-node-0");
-        assert_eq!(launchd_filename(NodeIndex::new(7)), "com.multiversx.elrond-node-7.plist");
+        assert_eq!(
+            launchd_label(NodeIndex::new(0)),
+            "com.multiversx.elrond-node-0"
+        );
+        assert_eq!(
+            launchd_filename(NodeIndex::new(7)),
+            "com.multiversx.elrond-node-7.plist"
+        );
     }
 
     #[test]

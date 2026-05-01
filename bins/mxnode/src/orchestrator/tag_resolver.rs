@@ -117,26 +117,35 @@ async fn resolve(
 ) -> Result<Resolved, ResolveError> {
     if let Some(raw) = cli_value {
         let tag = parse_tag(raw, flag)?;
-        return Ok(Resolved { tag, source: Source::Cli });
+        return Ok(Resolved {
+            tag,
+            source: Source::Cli,
+        });
     }
     if let Some(raw) = override_value {
         let tag = parse_tag(raw, flag)?;
-        return Ok(Resolved { tag, source: Source::Override });
+        return Ok(Resolved {
+            tag,
+            source: Source::Override,
+        });
     }
     let org = &runtime.loaded.config.network.github_org;
     fetch_latest(org, repo).await
 }
 
 fn parse_tag(raw: &str, flag: &'static str) -> Result<Tag, ResolveError> {
-    raw.parse::<Tag>().map_err(|e: mxnode_core::Error| ResolveError::InvalidTag {
-        flag,
-        reason: e.to_string(),
-    })
+    raw.parse::<Tag>()
+        .map_err(|e: mxnode_core::Error| ResolveError::InvalidTag {
+            flag,
+            reason: e.to_string(),
+        })
 }
 
 async fn fetch_latest(org: &str, repo: &str) -> Result<Resolved, ResolveError> {
     let cfg = ClientConfig {
-        token: std::env::var("MXNODE_GITHUB_TOKEN").ok().filter(|s| !s.is_empty()),
+        token: std::env::var("MXNODE_GITHUB_TOKEN")
+            .ok()
+            .filter(|s| !s.is_empty()),
         ..ClientConfig::default()
     };
     let client = Client::new(cfg).map_err(|e| ResolveError::Github {
@@ -161,7 +170,10 @@ async fn fetch_latest(org: &str, repo: &str) -> Result<Resolved, ResolveError> {
             tag: release.tag_name.clone(),
             reason: e.to_string(),
         })?;
-    Ok(Resolved { tag, source: Source::GithubLatest })
+    Ok(Resolved {
+        tag,
+        source: Source::GithubLatest,
+    })
 }
 
 #[cfg(test)]

@@ -98,10 +98,12 @@ impl Inflight {
         {
             use std::io::Write;
             let mut handle = tmp.as_file();
-            handle.write_all(body.as_bytes()).map_err(|e| StateError::Io {
-                path: tmp.path().display().to_string(),
-                source: e,
-            })?;
+            handle
+                .write_all(body.as_bytes())
+                .map_err(|e| StateError::Io {
+                    path: tmp.path().display().to_string(),
+                    source: e,
+                })?;
             handle.sync_all().map_err(|e| StateError::Io {
                 path: tmp.path().display().to_string(),
                 source: e,
@@ -169,7 +171,10 @@ pub enum InflightCheck {
     /// Previous mxnode crashed; safe to `--resume` or `--abandon`.
     StaleFromDeadProcess(Inflight),
     /// Another mxnode is currently running the recorded op. Refuse.
-    Live { other_pid: u32, inflight: Inflight },
+    Live {
+        other_pid: u32,
+        inflight: Inflight,
+    },
     /// PID exists but we couldn't confirm whether it's the same process
     /// (kernel denied us, or birth-time was unreadable). Caller should
     /// refuse rather than stomp.
@@ -181,7 +186,9 @@ impl InflightCheck {
         let Some(inflight) = Inflight::load(path)? else {
             return Ok(InflightCheck::Clear);
         };
-        if inflight.identity.pid == current.pid && inflight.identity.started_token == current.started_token {
+        if inflight.identity.pid == current.pid
+            && inflight.identity.started_token == current.started_token
+        {
             // Our own process re-entering; treat as clear (we'll overwrite).
             return Ok(InflightCheck::Clear);
         }
@@ -229,7 +236,9 @@ mod tests {
     fn clear_removes_file() {
         let dir = TempDir::new().unwrap();
         let path = inflight_path(dir.path());
-        Inflight::new(OpKind::Install, "rolling", vec![]).save(&path).unwrap();
+        Inflight::new(OpKind::Install, "rolling", vec![])
+            .save(&path)
+            .unwrap();
         assert!(path.exists());
         Inflight::clear(&path).unwrap();
         assert!(!path.exists());
@@ -256,7 +265,10 @@ mod tests {
         inflight.save(&path).unwrap();
         let check = InflightCheck::from_path(&path, ProcessIdentity::current()).unwrap();
         assert!(
-            matches!(check, InflightCheck::StaleFromDeadProcess(_) | InflightCheck::Indeterminate(_)),
+            matches!(
+                check,
+                InflightCheck::StaleFromDeadProcess(_) | InflightCheck::Indeterminate(_)
+            ),
             "got {check:?}",
         );
     }
@@ -277,6 +289,9 @@ mod tests {
         inflight.identity.started_token = inflight.identity.started_token.wrapping_add(1);
         inflight.save(&path).unwrap();
         let check = InflightCheck::from_path(&path, ProcessIdentity::current()).unwrap();
-        assert!(matches!(check, InflightCheck::StaleFromDeadProcess(_)), "got {check:?}");
+        assert!(
+            matches!(check, InflightCheck::StaleFromDeadProcess(_)),
+            "got {check:?}"
+        );
     }
 }

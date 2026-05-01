@@ -272,9 +272,7 @@ impl Ctl for LaunchdCtl {
             // That's the moral equivalent of "stop on an already-stopped
             // unit", which the systemd backend treats as success too.
             let stderr = String::from_utf8_lossy(&out.stderr);
-            if stderr.contains("Could not find service")
-                || stderr.contains("No such process")
-            {
+            if stderr.contains("Could not find service") || stderr.contains("No such process") {
                 return Ok(());
             }
             return Err(CtlError::NonZero {
@@ -383,7 +381,10 @@ pub mod testing {
         }
 
         pub fn set_active(&self, unit: &str, state: ActiveState) {
-            self.active_states.lock().unwrap().insert(unit.to_string(), state);
+            self.active_states
+                .lock()
+                .unwrap()
+                .insert(unit.to_string(), state);
         }
 
         pub fn calls(&self) -> Vec<(String, String)> {
@@ -394,22 +395,34 @@ pub mod testing {
     #[async_trait::async_trait]
     impl Ctl for FakeCtl {
         async fn start(&self, unit: &str) -> Result<(), CtlError> {
-            self.calls.lock().unwrap().push(("start".into(), unit.into()));
+            self.calls
+                .lock()
+                .unwrap()
+                .push(("start".into(), unit.into()));
             self.set_active(unit, ActiveState::Active);
             Ok(())
         }
         async fn stop(&self, unit: &str) -> Result<(), CtlError> {
-            self.calls.lock().unwrap().push(("stop".into(), unit.into()));
+            self.calls
+                .lock()
+                .unwrap()
+                .push(("stop".into(), unit.into()));
             self.set_active(unit, ActiveState::Inactive);
             Ok(())
         }
         async fn restart(&self, unit: &str) -> Result<(), CtlError> {
-            self.calls.lock().unwrap().push(("restart".into(), unit.into()));
+            self.calls
+                .lock()
+                .unwrap()
+                .push(("restart".into(), unit.into()));
             self.set_active(unit, ActiveState::Active);
             Ok(())
         }
         async fn is_active(&self, unit: &str) -> Result<ActiveState, CtlError> {
-            self.calls.lock().unwrap().push(("is-active".into(), unit.into()));
+            self.calls
+                .lock()
+                .unwrap()
+                .push(("is-active".into(), unit.into()));
             Ok(self
                 .active_states
                 .lock()
@@ -431,9 +444,15 @@ mod tests {
     #[test]
     fn active_state_parsing() {
         assert_eq!(ActiveState::from_string("active"), ActiveState::Active);
-        assert_eq!(ActiveState::from_string("inactive\n"), ActiveState::Inactive);
+        assert_eq!(
+            ActiveState::from_string("inactive\n"),
+            ActiveState::Inactive
+        );
         assert_eq!(ActiveState::from_string("failed"), ActiveState::Failed);
-        assert_eq!(ActiveState::from_string("not-a-state"), ActiveState::Unknown);
+        assert_eq!(
+            ActiveState::from_string("not-a-state"),
+            ActiveState::Unknown
+        );
     }
 
     #[tokio::test]
@@ -450,7 +469,13 @@ mod tests {
         let calls = ctl.calls();
         // is-active calls land between transitions, so we expect 4 entries.
         assert_eq!(calls.len(), 4);
-        assert_eq!(calls[0], ("start".to_string(), "elrond-node-0.service".to_string()));
-        assert_eq!(calls[2], ("stop".to_string(), "elrond-node-0.service".to_string()));
+        assert_eq!(
+            calls[0],
+            ("start".to_string(), "elrond-node-0.service".to_string())
+        );
+        assert_eq!(
+            calls[2],
+            ("stop".to_string(), "elrond-node-0.service".to_string())
+        );
     }
 }

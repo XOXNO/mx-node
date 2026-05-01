@@ -47,7 +47,10 @@ pub fn resolve_node_names<R: BufRead, W: Write>(
     }
 
     writeln!(writer)?;
-    writeln!(writer, "Choose a NodeDisplayName for each node (Enter accepts the default):")?;
+    writeln!(
+        writer,
+        "Choose a NodeDisplayName for each node (Enter accepts the default):"
+    )?;
 
     let mut names: Vec<String> = Vec::with_capacity(count as usize);
     for (slot, idx) in indices.iter().enumerate() {
@@ -60,7 +63,11 @@ pub fn resolve_node_names<R: BufRead, W: Write>(
         if read == 0 {
             // EOF: accept defaults for the rest. Surface a hint so the
             // operator notices the input stream closed unexpectedly.
-            writeln!(writer, "  (input closed; using defaults for the remaining {} node(s))", count as usize - slot)?;
+            writeln!(
+                writer,
+                "  (input closed; using defaults for the remaining {} node(s))",
+                count as usize - slot
+            )?;
             for j in &indices[slot..] {
                 names.push(expand_template(template, env, *j));
             }
@@ -82,11 +89,25 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
-    fn run(input: &str, count: u16, indices: &[u16], template: &str, interactive: bool) -> (Vec<String>, String) {
+    fn run(
+        input: &str,
+        count: u16,
+        indices: &[u16],
+        template: &str,
+        interactive: bool,
+    ) -> (Vec<String>, String) {
         let mut reader = Cursor::new(input.as_bytes().to_vec());
         let mut writer: Vec<u8> = Vec::new();
-        let names =
-            resolve_node_names(&mut reader, &mut writer, count, indices, template, "mainnet", interactive).expect("ok");
+        let names = resolve_node_names(
+            &mut reader,
+            &mut writer,
+            count,
+            indices,
+            template,
+            "mainnet",
+            interactive,
+        )
+        .expect("ok");
         (names, String::from_utf8(writer).expect("utf-8"))
     }
 
@@ -94,7 +115,10 @@ mod tests {
     fn non_interactive_expands_template_silently() {
         let (names, out) = run("", 3, &[0, 1, 2], "x-{env}-{index}", false);
         assert_eq!(names, vec!["x-mainnet-0", "x-mainnet-1", "x-mainnet-2"]);
-        assert!(out.is_empty(), "non-interactive must not write anything: {out:?}");
+        assert!(
+            out.is_empty(),
+            "non-interactive must not write anything: {out:?}"
+        );
     }
 
     #[test]
@@ -108,7 +132,13 @@ mod tests {
 
     #[test]
     fn interactive_uses_typed_value_when_present() {
-        let (names, _) = run("custom-zero\n\ncustom-two\n", 3, &[0, 1, 2], "default-{index}", true);
+        let (names, _) = run(
+            "custom-zero\n\ncustom-two\n",
+            3,
+            &[0, 1, 2],
+            "default-{index}",
+            true,
+        );
         assert_eq!(names, vec!["custom-zero", "default-1", "custom-two"]);
     }
 
@@ -123,7 +153,10 @@ mod tests {
         // Two node prompts queued, only one line of input → second falls back to default.
         let (names, out) = run("first\n", 2, &[0, 1], "x-{index}", true);
         assert_eq!(names, vec!["first", "x-1"]);
-        assert!(out.contains("input closed"), "operator must see the EOF hint: {out:?}");
+        assert!(
+            out.contains("input closed"),
+            "operator must see the EOF hint: {out:?}"
+        );
     }
 
     #[test]

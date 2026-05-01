@@ -78,7 +78,11 @@ pub async fn run(args: RenameArgs, global: &GlobalArgs) -> Result<(), CliError> 
         "rename",
         &format!(
             "node-{target_index}: {} → {new_name}",
-            if old_name.is_empty() { "<unset>" } else { old_name.as_str() },
+            if old_name.is_empty() {
+                "<unset>"
+            } else {
+                old_name.as_str()
+            },
         ),
     );
     node_op_start("rename", node_index, &unit);

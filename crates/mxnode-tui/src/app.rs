@@ -115,9 +115,7 @@ impl App {
     /// dashboard to exit.
     pub fn on_key(&mut self, k: KeyEvent) -> bool {
         // Ctrl+C always exits, even mid-filter-input.
-        if k.modifiers.contains(KeyModifiers::CONTROL)
-            && matches!(k.code, KeyCode::Char('c'))
-        {
+        if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('c')) {
             return true;
         }
 
@@ -176,10 +174,7 @@ impl App {
             }
             KeyCode::Char('/') => {
                 self.editing_filter = true;
-                self.filter_buffer = self
-                    .log_text_filter
-                    .clone()
-                    .unwrap_or_default();
+                self.filter_buffer = self.log_text_filter.clone().unwrap_or_default();
             }
             KeyCode::Char('c') => {
                 self.log_text_filter = None;

@@ -43,10 +43,18 @@ async fn run(unit: String, snapshot: Arc<Mutex<NodeSnapshot>>) {
     loop {
         match try_run(&unit, &snapshot).await {
             Ok(()) => {
-                push_marker(&snapshot, format!("--- journalctl exited cleanly for {unit}; respawning ---")).await;
+                push_marker(
+                    &snapshot,
+                    format!("--- journalctl exited cleanly for {unit}; respawning ---"),
+                )
+                .await;
             }
             Err(e) => {
-                push_marker(&snapshot, format!("--- journalctl error for {unit}: {e} ---")).await;
+                push_marker(
+                    &snapshot,
+                    format!("--- journalctl error for {unit}: {e} ---"),
+                )
+                .await;
             }
         }
         time::sleep(backoff).await;
@@ -56,10 +64,7 @@ async fn run(unit: String, snapshot: Arc<Mutex<NodeSnapshot>>) {
     }
 }
 
-async fn try_run(
-    unit: &str,
-    snapshot: &Arc<Mutex<NodeSnapshot>>,
-) -> std::io::Result<()> {
+async fn try_run(unit: &str, snapshot: &Arc<Mutex<NodeSnapshot>>) -> std::io::Result<()> {
     let mut child = Command::new("journalctl")
         .arg("--unit")
         .arg(unit)

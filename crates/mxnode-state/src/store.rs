@@ -27,7 +27,9 @@ pub enum StateError {
     #[error("could not serialize state: {0}")]
     Serialize(#[from] toml::ser::Error),
 
-    #[error("state schema version {found} is newer than this binary supports ({max}); upgrade mxnode")]
+    #[error(
+        "state schema version {found} is newer than this binary supports ({max}); upgrade mxnode"
+    )]
     SchemaTooNew { found: u32, max: u32 },
 
     #[error("state schema version is 0 (uninitialised or pre-v1); refusing to load")]
@@ -124,7 +126,7 @@ impl StateStore {
         })?;
         Ok(LockGuard {
             file,
-            path: self.lock_path.clone(),
+            _path: self.lock_path.clone(),
         })
     }
 
@@ -145,11 +147,15 @@ impl StateStore {
         let body = toml::to_string_pretty(&stamped)?;
 
         let parent = self.state_path.parent().expect("state_path has a parent");
-        let tmp = tempfile::NamedTempFile::new_in(parent)
+        let tmp =
+            tempfile::NamedTempFile::new_in(parent).map_err(|e| io_err(&self.state_path, e))?;
+        tmp.as_file()
+            .set_len(0)
             .map_err(|e| io_err(&self.state_path, e))?;
-        tmp.as_file().set_len(0).map_err(|e| io_err(&self.state_path, e))?;
         let mut handle: &File = tmp.as_file();
-        handle.write_all(body.as_bytes()).map_err(|e| io_err(&self.state_path, e))?;
+        handle
+            .write_all(body.as_bytes())
+            .map_err(|e| io_err(&self.state_path, e))?;
         handle.sync_all().map_err(|e| io_err(&self.state_path, e))?;
         tmp.persist(&self.state_path).map_err(|e| StateError::Io {
             path: self.state_path.display().to_string(),
@@ -171,7 +177,7 @@ impl StateStore {
             .format(&Rfc3339)
             .map_err(|e| StateError::Io {
                 path: self.state_path.display().to_string(),
-                source: std::io::Error::new(std::io::ErrorKind::Other, e),
+                source: std::io::Error::other(e),
             })?;
         // Strip colons so the filename is portable across filesystems that
         // restrict them (notably FAT/exFAT external drives operators may
@@ -186,8 +192,7 @@ impl StateStore {
             .expect("state_path is not a root, so backup_path has a parent");
         let body = fs::read(&self.state_path).map_err(|e| io_err(&self.state_path, e))?;
 
-        let tmp = tempfile::NamedTempFile::new_in(parent)
-            .map_err(|e| io_err(&backup_path, e))?;
+        let tmp = tempfile::NamedTempFile::new_in(parent).map_err(|e| io_err(&backup_path, e))?;
         {
             let handle: &File = tmp.as_file();
             (&*handle)
@@ -239,8 +244,10 @@ pub(crate) fn fsync_dir(dir: &Path) -> Result<(), StateError> {
 /// handle the contention via `flock(LOCK_EX)` on a single inode.
 pub struct LockGuard {
     file: File,
-    #[allow(dead_code)]
-    path: PathBuf,
+    /// Held only to keep the path printable in `Drop` diagnostics. The
+    /// underscore prefix tells rustc the field exists for its side effect
+    /// (RAII lifetime) rather than to be read directly.
+    _path: PathBuf,
 }
 
 impl Drop for LockGuard {
@@ -357,7 +364,10 @@ mod tests {
         std::fs::create_dir_all(dir.path()).unwrap();
         std::fs::write(store.state_path(), body).unwrap();
         let err = store.load().unwrap_err();
-        assert!(matches!(err, StateError::SchemaTooNew { .. }), "got {err:?}");
+        assert!(
+            matches!(err, StateError::SchemaTooNew { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -369,6 +379,11 @@ mod tests {
         drop(guard);
         let backup = store.backup().unwrap().expect("backup should be created");
         assert!(backup.exists());
-        assert!(backup.file_name().unwrap().to_str().unwrap().starts_with("state.toml.bak."));
+        assert!(backup
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("state.toml.bak."));
     }
 }

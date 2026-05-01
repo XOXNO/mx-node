@@ -100,11 +100,12 @@ fn render_sparse_config(answers: &Answers) -> String {
         Value::String(answers.custom_user.clone()),
     );
     let custom_home_str = answers.custom_home.display().to_string();
-    let key_dir_str = answers
-        .key_dir
-        .display()
-        .to_string()
-        .replacen(&custom_home_str, "{custom_home}", 1);
+    let key_dir_str =
+        answers
+            .key_dir
+            .display()
+            .to_string()
+            .replacen(&custom_home_str, "{custom_home}", 1);
     paths.insert("node_keys".to_string(), Value::String(key_dir_str));
     root.insert("paths".to_string(), Value::Table(paths));
 
@@ -132,7 +133,9 @@ fn render_sparse_config(answers: &Answers) -> String {
     let mut out = String::new();
     out.push_str("# mxnode config — generated automatically on first use.\n");
     out.push_str("# Edit freely; mxnode preserves unknown keys on round-trip.\n");
-    out.push_str("# Switch network with: `mxnode config set network.environment <testnet|devnet>`.\n\n");
+    out.push_str(
+        "# Switch network with: `mxnode config set network.environment <testnet|devnet>`.\n\n",
+    );
     out.push_str(&body);
     out
 }
@@ -179,11 +182,9 @@ fn platform_defaults() -> (PathBuf, String) {
             })
         })
         .unwrap_or_else(|| "ubuntu".to_string());
-    let home = dirs::home_dir().unwrap_or_else(|| {
-        match mxnode_core::Platform::current() {
-            mxnode_core::Platform::Macos => PathBuf::from(format!("/Users/{user}")),
-            _ => PathBuf::from(format!("/home/{user}")),
-        }
+    let home = dirs::home_dir().unwrap_or_else(|| match mxnode_core::Platform::current() {
+        mxnode_core::Platform::Macos => PathBuf::from(format!("/Users/{user}")),
+        _ => PathBuf::from(format!("/home/{user}")),
     });
     (home, user)
 }
@@ -224,7 +225,10 @@ mod tests {
         let answers = answers_with("ubuntu", "mx\nchain-{env}");
         let rendered = render_sparse_config(&answers);
         let parsed: toml::Value = toml::from_str(&rendered).expect("must parse back");
-        assert_eq!(parsed["node"]["name_template"].as_str(), Some("mx\nchain-{env}"));
+        assert_eq!(
+            parsed["node"]["name_template"].as_str(),
+            Some("mx\nchain-{env}")
+        );
     }
 
     #[test]
@@ -248,6 +252,9 @@ mod tests {
         let rendered = render_sparse_config(&answers);
         let parsed: toml::Value = toml::from_str(&rendered).expect("must parse back");
         assert_eq!(parsed["paths"]["custom_user"].as_str(), Some("ubuntu"));
-        assert_eq!(parsed["paths"]["custom_home"].as_str(), Some("/home/ubuntu"));
+        assert_eq!(
+            parsed["paths"]["custom_home"].as_str(),
+            Some("/home/ubuntu")
+        );
     }
 }

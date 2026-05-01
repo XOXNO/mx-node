@@ -31,9 +31,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind,
-};
+use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
@@ -45,8 +43,8 @@ use ratatui::Terminal;
 use thiserror::Error;
 use tokio::sync::Mutex;
 
-pub use crate::app::NodeHandle;
 use crate::app::App;
+pub use crate::app::NodeHandle;
 use crate::metrics::NodeSnapshot;
 use crate::poller::Poller;
 use crate::view::{draw, DrawContext};
@@ -156,7 +154,9 @@ pub async fn run(opts: DashboardOpts) -> Result<(), DashboardError> {
     let mut app = App::new(handles);
     app.environment = environment;
     app.title = title;
-    let mut ctx = DrawContext { tab_columns: Vec::new() };
+    let mut ctx = DrawContext {
+        tab_columns: Vec::new(),
+    };
 
     // Event-loop cadence: redraw every 250ms (so sparklines + clock
     // tick smoothly even when the operator isn't typing). Within each
@@ -186,21 +186,18 @@ pub async fn run(opts: DashboardOpts) -> Result<(), DashboardError> {
         // unless paused, in which case we read from the freeze. Both
         // produce an owned `NodeSnapshot` we can hand to the (sync)
         // renderer.
-        let current_owned: Option<(String, NodeSnapshot)> = match (
-            app.paused,
-            app.frozen.as_ref(),
-            app.current(),
-        ) {
-            (true, Some(frozen), Some(handle)) => frozen
-                .get(app.selected)
-                .cloned()
-                .map(|s| (handle.label.clone(), s)),
-            (_, _, Some(handle)) => {
-                let snap = handle.snapshot.lock().await.clone();
-                Some((handle.label.clone(), snap))
-            }
-            _ => None,
-        };
+        let current_owned: Option<(String, NodeSnapshot)> =
+            match (app.paused, app.frozen.as_ref(), app.current()) {
+                (true, Some(frozen), Some(handle)) => frozen
+                    .get(app.selected)
+                    .cloned()
+                    .map(|s| (handle.label.clone(), s)),
+                (_, _, Some(handle)) => {
+                    let snap = handle.snapshot.lock().await.clone();
+                    Some((handle.label.clone(), snap))
+                }
+                _ => None,
+            };
 
         terminal.draw(|f| {
             let view_arg = current_owned.as_ref().map(|(l, s)| (l.as_str(), s));
@@ -218,7 +215,7 @@ pub async fn run(opts: DashboardOpts) -> Result<(), DashboardError> {
             }
             let evt = tokio::task::spawn_blocking(event::read)
                 .await
-                .unwrap_or(Err(io::Error::new(io::ErrorKind::Other, "event read")))?;
+                .unwrap_or(Err(io::Error::other("event read")))?;
             match evt {
                 Event::Key(k) if k.kind == KeyEventKind::Press => {
                     if app.on_key(k) {
@@ -299,7 +296,9 @@ mod tests {
         // + logs (Min 15) + status (1) all get their full allocations
         // without ratatui's solver compressing the fixed-Length cells.
         let mut terminal = ratatui::Terminal::new(TestBackend::new(120, 60)).unwrap();
-        let mut ctx = DrawContext { tab_columns: Vec::new() };
+        let mut ctx = DrawContext {
+            tab_columns: Vec::new(),
+        };
         terminal
             .draw(|f| view::draw(f, &app, &mut ctx, Some((label.as_str(), &snap))))
             .unwrap();
@@ -347,7 +346,10 @@ mod tests {
             "erd_probable_highest_nonce".to_string(),
             serde_json::json!(13768651),
         );
-        m.insert("erd_shard_id".to_string(), serde_json::json!(4_294_967_295u64));
+        m.insert(
+            "erd_shard_id".to_string(),
+            serde_json::json!(4_294_967_295u64),
+        );
         m.insert("erd_app_version".to_string(), serde_json::json!("v1.11.5"));
         m.insert(
             "erd_public_key_block_sign".to_string(),

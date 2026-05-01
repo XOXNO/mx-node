@@ -27,8 +27,6 @@ pub enum SelectorError {
     NodeMissing { missing: Vec<u16> },
     /// Selector syntax inside `--select` was malformed.
     BadExpression(String),
-    /// No selector was supplied and the caller required one.
-    NoSelector,
     /// State has zero nodes — running a lifecycle command makes no sense.
     EmptyState,
 }
@@ -43,43 +41,20 @@ impl std::fmt::Display for SelectorError {
             SelectorError::BadExpression(s) => {
                 write!(f, "could not parse --select expression: {s}")
             }
-            SelectorError::NoSelector => write!(
-                f,
-                "no selector supplied; pass --all, --node N, --validators-only, --observers-only, --shard X, or --select <expr>",
-            ),
-            SelectorError::EmptyState => write!(
-                f,
-                "state.toml has no nodes; run `mxnode install` first",
-            ),
+            SelectorError::EmptyState => {
+                write!(f, "state.toml has no nodes; run `mxnode install` first",)
+            }
         }
     }
 }
 
-/// How to resolve when no selector is supplied.
-///
-/// Every production caller today picks `All` — lifecycle commands
-/// (`start` / `stop` / `restart`) and the upgrade flow's node selection
-/// both treat a bare invocation as "act on every node," matching what
-/// operators mean. `Required` is kept as the typed opt-in for any
-/// future selector consumer that wants to refuse without an explicit
-/// target (e.g. a hypothetical generic destructive op routed through
-/// `LifecycleArgs`); db / prune / reseed currently do their own
-/// per-command `--node` validation so they don't hit this path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DefaultSelection {
-    /// Treat "no selector" as "every node".
-    All,
-    /// Refuse to act and surface `SelectorError::NoSelector`.
-    #[allow(dead_code)]
-    Required,
-}
-
-/// Resolve `LifecycleArgs` to a list of node indices. Stable ascending order.
-pub fn resolve(
-    state: &State,
-    args: &LifecycleArgs,
-    default: DefaultSelection,
-) -> Result<Vec<NodeIndex>, SelectorError> {
+/// Resolve `LifecycleArgs` to a list of node indices. Stable ascending
+/// order. A bare invocation (no `--all` / `--node` / `--shard` / role
+/// flag / `--select`) is treated as "every node" — all current
+/// production callers (`start` / `stop` / `restart` / upgrade) want
+/// that semantic. Add a `default: DefaultSelection` parameter back
+/// here when a destructive command needs the opposite behaviour.
+pub fn resolve(state: &State, args: &LifecycleArgs) -> Result<Vec<NodeIndex>, SelectorError> {
     if state.nodes.is_empty() {
         return Err(SelectorError::EmptyState);
     }
@@ -129,10 +104,7 @@ pub fn resolve(
         return resolve_expression(state, expr);
     }
 
-    match default {
-        DefaultSelection::All => Ok(sorted_indices(state.nodes.iter())),
-        DefaultSelection::Required => Err(SelectorError::NoSelector),
-    }
+    Ok(sorted_indices(state.nodes.iter()))
 }
 
 fn sorted_indices<'a>(iter: impl Iterator<Item = &'a NodeState>) -> Vec<NodeIndex> {
@@ -158,10 +130,8 @@ fn resolve_expression(state: &State, expr: &str) -> Result<Vec<NodeIndex>, Selec
     for clause in expr.split('|').map(str::trim).filter(|s| !s.is_empty()) {
         let preds = parse_clause(clause)?;
         for node in &state.nodes {
-            if preds.iter().all(|p| p.matches(node)) {
-                if !matched.contains(&node.index) {
-                    matched.push(node.index);
-                }
+            if preds.iter().all(|p| p.matches(node)) && !matched.contains(&node.index) {
+                matched.push(node.index);
             }
         }
     }
@@ -194,22 +164,23 @@ fn parse_clause(clause: &str) -> Result<Vec<Predicate>, SelectorError> {
             .ok_or_else(|| SelectorError::BadExpression(format!("missing '=' in atom {atom:?}")))?;
         let key = key.trim();
         let value = value.trim();
-        let pred = match key {
-            "role" => Predicate::Role(value.parse().map_err(|_| {
-                SelectorError::BadExpression(format!("invalid role {value:?}"))
-            })?),
-            "shard" => Predicate::Shard(value.parse().map_err(|_| {
-                SelectorError::BadExpression(format!("invalid shard {value:?}"))
-            })?),
-            "index" => Predicate::Index(value.parse().map_err(|_| {
-                SelectorError::BadExpression(format!("invalid index {value:?}"))
-            })?),
-            other => {
-                return Err(SelectorError::BadExpression(format!(
-                    "unknown selector key {other:?}"
-                )))
-            }
-        };
+        let pred =
+            match key {
+                "role" => Predicate::Role(value.parse().map_err(|_| {
+                    SelectorError::BadExpression(format!("invalid role {value:?}"))
+                })?),
+                "shard" => Predicate::Shard(value.parse().map_err(|_| {
+                    SelectorError::BadExpression(format!("invalid shard {value:?}"))
+                })?),
+                "index" => Predicate::Index(value.parse().map_err(|_| {
+                    SelectorError::BadExpression(format!("invalid index {value:?}"))
+                })?),
+                other => {
+                    return Err(SelectorError::BadExpression(format!(
+                        "unknown selector key {other:?}"
+                    )))
+                }
+            };
         out.push(pred);
     }
     if out.is_empty() {
@@ -264,21 +235,14 @@ mod tests {
     #[test]
     fn empty_state_is_an_error() {
         let s = State::empty("test");
-        let err = resolve(&s, &args_default(), DefaultSelection::All).unwrap_err();
+        let err = resolve(&s, &args_default()).unwrap_err();
         assert_eq!(err, SelectorError::EmptyState);
     }
 
     #[test]
-    fn no_selector_with_required_default_errors() {
+    fn no_selector_returns_all_nodes() {
         let s = state_with_mixed_nodes();
-        let err = resolve(&s, &args_default(), DefaultSelection::Required).unwrap_err();
-        assert_eq!(err, SelectorError::NoSelector);
-    }
-
-    #[test]
-    fn no_selector_with_all_default_returns_all() {
-        let s = state_with_mixed_nodes();
-        let v = resolve(&s, &args_default(), DefaultSelection::All).unwrap();
+        let v = resolve(&s, &args_default()).unwrap();
         assert_eq!(v.len(), 4);
     }
 
@@ -287,8 +251,11 @@ mod tests {
         let s = state_with_mixed_nodes();
         let mut a = args_default();
         a.all = true;
-        let v = resolve(&s, &a, DefaultSelection::Required).unwrap();
-        assert_eq!(v.iter().map(|i| i.get()).collect::<Vec<_>>(), vec![0, 1, 2, 3]);
+        let v = resolve(&s, &a).unwrap();
+        assert_eq!(
+            v.iter().map(|i| i.get()).collect::<Vec<_>>(),
+            vec![0, 1, 2, 3]
+        );
     }
 
     #[test]
@@ -296,7 +263,7 @@ mod tests {
         let s = state_with_mixed_nodes();
         let mut a = args_default();
         a.validators_only = true;
-        let v = resolve(&s, &a, DefaultSelection::Required).unwrap();
+        let v = resolve(&s, &a).unwrap();
         assert_eq!(v.iter().map(|i| i.get()).collect::<Vec<_>>(), vec![0, 2]);
     }
 
@@ -305,7 +272,7 @@ mod tests {
         let s = state_with_mixed_nodes();
         let mut a = args_default();
         a.observers_only = true;
-        let v = resolve(&s, &a, DefaultSelection::Required).unwrap();
+        let v = resolve(&s, &a).unwrap();
         assert_eq!(v.iter().map(|i| i.get()).collect::<Vec<_>>(), vec![1, 3]);
     }
 
@@ -314,7 +281,7 @@ mod tests {
         let s = state_with_mixed_nodes();
         let mut a = args_default();
         a.shard = Some("metachain".to_string());
-        let v = resolve(&s, &a, DefaultSelection::Required).unwrap();
+        let v = resolve(&s, &a).unwrap();
         assert_eq!(v.iter().map(|i| i.get()).collect::<Vec<_>>(), vec![2]);
     }
 
@@ -323,7 +290,7 @@ mod tests {
         let s = state_with_mixed_nodes();
         let mut a = args_default();
         a.node = vec![1, 3, 1]; // duplicate is dedup'd
-        let v = resolve(&s, &a, DefaultSelection::Required).unwrap();
+        let v = resolve(&s, &a).unwrap();
         assert_eq!(v.iter().map(|i| i.get()).collect::<Vec<_>>(), vec![1, 3]);
     }
 
@@ -332,7 +299,7 @@ mod tests {
         let s = state_with_mixed_nodes();
         let mut a = args_default();
         a.node = vec![1, 99, 100];
-        let err = resolve(&s, &a, DefaultSelection::Required).unwrap_err();
+        let err = resolve(&s, &a).unwrap_err();
         assert_eq!(
             err,
             SelectorError::NodeMissing {
@@ -346,7 +313,7 @@ mod tests {
         let s = state_with_mixed_nodes();
         let mut a = args_default();
         a.select = Some("role=validator,shard=metachain".to_string());
-        let v = resolve(&s, &a, DefaultSelection::Required).unwrap();
+        let v = resolve(&s, &a).unwrap();
         assert_eq!(v.iter().map(|i| i.get()).collect::<Vec<_>>(), vec![2]);
     }
 
@@ -355,7 +322,7 @@ mod tests {
         let s = state_with_mixed_nodes();
         let mut a = args_default();
         a.select = Some("shard=0|shard=1".to_string());
-        let v = resolve(&s, &a, DefaultSelection::Required).unwrap();
+        let v = resolve(&s, &a).unwrap();
         assert_eq!(v.iter().map(|i| i.get()).collect::<Vec<_>>(), vec![0, 1]);
     }
 
@@ -364,7 +331,7 @@ mod tests {
         let s = state_with_mixed_nodes();
         let mut a = args_default();
         a.select = Some("nope=foo".to_string());
-        let err = resolve(&s, &a, DefaultSelection::Required).unwrap_err();
+        let err = resolve(&s, &a).unwrap_err();
         match err {
             SelectorError::BadExpression(s) => assert!(s.contains("unknown selector key")),
             other => panic!("expected BadExpression, got {other:?}"),
@@ -376,7 +343,7 @@ mod tests {
         let s = state_with_mixed_nodes();
         let mut a = args_default();
         a.select = Some("index=2".to_string());
-        let v = resolve(&s, &a, DefaultSelection::Required).unwrap();
+        let v = resolve(&s, &a).unwrap();
         assert_eq!(v.iter().map(|i| i.get()).collect::<Vec<_>>(), vec![2]);
     }
 }
