@@ -195,6 +195,7 @@ pub fn run(args: MigrateBashArgs, global: &GlobalArgs) -> Result<(), CliError> {
     })?;
     if global.json {
         let body = serde_json::json!({
+            "ok": true,
             "wrote": store.state_path().display().to_string(),
             "node_count": state.nodes.len(),
         });
@@ -209,19 +210,17 @@ fn print_dry_run(state: &State, global: &GlobalArgs) {
     if global.json {
         let body = serde_json::json!({
             "mode": "dry-run",
-            "would_write": {
-                "node_count": state.nodes.len(),
-                "kind": state.install.as_ref().map(|i| i.kind.as_str()),
-                "environment": state.install.as_ref().map(|i| i.environment.as_str()),
-                "proxy": state.proxy.is_some(),
-                "nodes": state.nodes.iter().map(|n| serde_json::json!({
-                    "index": n.index.get(),
-                    "role": n.role.as_str(),
-                    "shard": n.shard.as_str(),
-                    "unit": n.unit,
-                    "api_port": n.api_port,
-                })).collect::<Vec<_>>(),
-            },
+            "node_count": state.nodes.len(),
+            "kind": state.install.as_ref().map(|i| i.kind.as_str()),
+            "environment": state.install.as_ref().map(|i| i.environment.as_str()),
+            "proxy": state.proxy.is_some(),
+            "nodes": state.nodes.iter().map(|n| serde_json::json!({
+                "index": n.index.get(),
+                "role": n.role.as_str(),
+                "shard": n.shard.as_str(),
+                "unit": n.unit,
+                "api_port": n.api_port,
+            })).collect::<Vec<_>>(),
         });
         println!("{body}");
     } else {
