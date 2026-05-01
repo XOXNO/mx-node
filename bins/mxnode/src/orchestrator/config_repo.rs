@@ -104,6 +104,24 @@ pub async fn acquire_proxy_repo(
     Ok(dest)
 }
 
+/// Read the upstream `goVersion` file from a cloned config repo. Returns
+/// the trimmed version string with any leading `go` prefix stripped, so
+/// callers can pass the result directly to `mxnode_toolchain::ensure_go`
+/// / `bootstrap`.
+///
+/// Bash (`update_go_version_from_config`) decodes a base64-wrapped value
+/// in some upstream forks. We don't see that in the active mainnet/devnet
+/// repos, so we keep this minimal and add base64 handling only when a
+/// real config tag emits one.
+pub fn read_go_version_from_repo(repo_dir: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(repo_dir.join("goVersion")).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.trim_start_matches("go").to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,5 +167,27 @@ mod tests {
         let tag = Tag::from_str("v1.1.51").unwrap();
         let dir = proxy_cache_dir(&root, &tag);
         assert_eq!(dir, std::path::PathBuf::from("/srv/mxnode/binaries/proxy-repos/v1.1.51"));
+    }
+
+    #[test]
+    fn read_go_version_from_repo_handles_plain_text() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("goVersion"), "1.23.4\n").unwrap();
+        let v = read_go_version_from_repo(tmp.path()).unwrap();
+        assert_eq!(v, "1.23.4");
+    }
+
+    #[test]
+    fn read_go_version_from_repo_strips_leading_go_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("goVersion"), "go1.23.4").unwrap();
+        let v = read_go_version_from_repo(tmp.path()).unwrap();
+        assert_eq!(v, "1.23.4");
+    }
+
+    #[test]
+    fn read_go_version_from_repo_returns_none_when_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(read_go_version_from_repo(tmp.path()).is_none());
     }
 }
