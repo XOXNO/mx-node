@@ -913,6 +913,39 @@ fn lifecycle_start_without_state_errors_clearly() {
 }
 
 #[test]
+fn migrate_bash_dry_run_prints_summary() {
+    let sb = Sandbox::new();
+    // Lay down bash sentinel files inside HOME so `--from <home>` finds them.
+    std::fs::write(sb.home.join(".installedenv"), "mainnet").unwrap();
+    std::fs::write(sb.home.join(".numberofnodes"), "4").unwrap();
+    std::fs::write(sb.home.join(".squad_install"), "Observers Squad").unwrap();
+
+    let output = sb
+        .cmd()
+        .args(["migrate-bash", "--from"])
+        .arg(&sb.home)
+        .output()
+        .expect("spawn mxnode");
+    assert!(
+        output.status.success(),
+        "non-zero exit: status={:?}\nstdout={}\nstderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("dry-run"), "stdout missing 'dry-run' marker: {stdout}");
+    assert!(stdout.contains("4 nodes"), "stdout missing node count: {stdout}");
+    assert!(stdout.contains("+ proxy"), "stdout missing proxy line: {stdout}");
+    // Dry-run path must not have written state.toml.
+    assert!(
+        !sb.state_path().exists(),
+        "dry-run wrote state.toml at {}",
+        sb.state_path().display(),
+    );
+}
+
+#[test]
 fn state_path_falls_under_tempdir_state_home() {
     // Sanity: the env-var rewiring works. If this regresses, every other
     // test in the file produces false positives because the binary

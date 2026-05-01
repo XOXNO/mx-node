@@ -13,7 +13,7 @@ mod keys;
 mod lifecycle;
 mod logs;
 mod metrics;
-mod migrate;
+pub(crate) mod migrate;
 mod reapply_config;
 mod status;
 mod upgrade;
@@ -38,6 +38,7 @@ pub fn dispatch(cli: Cli) -> Result<(), CliError> {
         Command::Keygen(args) => keys::run_keygen(args, &cli.global),
         Command::Benchmark => benchmark::run(&cli.global),
         Command::Cleanup(args) => cleanup::run(args, &cli.global),
+        Command::MigrateBash(args) => migrate::run(args, &cli.global),
         Command::ReapplyConfig(args) => reapply_config::run(args, &cli.global),
         Command::Dashboard(args) => dashboard::run(args, &cli.global),
         Command::Metrics(args) => metrics::run(args, &cli.global),

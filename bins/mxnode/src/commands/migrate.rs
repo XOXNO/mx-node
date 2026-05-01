@@ -5,11 +5,16 @@
 
 use std::path::Path;
 
+use clap::Args;
 use mxnode_core::{
     state::InstallSection, DEFAULT_API_PORT_BASE, DEFAULT_PROXY_PORT, Environment, InstallKind,
     NodeIndex, NodeState, Paths, ProxyState, Role, Shard, State,
 };
 use thiserror::Error;
+
+use crate::cli::GlobalArgs;
+use crate::errors::CliError;
+use crate::orchestrator::runtime::{CliErrorExt, Runtime};
 
 #[derive(Debug, Error)]
 pub enum MigrateError {
@@ -131,6 +136,115 @@ pub fn infer_state_from_bash(custom_home: &Path) -> Result<State, MigrateError> 
     state.nodes = nodes;
     state.proxy = proxy;
     Ok(state)
+}
+
+#[derive(Debug, Args)]
+pub struct MigrateBashArgs {
+    /// Path to the bash `$CUSTOM_HOME` to import. Defaults to
+    /// `paths.custom_home` from the resolved mxnode config (mirrors the bash
+    /// `CUSTOM_HOME` variable).
+    #[arg(long, value_name = "PATH")]
+    pub from: Option<std::path::PathBuf>,
+
+    /// Apply the migration. Without this flag, the inferred state is
+    /// printed and `state.toml` is NOT modified.
+    #[arg(long)]
+    pub execute: bool,
+}
+
+/// Import an existing bash install into mxnode's `state.toml`. Dry-run by
+/// default; pass `--execute` to actually persist. The bash files on disk
+/// are never modified.
+pub fn run(args: MigrateBashArgs, global: &GlobalArgs) -> Result<(), CliError> {
+    let runtime = Runtime::from_global(global)?;
+    let custom_home = args
+        .from
+        .clone()
+        .unwrap_or_else(|| runtime.paths.custom_home.clone());
+
+    let state = infer_state_from_bash(&custom_home).map_err(|e| {
+        CliError::new(
+            "could not infer mxnode state from bash install",
+            e.to_string(),
+            "verify .installedenv and .numberofnodes exist under the path passed via --from",
+        )
+        .json_if(global.json)
+    })?;
+
+    if !args.execute {
+        print_dry_run(&state, global);
+        return Ok(());
+    }
+
+    let store = mxnode_state::StateStore::new(&runtime.paths.state);
+    let guard = store.lock().map_err(|e| {
+        CliError::new(
+            "failed to acquire state.toml lock",
+            e.to_string(),
+            "ensure no other mxnode invocation is running, then retry",
+        )
+        .json_if(global.json)
+    })?;
+    store.save(&state, &guard).map_err(|e| {
+        CliError::new(
+            "failed to write state.toml",
+            e.to_string(),
+            "ensure mxnode has write access to the state directory",
+        )
+        .json_if(global.json)
+    })?;
+    if global.json {
+        let body = serde_json::json!({
+            "wrote": store.state_path().display().to_string(),
+            "node_count": state.nodes.len(),
+        });
+        println!("{body}");
+    } else {
+        println!("wrote {}", store.state_path().display());
+    }
+    Ok(())
+}
+
+fn print_dry_run(state: &State, global: &GlobalArgs) {
+    if global.json {
+        let body = serde_json::json!({
+            "mode": "dry-run",
+            "would_write": {
+                "node_count": state.nodes.len(),
+                "kind": state.install.as_ref().map(|i| i.kind.as_str()),
+                "environment": state.install.as_ref().map(|i| i.environment.as_str()),
+                "proxy": state.proxy.is_some(),
+                "nodes": state.nodes.iter().map(|n| serde_json::json!({
+                    "index": n.index.get(),
+                    "role": n.role.as_str(),
+                    "shard": n.shard.as_str(),
+                    "unit": n.unit,
+                    "api_port": n.api_port,
+                })).collect::<Vec<_>>(),
+            },
+        });
+        println!("{body}");
+    } else {
+        println!("dry-run — pass --execute to write state.toml");
+        if let Some(install) = state.install.as_ref() {
+            println!(
+                "  inferred {} nodes, kind={}, env={}",
+                install.node_count, install.kind, install.environment,
+            );
+        }
+        for n in &state.nodes {
+            println!(
+                "  node-{}: {} on {} ({})",
+                n.index.get(),
+                n.role,
+                n.shard,
+                n.unit,
+            );
+        }
+        if state.proxy.is_some() {
+            println!("  + proxy");
+        }
+    }
 }
 
 #[cfg(test)]

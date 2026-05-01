@@ -113,6 +113,10 @@ pub enum Command {
     /// Remove nodes, units, and binaries.
     Cleanup(CleanupArgs),
 
+    /// Import an existing `mx-chain-scripts` (bash) install into mxnode's
+    /// `state.toml`. Dry-run by default; pass `--execute` to write.
+    MigrateBash(crate::commands::migrate::MigrateBashArgs),
+
     /// Full host diagnostic; suggests fixes.
     Doctor,
 
