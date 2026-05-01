@@ -232,17 +232,37 @@ pub async fn run_install(
             contents: proxy_unit_text,
         });
 
-        // Build a default observers list: shard 0..=N (one per node), and
-        // metachain for the last entry. Matches the bash quirk of mapping
-        // `[[Observers]]` to `localhost:8080..8083`.
-        let observers: Vec<ObserverEntry> = build_default_observers(plan.api_port_base, plan.node_count);
+        // Seed the proxy config from the cloned mx-chain-proxy-go
+        // sources so upstream sections (FullHistoryNodes, ApiLogging,
+        // gas-cost tables, etc.) survive into operator hosts. Bash
+        // patches the upstream file in place; we do the same via
+        // toml_edit which preserves comments and unknown sections.
+        // MockAcquirer-driven integration tests skip the upstream clone;
+        // behaviour pinned by proxy_config_preserves_upstream_sections_when_seeded
+        // + tomledit golden tests.
+        let proxy_repo = super::config_repo::acquire_proxy_repo(
+            &plan.paths.binaries,
+            plan.github_org,
+            proxy_tag,
+        )
+        .await
+        .map_err(InstallError::ConfigRepo)?;
 
-        // Write proxy config — the bash starts from the upstream config
-        // file; we don't have direct access to that here. For Phase 3 we
-        // write a minimal config sufficient for the proxy to run; later
-        // phases can rsync from the cloned proxy-go repo if operators
-        // demand the full upstream shape.
-        let mut proxy_config = DocumentMut::new();
+        let upstream_cfg = proxy_repo.join("cmd/proxy/config/config.toml");
+        let raw = fs::read_to_string(&upstream_cfg).map_err(|e| InstallError::Io {
+            path: upstream_cfg.display().to_string(),
+            source: e,
+        })?;
+        let mut proxy_config: DocumentMut = raw
+            .parse()
+            .map_err(|e| InstallError::Toml(format!("parse upstream proxy config: {e}")))?;
+
+        // Build observer list AFTER we have the upstream document, so
+        // any operator overrides applied to the upstream (gas tables,
+        // logging) are not clobbered by a fresh-document patch.
+        let observers: Vec<ObserverEntry> =
+            build_default_observers(plan.api_port_base, plan.node_count);
+
         rewrite_proxy_config(&mut proxy_config, DEFAULT_PROXY_PORT, &observers)
             .map_err(|e| InstallError::Toml(format!("proxy config: {e}")))?;
         fs::write(proxy_dir.join("config/config.toml"), proxy_config.to_string()).map_err(
@@ -879,5 +899,46 @@ mod tests {
     #[test]
     fn tag_parses_for_install_specs() {
         let _ = Tag::from_str("v1.7.13").unwrap();
+    }
+
+    #[test]
+    fn proxy_config_preserves_upstream_sections_when_seeded() {
+        use std::fs;
+        use toml_edit::DocumentMut;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let proxy_config_dir = tmp.path().join("config");
+        fs::create_dir_all(&proxy_config_dir).unwrap();
+
+        // Simulate upstream cmd/proxy/config/config.toml with sections we must preserve.
+        let upstream = r#"
+[GeneralSettings]
+ServerPort = 8080
+RequestTimeoutSec = 60
+
+[[FullHistoryNodes]]
+ShardId = 0
+Address = "http://upstream:8083"
+
+[ApiLogging]
+LoggingEnabled = true
+ThresholdInMicroSeconds = 10000
+"#;
+        fs::write(proxy_config_dir.join("config.toml"), upstream).unwrap();
+
+        // Seed from upstream then patch.
+        let raw = fs::read_to_string(proxy_config_dir.join("config.toml")).unwrap();
+        let mut doc: DocumentMut = raw.parse().unwrap();
+        let observers = build_default_observers(8080, 4);
+        mxnode_systemd::rewrite_proxy_config(&mut doc, mxnode_core::DEFAULT_PROXY_PORT, &observers)
+            .unwrap();
+        fs::write(proxy_config_dir.join("config.toml"), doc.to_string()).unwrap();
+
+        let out = fs::read_to_string(proxy_config_dir.join("config.toml")).unwrap();
+        assert!(out.contains("RequestTimeoutSec = 60"), "upstream value lost: {out}");
+        assert!(out.contains("[ApiLogging]"), "upstream section lost: {out}");
+        assert!(out.contains("ThresholdInMicroSeconds = 10000"));
+        assert!(out.contains("ServerPort = 8079"), "port not patched: {out}");
+        assert!(out.contains("http://127.0.0.1:8080"), "observer not stamped: {out}");
     }
 }
