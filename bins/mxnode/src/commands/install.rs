@@ -404,6 +404,15 @@ pub(super) fn emit_success(
     // right next-step instead of printing the validator path
     // unconditionally.
     let needs_zips = matches!(install.kind, mxnode_core::InstallKind::Validators);
+    let node_names: Vec<NodeNameReport> = outcome
+        .state
+        .nodes
+        .iter()
+        .map(|n| NodeNameReport {
+            index: n.index.get(),
+            display_name: n.display_name.clone(),
+        })
+        .collect();
     if global.json {
         let report = InstallReport {
             ok: true,
@@ -414,6 +423,7 @@ pub(super) fn emit_success(
             config_tag: install.versions.config_tag.as_ref().map(|t| t.to_string()),
             state_path: state_path.display().to_string(),
             units: outcome.unit_files.iter().map(|u| u.name.clone()).collect(),
+            nodes: node_names,
             node_keys_dir: needs_zips.then(|| node_keys_dir.display().to_string()),
         };
         println!("{}", serde_json::to_string(&report).unwrap_or_default());
@@ -429,6 +439,16 @@ pub(super) fn emit_success(
                 .collect::<Vec<_>>()
                 .join(", "),
         );
+        if !node_names.is_empty() {
+            println!("  names:");
+            for n in &node_names {
+                if n.display_name.is_empty() {
+                    println!("    node-{} → (none — set node.name_template in config)", n.index);
+                } else {
+                    println!("    node-{} → {}", n.index, n.display_name);
+                }
+            }
+        }
         println!();
         if needs_zips {
             println!(
@@ -491,9 +511,19 @@ struct InstallReport {
     config_tag: Option<String>,
     state_path: String,
     units: Vec<String>,
+    /// Per-node `(index, NodeDisplayName)` pairs as actually stamped
+    /// into each `prefs.toml`. Operators rely on this to verify their
+    /// `--name-template` (or `node.name_template`) resolved as expected.
+    nodes: Vec<NodeNameReport>,
     /// Where the operator must drop `node-{i}.zip` archives. Present
     /// only for validator installs; `null` for observer/multikey
     /// (which generate their own keys via keygenerator).
     #[serde(skip_serializing_if = "Option::is_none")]
     node_keys_dir: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct NodeNameReport {
+    index: u16,
+    display_name: String,
 }

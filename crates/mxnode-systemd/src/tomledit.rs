@@ -502,3 +502,4 @@ key = 1
         assert!(out.contains("key = 1"));
     }
 }
+

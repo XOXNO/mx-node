@@ -103,19 +103,12 @@ pub async fn run(args: ReapplyConfigArgs, global: &GlobalArgs) -> Result<(), Cli
     };
 
     for node in &selected {
-        // Recompute the display name the same way `install` does.
-        let display_name = if let Some(o) = state
-            .install
-            .as_ref()
-            .and_then(|_| Some(node)) // borrow shape, no-op
-            .filter(|_| !template.is_empty())
-        {
-            template
-                .replace("{env}", install.environment.as_str())
-                .replace("{index}", &o.index.get().to_string())
-        } else {
-            String::new()
-        };
+        let display_name = resolve_display_name(
+            &node.display_name,
+            template,
+            install.environment.as_str(),
+            node.index.get(),
+        );
         // reapply-config preserves the operator's `RedundancyLevel`
         // by passing `None`: only install-time stamps the value, and
         // re-applying overrides should never silently reset it.
@@ -143,6 +136,7 @@ pub async fn run(args: ReapplyConfigArgs, global: &GlobalArgs) -> Result<(), Cli
             index: node.index,
             workdir: node.workdir.display().to_string(),
             unit: node.unit.clone(),
+            display_name: display_name.clone(),
         });
     }
 
@@ -166,7 +160,11 @@ pub async fn run(args: ReapplyConfigArgs, global: &GlobalArgs) -> Result<(), Cli
             report.config_overrides,
         );
         for n in &report.nodes {
-            println!("  node {} → {}", n.index, n.workdir);
+            if n.display_name.is_empty() {
+                println!("  node {} → {}", n.index, n.workdir);
+            } else {
+                println!("  node {} ({}) → {}", n.index, n.display_name, n.workdir);
+            }
         }
         if report.restarted {
             println!("  units restarted");
@@ -175,6 +173,59 @@ pub async fn run(args: ReapplyConfigArgs, global: &GlobalArgs) -> Result<(), Cli
         }
     }
     Ok(())
+}
+
+/// Display-name precedence used by `reapply-config`:
+///
+///   1. The name persisted on the `NodeState` (set at install time, or
+///      via a future `mxnode rename`). Returning it as-is prevents
+///      reapply from silently overwriting operator choices just because
+///      the config-side `node.name_template` changed afterward.
+///   2. The current `node.name_template`, with `{env}` / `{index}`
+///      substituted. Only used when the persisted name is empty
+///      (legacy installs imported via `migrate-bash`, or installs from
+///      mxnode versions that predated the persisted-name feature).
+///   3. Empty string when neither source has a value — `set_node_display_name`
+///      will then write `NodeDisplayName = ""` and let mx-chain-go fall
+///      back to its own default.
+fn resolve_display_name(persisted: &str, template: &str, env: &str, index: u16) -> String {
+    if !persisted.is_empty() {
+        return persisted.to_string();
+    }
+    if template.is_empty() {
+        return String::new();
+    }
+    template
+        .replace("{env}", env)
+        .replace("{index}", &index.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_display_name;
+
+    #[test]
+    fn persisted_name_wins_over_template() {
+        let out = resolve_display_name(
+            "my-validator-prod",
+            "mx-chain-{env}-validator-{index}",
+            "mainnet",
+            0,
+        );
+        assert_eq!(out, "my-validator-prod");
+    }
+
+    #[test]
+    fn template_used_when_persisted_is_empty() {
+        let out = resolve_display_name("", "mx-chain-{env}-validator-{index}", "mainnet", 3);
+        assert_eq!(out, "mx-chain-mainnet-validator-3");
+    }
+
+    #[test]
+    fn empty_when_both_sources_are_empty() {
+        let out = resolve_display_name("", "", "mainnet", 0);
+        assert_eq!(out, "");
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -190,4 +241,8 @@ struct NodeReport {
     index: NodeIndex,
     workdir: String,
     unit: String,
+    /// The `NodeDisplayName` actually stamped into `prefs.toml` for this
+    /// node. Empty only on legacy installs whose state.toml predates the
+    /// persisted `display_name` field AND whose `name_template` is empty.
+    display_name: String,
 }

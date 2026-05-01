@@ -158,7 +158,10 @@ pub async fn run(args: AddNodesArgs, global: &GlobalArgs) -> Result<(), CliError
         restart_sec: runtime.loaded.config.node.restart_sec,
         custom_user: &runtime.loaded.config.paths.custom_user,
         extra_flags: &runtime.loaded.config.node.extra_flags,
-        name_template: &runtime.loaded.config.node.name_template,
+        name_template: args
+            .name_template
+            .as_deref()
+            .unwrap_or(&runtime.loaded.config.node.name_template),
         config_edits: match install.kind {
             InstallKind::Validators | InstallKind::Mixed => ConfigEdits::Validator,
             _ => ConfigEdits::Observer,

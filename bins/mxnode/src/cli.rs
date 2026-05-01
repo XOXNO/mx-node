@@ -215,6 +215,12 @@ pub struct InstallArgs {
 pub struct AddNodesArgs {
     #[arg(long, default_value_t = 1)] pub count: u16,
     #[arg(long, value_enum)] pub role: Option<RoleArg>,
+    /// Override the `node.name_template` config value for the new nodes
+    /// only. Existing nodes keep their persisted `display_name`. Useful
+    /// when the second wave should be named differently from the first
+    /// (e.g. `--name-template "extra-{index}"` while the original install
+    /// used `mx-chain-mainnet-validator-{index}`).
+    #[arg(long)] pub name_template: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
