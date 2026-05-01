@@ -11,6 +11,7 @@ use crate::cli::{AddNodesArgs, GlobalArgs, RoleArg};
 use crate::errors::CliError;
 use crate::events::global_op;
 use crate::orchestrator::acquirer_factory::build_acquirer;
+use crate::orchestrator::config_repo::{acquire_config_repo, read_go_version_from_repo};
 use crate::orchestrator::install::{
     install_units, persist_state, run_install, ConfigEdits, InstallPlan, NodeSpec,
 };
@@ -174,7 +175,19 @@ pub async fn run(args: AddNodesArgs, global: &GlobalArgs) -> Result<(), CliError
         config_overrides: &runtime.loaded.config.overrides.config,
     };
 
-    let acquirer = build_acquirer(&runtime);
+    // Eagerly clone (or hit the cache for) the config repo so we can
+    // read the upstream goVersion before bootstrapping the toolchain.
+    // run_install hits the same cache and skips a second clone.
+    let config_repo_path = acquire_config_repo(
+        &runtime.paths.binaries,
+        &runtime.loaded.config.network.github_org,
+        environment,
+        &config_tag,
+    )
+    .await
+    .map_err(|e| install_err(e.into(), global))?;
+    let upstream_go = read_go_version_from_repo(&config_repo_path);
+    let acquirer = build_acquirer(&runtime, upstream_go.as_deref());
     global_op(
         "add-nodes",
         &format!("{count} {role} on {environment}", role = role),
