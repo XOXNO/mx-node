@@ -65,7 +65,11 @@ pub fn infer_state_from_bash(custom_home: &Path) -> Result<State, MigrateError> 
         InstallKind::Validators => Role::Validator,
         InstallKind::ObserversSquad => Role::Observer,
         InstallKind::MultikeySquad => Role::Multikey,
-        InstallKind::Mixed => Role::Validator,
+        // Unreachable: bash has no `Mixed` install concept; the inference
+        // above can only return Validators/ObserversSquad/MultikeySquad.
+        // If a future contributor adds Mixed to that match, this arm forces
+        // them to update the role mapping in the same change.
+        InstallKind::Mixed => unreachable!("bash sentinels do not produce InstallKind::Mixed"),
     };
 
     // Squad layout: indices 0/1/2 → shards 0/1/2, index 3 → metachain.
@@ -83,7 +87,14 @@ pub fn infer_state_from_bash(custom_home: &Path) -> Result<State, MigrateError> 
         }
     };
 
-    let nodes_root = custom_home.join("elrond-nodes");
+    // Build a Paths for the bash layout. Only `custom_home` is read by the
+    // helpers we call; the other fields are placeholders set to safe defaults
+    // (Paths::default() for the bash convention) and never observed here.
+    let paths = Paths {
+        custom_home: custom_home.to_path_buf(),
+        ..Paths::default()
+    };
+
     let nodes: Vec<NodeState> = (0..count)
         .map(|i| {
             let index = NodeIndex::new(i);
@@ -95,7 +106,7 @@ pub fn infer_state_from_bash(custom_home: &Path) -> Result<State, MigrateError> 
                 api_port: DEFAULT_API_PORT_BASE + i,
                 unit: Paths::node_unit_name(index),
                 unit_override: String::new(),
-                workdir: nodes_root.join(format!("node-{i}")),
+                workdir: paths.node_workdir(index),
                 last_known_pubkey: String::new(),
                 last_action: String::new(),
                 last_action_at: None,
@@ -107,7 +118,7 @@ pub fn infer_state_from_bash(custom_home: &Path) -> Result<State, MigrateError> 
         Some(ProxyState {
             present: true,
             unit: Paths::proxy_unit_name().to_string(),
-            workdir: custom_home.join("elrond-proxy"),
+            workdir: paths.elrond_proxy_root(),
             server_port: DEFAULT_PROXY_PORT,
         })
     } else {
