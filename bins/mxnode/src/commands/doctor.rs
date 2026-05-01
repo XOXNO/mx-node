@@ -126,6 +126,14 @@ pub fn run(args: DoctorArgs, global: &GlobalArgs) -> Result<(), CliError> {
     }
 
     if let Some(fix) = args.fix {
+        if any_error {
+            return Err(CliError::new(
+                "refusing to apply --fix while doctor reports errors",
+                format!("{error_count} error(s) above"),
+                "fix the reported errors first, then re-run with --fix",
+            )
+            .silent());
+        }
         match fix {
             DoctorFix::Journald => {
                 apply_journald_fix(global)?;
@@ -240,7 +248,10 @@ fn check_journald() -> Vec<Finding> {
         vec![Finding::warn(
             "journald",
             "journal disk usage is uncapped — long-running nodes can fill /var/log/journal",
-            "run `mxnode doctor --fix journald` to apply SystemMaxUse=4000M caps",
+            format!(
+                "run `mxnode doctor --fix journald` to apply SystemMaxUse={} caps",
+                mxnode_systemd::journald::DEFAULT_SYSTEM_MAX_USE,
+            ),
         )]
     }
 }
@@ -253,10 +264,25 @@ fn apply_journald_fix(global: &GlobalArgs) -> Result<(), CliError> {
     use std::io::Write;
 
     let path = "/etc/systemd/journald.conf";
-    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    use std::io::ErrorKind;
+    let existing = match std::fs::read_to_string(path) {
+        Ok(body) => body,
+        Err(e) if e.kind() == ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return Err(CliError::new(
+                "could not read /etc/systemd/journald.conf",
+                format!("{e}"),
+                "check that the file is readable (re-run with sudo if needed)",
+            )
+            .json_if(global.json));
+        }
+    };
     let new_body =
         apply_managed_block(&existing, DEFAULT_SYSTEM_MAX_USE, DEFAULT_SYSTEM_MAX_FILE_SIZE);
     if new_body == existing {
+        // Stderr — stdout is reserved for the structured doctor output
+        // (findings table or --json payload). Fix-step status messages go
+        // to stderr so a `--json` consumer's parser is not corrupted.
         eprintln!("✓ journald.conf already up to date");
         return Ok(());
     }
@@ -274,19 +300,22 @@ fn apply_journald_fix(global: &GlobalArgs) -> Result<(), CliError> {
             )
             .json_if(global.json)
         })?;
-    child
-        .stdin
-        .as_mut()
-        .expect("piped stdin")
-        .write_all(new_body.as_bytes())
-        .map_err(|e| {
-            CliError::new(
-                "failed to write journald.conf via sudo tee",
-                format!("{e}"),
-                "check disk space and sudo permissions",
-            )
-            .json_if(global.json)
-        })?;
+    let stdin = child.stdin.as_mut().ok_or_else(|| {
+        CliError::new(
+            "sudo tee child has no stdin",
+            "Stdio::piped() did not produce a writable handle",
+            "report this as an mxnode bug",
+        )
+        .json_if(global.json)
+    })?;
+    stdin.write_all(new_body.as_bytes()).map_err(|e| {
+        CliError::new(
+            "failed to write journald.conf via sudo tee",
+            format!("{e}"),
+            "check disk space and sudo permissions",
+        )
+        .json_if(global.json)
+    })?;
     let status = child.wait().map_err(|e| {
         CliError::new(
             "failed to wait on `sudo tee`",
