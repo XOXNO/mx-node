@@ -13,6 +13,7 @@ mod keys;
 mod lifecycle;
 mod logs;
 mod metrics;
+mod migrate;
 mod reapply_config;
 mod status;
 mod upgrade;
