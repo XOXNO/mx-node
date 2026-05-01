@@ -118,7 +118,7 @@ pub enum Command {
     MigrateBash(crate::commands::migrate::MigrateBashArgs),
 
     /// Full host diagnostic; suggests fixes.
-    Doctor,
+    Doctor(DoctorArgs),
 
     /// Print version (also available via --version).
     Version,
@@ -355,6 +355,22 @@ pub enum DbCommand {
 pub struct KeygenArgs {
     #[arg(long, value_name = "INDEX")] pub r#for: Option<u16>,
     #[arg(long)] pub output: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct DoctorArgs {
+    /// Apply a known fix to the host. Currently only `journald` is
+    /// supported (caps `/etc/systemd/journald.conf` retention so node
+    /// logs don't fill `/var/log/journal`). Without this flag, the
+    /// relevant check still runs and reports its finding, but no
+    /// system mutation occurs.
+    #[arg(long, value_enum)]
+    pub fix: Option<DoctorFix>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum DoctorFix {
+    Journald,
 }
 
 #[derive(Debug, Subcommand)]

@@ -29,7 +29,7 @@ pub fn dispatch(cli: Cli) -> Result<(), CliError> {
         Command::Config { command } => config::run(command, &cli.global),
         Command::Status(args) => status::run(args, &cli.global),
         Command::Logs(args) => logs::run(args, &cli.global),
-        Command::Doctor => doctor::run(&cli.global),
+        Command::Doctor(args) => doctor::run(args, &cli.global),
         Command::Start(args) => lifecycle::run_start(args, &cli.global),
         Command::Stop(args) => lifecycle::run_stop(args, &cli.global),
         Command::Restart(args) => lifecycle::run_restart(args, &cli.global),

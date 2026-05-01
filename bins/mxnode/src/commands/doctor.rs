@@ -17,9 +17,9 @@ use mxnode_state::{classify, inflight_path, Inflight, Liveness, StateStore};
 use mxnode_systemd::scan_supervisor_dir;
 use serde::Serialize;
 
-use crate::cli::GlobalArgs;
+use crate::cli::{DoctorArgs, DoctorFix, GlobalArgs};
 use crate::errors::CliError;
-use crate::orchestrator::runtime::Runtime;
+use crate::orchestrator::runtime::{CliErrorExt, Runtime};
 
 const DEFAULT_SYSTEMD_DIR: &str = "/etc/systemd/system";
 
@@ -68,7 +68,7 @@ impl Finding {
     }
 }
 
-pub fn run(global: &GlobalArgs) -> Result<(), CliError> {
+pub fn run(args: DoctorArgs, global: &GlobalArgs) -> Result<(), CliError> {
     let mut findings: Vec<Finding> = Vec::new();
 
     // Config + path resolution. We surface the loader error as a finding
@@ -99,6 +99,7 @@ pub fn run(global: &GlobalArgs) -> Result<(), CliError> {
         findings.extend(check_inflight(runtime));
         findings.extend(check_discovery(runtime));
         findings.extend(check_p2p_ports());
+        findings.extend(check_journald());
     }
 
     let any_error = findings.iter().any(|f| f.severity == Severity::Error);
@@ -122,6 +123,14 @@ pub fn run(global: &GlobalArgs) -> Result<(), CliError> {
         println!("{payload}");
     } else {
         print_findings(&findings);
+    }
+
+    if let Some(fix) = args.fix {
+        match fix {
+            DoctorFix::Journald => {
+                apply_journald_fix(global)?;
+            }
+        }
     }
 
     if any_error {
@@ -209,6 +218,127 @@ fn check_p2p_ports() -> Vec<Finding> {
             )]
         }
     }
+}
+
+/// Linux-only: detect whether mxnode's managed journald block has been
+/// applied to `/etc/systemd/journald.conf`. macOS hosts don't have
+/// systemd, so we short-circuit with an empty vec to keep the macOS
+/// doctor pass quiet.
+fn check_journald() -> Vec<Finding> {
+    use mxnode_core::Platform;
+    if Platform::current() != Platform::Linux {
+        return Vec::new();
+    }
+    let path = "/etc/systemd/journald.conf";
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    if existing.contains("# >>> mxnode journald managed block >>>") {
+        vec![Finding::ok(
+            "journald",
+            "managed retention block present",
+        )]
+    } else {
+        vec![Finding::warn(
+            "journald",
+            "journal disk usage is uncapped — long-running nodes can fill /var/log/journal",
+            "run `mxnode doctor --fix journald` to apply SystemMaxUse=4000M caps",
+        )]
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn apply_journald_fix(global: &GlobalArgs) -> Result<(), CliError> {
+    use mxnode_systemd::journald::{
+        apply_managed_block, DEFAULT_SYSTEM_MAX_FILE_SIZE, DEFAULT_SYSTEM_MAX_USE,
+    };
+    use std::io::Write;
+
+    let path = "/etc/systemd/journald.conf";
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let new_body =
+        apply_managed_block(&existing, DEFAULT_SYSTEM_MAX_USE, DEFAULT_SYSTEM_MAX_FILE_SIZE);
+    if new_body == existing {
+        eprintln!("✓ journald.conf already up to date");
+        return Ok(());
+    }
+
+    let mut child = Command::new("sudo")
+        .args(["tee", path])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .map_err(|e| {
+            CliError::new(
+                "could not spawn `sudo tee`",
+                format!("{e}"),
+                "ensure sudo is available and the operator has write access via sudo",
+            )
+            .json_if(global.json)
+        })?;
+    child
+        .stdin
+        .as_mut()
+        .expect("piped stdin")
+        .write_all(new_body.as_bytes())
+        .map_err(|e| {
+            CliError::new(
+                "failed to write journald.conf via sudo tee",
+                format!("{e}"),
+                "check disk space and sudo permissions",
+            )
+            .json_if(global.json)
+        })?;
+    let status = child.wait().map_err(|e| {
+        CliError::new(
+            "failed to wait on `sudo tee`",
+            format!("{e}"),
+            "investigate why the child process did not exit",
+        )
+        .json_if(global.json)
+    })?;
+    if !status.success() {
+        return Err(CliError::new(
+            "`sudo tee` exited non-zero",
+            format!("status code {:?}", status.code()),
+            "verify sudo permissions and that /etc/systemd/journald.conf is writable",
+        )
+        .json_if(global.json));
+    }
+
+    let restart = Command::new("sudo")
+        .args(["systemctl", "restart", "systemd-journald"])
+        .status()
+        .map_err(|e| {
+            CliError::new(
+                "failed to invoke `sudo systemctl`",
+                format!("{e}"),
+                "ensure systemctl is on PATH",
+            )
+            .json_if(global.json)
+        })?;
+    if !restart.success() {
+        return Err(CliError::new(
+            "`sudo systemctl restart systemd-journald` exited non-zero",
+            format!("status code {:?}", restart.code()),
+            "check systemctl status systemd-journald",
+        )
+        .json_if(global.json));
+    }
+
+    eprintln!(
+        "✓ journald capped (SystemMaxUse={}, SystemMaxFileSize={}); journald restarted",
+        DEFAULT_SYSTEM_MAX_USE, DEFAULT_SYSTEM_MAX_FILE_SIZE,
+    );
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn apply_journald_fix(global: &GlobalArgs) -> Result<(), CliError> {
+    Err(CliError::new(
+        "--fix journald is Linux-only",
+        "journald is part of systemd, which is not present on this OS",
+        "no action needed; this platform does not need journald capping",
+    )
+    .json_if(global.json))
 }
 
 fn check_command(bin: &'static str, args: &[&str]) -> Finding {
@@ -363,5 +493,18 @@ fn print_findings(findings: &[Finding]) {
         if !f.action.is_empty() {
             println!("    → {}", f.action);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn journald_managed_block_round_trip_is_noop() {
+        // The C1 helper is itself idempotent; this pins that the doctor's
+        // sentinel substring matches what `apply_managed_block` actually
+        // emits, so the WARN-vs-OK branch in `check_journald` keys off
+        // the same string the fix writes.
+        let configured = mxnode_systemd::journald::apply_managed_block("", "4000M", "800M");
+        assert!(configured.contains("# >>> mxnode journald managed block >>>"));
     }
 }
