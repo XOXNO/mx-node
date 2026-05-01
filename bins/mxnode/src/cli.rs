@@ -126,6 +126,12 @@ pub enum Command {
     /// Full host diagnostic; suggests fixes.
     Doctor(DoctorArgs),
 
+    /// Replace this `mxnode` binary with the latest (or a pinned) release
+    /// from `XOXNO/mx-node`. Verifies the download against `SHA256SUMS`
+    /// and falls back to `sudo install` when the install dir is
+    /// root-owned (typical for `/usr/local/bin`).
+    SelfUpdate(SelfUpdateArgs),
+
     /// Print version (also available via --version).
     Version,
 }
@@ -524,6 +530,21 @@ pub struct ReapplyConfigArgs {
     /// Limit which nodes get the new edits. Default: all known nodes.
     #[arg(long)]
     pub node: Vec<u16>,
+}
+
+#[derive(Debug, Args)]
+pub struct SelfUpdateArgs {
+    /// Pin a specific release tag (e.g. `--tag v0.8.6`). Default:
+    /// resolve `latest` from GitHub.
+    #[arg(long, value_name = "TAG")]
+    pub tag: Option<String>,
+    /// Print "current X / latest Y" and exit without downloading.
+    #[arg(long)]
+    pub check: bool,
+    /// Reinstall even when the running binary is already at the
+    /// requested version.
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(Debug, Args)]
