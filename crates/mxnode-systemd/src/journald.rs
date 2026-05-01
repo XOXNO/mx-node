@@ -1,6 +1,6 @@
 //! Idempotent management of `/etc/systemd/journald.conf` so node logs
 //! don't fill `/var/log/journal`. Mirrors the bash `prerequisites` flow
-//! (caps `SystemMaxUse=2G`, `SystemMaxFileSize=200M`).
+//! (caps `SystemMaxUse=4000M`, `SystemMaxFileSize=800M`).
 //!
 //! We never overwrite operator-set values outside our managed block;
 //! the block is delimited by sentinel comments and re-applying is a no-op.
@@ -10,8 +10,8 @@ const END: &str = "# <<< mxnode journald managed block <<<";
 
 /// Recommended values, lifted from the bash `prerequisites` recipe and
 /// MultiversX validator host docs.
-pub const DEFAULT_SYSTEM_MAX_USE: &str = "2G";
-pub const DEFAULT_SYSTEM_MAX_FILE_SIZE: &str = "200M";
+pub const DEFAULT_SYSTEM_MAX_USE: &str = "4000M";
+pub const DEFAULT_SYSTEM_MAX_FILE_SIZE: &str = "800M";
 
 /// Compute the journald.conf body after applying mxnode's managed block.
 /// Pure function: returns the new file contents. Caller decides whether
@@ -19,30 +19,36 @@ pub const DEFAULT_SYSTEM_MAX_FILE_SIZE: &str = "200M";
 ///
 /// Idempotent: re-applying with the same `max_use` / `max_file_size`
 /// returns a byte-identical result.
+#[must_use]
 pub fn apply_managed_block(existing: &str, max_use: &str, max_file_size: &str) -> String {
     let block = format!(
         "{BEGIN}\n[Journal]\nSystemMaxUse={max_use}\nSystemMaxFileSize={max_file_size}\n{END}\n"
     );
+    // Replace only when both sentinels are present AND in the expected
+    // order. A malformed file (e.g., END before BEGIN, or a dangling
+    // half-block) falls through to the append branch, which writes a
+    // clean block; the next invocation then replaces it cleanly.
     if let (Some(start), Some(end)) = (existing.find(BEGIN), existing.find(END)) {
-        // Replace existing block. `end` points to the opening of END;
-        // include the END line + trailing newline.
-        let end_full = end + END.len();
-        let after = &existing[end_full..];
-        let after = after.strip_prefix('\n').unwrap_or(after);
-        let mut out = String::new();
-        out.push_str(&existing[..start]);
-        out.push_str(&block);
-        out.push_str(after);
-        out
-    } else {
-        let mut out = existing.to_string();
-        if !out.is_empty() && !out.ends_with('\n') {
-            out.push('\n');
+        if start < end {
+            let end_full = end + END.len();
+            let after = &existing[end_full..];
+            let after = after.strip_prefix('\n').unwrap_or(after);
+            let mut out = String::new();
+            out.push_str(&existing[..start]);
+            out.push_str(&block);
+            out.push_str(after);
+            return out;
         }
-        out.push('\n');
-        out.push_str(&block);
-        out
     }
+    let mut out = existing.to_string();
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out.push_str(&block);
+    out
 }
 
 #[cfg(test)]
@@ -55,7 +61,10 @@ mod tests {
         assert!(out.contains("[Journal]"));
         assert!(out.contains("SystemMaxUse=2G"));
         assert!(out.contains("SystemMaxFileSize=200M"));
-        assert!(out.starts_with('\n'));
+        assert!(
+            out.starts_with(BEGIN),
+            "expected output to start with BEGIN sentinel: {out}"
+        );
     }
 
     #[test]
