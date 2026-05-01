@@ -139,6 +139,44 @@ pub async fn run(args: InstallArgs, global: &GlobalArgs) -> Result<(), CliError>
         }
     }
 
+    // Resolve per-node display names. Interactive when stdin is a TTY
+    // and the operator did not pass `--non-interactive`; the prompt
+    // pre-fills each node with `name_template` expanded for that index
+    // and accepts a blank line as "use the default". On non-TTY
+    // (CI / piped) input we silently expand the template so automation
+    // is never blocked waiting for a name.
+    let resolved_template = args
+        .name_template
+        .as_deref()
+        .unwrap_or(&runtime.loaded.config.node.name_template);
+    let interactive = !args.non_interactive
+        && std::io::IsTerminal::is_terminal(&std::io::stdin())
+        && !args.dry_run;
+    let display_names = if count == 0 {
+        Vec::new()
+    } else {
+        let indices: Vec<u16> = (0..count).collect();
+        let mut stdin = std::io::stdin().lock();
+        let mut stdout = std::io::stdout().lock();
+        super::prompts::resolve_node_names(
+            &mut stdin,
+            &mut stdout,
+            count,
+            &indices,
+            resolved_template,
+            environment.as_str(),
+            interactive,
+        )
+        .map_err(|e| {
+            CliError::new(
+                "failed to read node-name prompts from stdin",
+                e.to_string(),
+                "rerun with --non-interactive or pipe an input stream",
+            )
+            .json_if(global.json)
+        })?
+    };
+
     let nodes: Vec<NodeSpec> = (0..count)
         .map(|i| NodeSpec {
             index: NodeIndex::new(i),
@@ -148,7 +186,7 @@ pub async fn run(args: InstallArgs, global: &GlobalArgs) -> Result<(), CliError>
             } else {
                 Shard::Auto
             },
-            display_name: String::new(),
+            display_name: display_names[i as usize].clone(),
         })
         .collect();
 

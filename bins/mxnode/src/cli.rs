@@ -215,6 +215,11 @@ pub struct InstallArgs {
     )]
     pub backup: Option<u8>,
     #[arg(long)] pub dry_run: bool,
+    /// Skip per-node `NodeDisplayName` prompts — every node gets its
+    /// template-expanded default. Set automatically when stdin is not a
+    /// TTY (CI, piped input, `< /dev/null`); pass explicitly to suppress
+    /// prompts in an interactive terminal too.
+    #[arg(long)] pub non_interactive: bool,
 }
 
 #[derive(Debug, Args)]
@@ -227,6 +232,11 @@ pub struct AddNodesArgs {
     /// (e.g. `--name-template "extra-{index}"` while the original install
     /// used `mx-chain-mainnet-validator-{index}`).
     #[arg(long)] pub name_template: Option<String>,
+    /// Skip per-node `NodeDisplayName` prompts — every new node gets its
+    /// template-expanded default. Set automatically when stdin is not a
+    /// TTY (CI, piped input, `< /dev/null`); pass explicitly to suppress
+    /// prompts in an interactive terminal too.
+    #[arg(long)] pub non_interactive: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

@@ -14,6 +14,7 @@ mod lifecycle;
 mod logs;
 mod metrics;
 pub(crate) mod migrate;
+mod prompts;
 mod reapply_config;
 mod rename;
 mod status;

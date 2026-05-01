@@ -98,12 +98,47 @@ pub async fn run(args: AddNodesArgs, global: &GlobalArgs) -> Result<(), CliError
         .max()
         .unwrap_or(0);
     let start = if state.nodes.is_empty() { 0 } else { highest_existing + 1 };
+
+    // Resolve per-node display names. Interactive when stdin is a TTY
+    // and the operator did not pass `--non-interactive`; mirrors the
+    // install flow so add-nodes UX matches.
+    let resolved_template = args
+        .name_template
+        .as_deref()
+        .unwrap_or(&runtime.loaded.config.node.name_template);
+    let interactive =
+        !args.non_interactive && std::io::IsTerminal::is_terminal(&std::io::stdin());
+    let display_names = if count == 0 {
+        Vec::new()
+    } else {
+        let indices: Vec<u16> = (0..count).map(|i| start + i).collect();
+        let mut stdin = std::io::stdin().lock();
+        let mut stdout = std::io::stdout().lock();
+        super::prompts::resolve_node_names(
+            &mut stdin,
+            &mut stdout,
+            count,
+            &indices,
+            resolved_template,
+            environment.as_str(),
+            interactive,
+        )
+        .map_err(|e| {
+            CliError::new(
+                "failed to read node-name prompts from stdin",
+                e.to_string(),
+                "rerun with --non-interactive or pipe an input stream",
+            )
+            .json_if(global.json)
+        })?
+    };
+
     let nodes: Vec<NodeSpec> = (0..count)
         .map(|i| NodeSpec {
             index: NodeIndex::new(start + i),
             role,
             shard: Shard::Auto,
-            display_name: String::new(),
+            display_name: display_names[i as usize].clone(),
         })
         .collect();
 
