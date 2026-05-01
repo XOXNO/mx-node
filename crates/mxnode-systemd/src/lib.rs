@@ -2,6 +2,7 @@
 
 mod ctl;
 mod discovery;
+pub mod journald;
 mod plist;
 mod render;
 mod tomledit;
