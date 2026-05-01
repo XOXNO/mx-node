@@ -69,6 +69,41 @@ pub async fn acquire_config_repo(
     Ok(dest)
 }
 
+/// Cache layout for the proxy source repo: `<binaries_root>/proxy-repos/<tag>/<repo-files>`.
+/// Independent of `env` because `mx-chain-proxy-go` is the same repo across networks.
+pub fn proxy_cache_dir(binaries_root: &Path, tag: &Tag) -> PathBuf {
+    binaries_root.join("proxy-repos").join(tag.as_str())
+}
+
+/// Acquire (or reuse) the `mx-chain-proxy-go` source repo at `tag`. The
+/// caller copies `cmd/proxy/config/*` from the returned path into the
+/// proxy working directory.
+pub async fn acquire_proxy_repo(
+    binaries_root: &Path,
+    github_org: &str,
+    tag: &Tag,
+) -> Result<PathBuf, ConfigRepoError> {
+    let dest = proxy_cache_dir(binaries_root, tag);
+    if dest.exists()
+        && std::fs::read_dir(&dest)
+            .map(|mut it| it.next().is_some())
+            .unwrap_or(false)
+    {
+        return Ok(dest);
+    }
+    if dest.exists() {
+        std::fs::remove_dir_all(&dest).map_err(|e| ConfigRepoError::Io {
+            path: dest.display().to_string(),
+            source: e,
+        })?;
+    }
+    let repo_url = format!("https://github.com/{github_org}/mx-chain-proxy-go.git");
+    clone_shallow(&repo_url, tag, &dest)
+        .await
+        .map_err(|e| ConfigRepoError::Clone(e.to_string()))?;
+    Ok(dest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,5 +130,24 @@ mod tests {
         std::fs::write(cached.join("placeholder"), b"already cloned").unwrap();
         let result = acquire_config_repo(tmp.path(), "myfork", env, &tag).await.unwrap();
         assert_eq!(result, cached);
+    }
+
+    #[tokio::test]
+    async fn proxy_repo_returns_cache_when_dir_already_populated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tag = Tag::from_str("v1.1.51").unwrap();
+        let cached = proxy_cache_dir(tmp.path(), &tag);
+        std::fs::create_dir_all(&cached).unwrap();
+        std::fs::write(cached.join("placeholder"), b"already cloned").unwrap();
+        let result = acquire_proxy_repo(tmp.path(), "myfork", &tag).await.unwrap();
+        assert_eq!(result, cached);
+    }
+
+    #[test]
+    fn proxy_cache_dir_layout_is_per_tag() {
+        let root = std::path::PathBuf::from("/srv/mxnode/binaries");
+        let tag = Tag::from_str("v1.1.51").unwrap();
+        let dir = proxy_cache_dir(&root, &tag);
+        assert_eq!(dir, std::path::PathBuf::from("/srv/mxnode/binaries/proxy-repos/v1.1.51"));
     }
 }
