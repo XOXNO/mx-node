@@ -137,6 +137,17 @@ pub fn run(args: DoctorArgs, global: &GlobalArgs) -> Result<(), CliError> {
         match fix {
             DoctorFix::Journald => {
                 apply_journald_fix(global)?;
+                if global.json {
+                    let ack = serde_json::json!({
+                        "fix": {
+                            "applied": true,
+                            "kind": "journald",
+                            "system_max_use": mxnode_systemd::journald::DEFAULT_SYSTEM_MAX_USE,
+                            "system_max_file_size": mxnode_systemd::journald::DEFAULT_SYSTEM_MAX_FILE_SIZE,
+                        }
+                    });
+                    println!("{ack}");
+                }
             }
         }
     }

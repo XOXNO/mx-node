@@ -946,6 +946,34 @@ fn migrate_bash_dry_run_prints_summary() {
 }
 
 #[test]
+fn migrate_bash_execute_refuses_when_state_toml_exists() {
+    let sb = Sandbox::new();
+    // Lay down bash sentinels so infer succeeds.
+    std::fs::write(sb.home.join(".installedenv"), "mainnet").unwrap();
+    std::fs::write(sb.home.join(".numberofnodes"), "1").unwrap();
+    // Pre-existing state.toml.
+    std::fs::create_dir_all(sb.state_path().parent().unwrap()).unwrap();
+    std::fs::write(sb.state_path(), "schema_version = 1\n").unwrap();
+
+    let output = sb
+        .cmd()
+        .args(["migrate-bash", "--from"])
+        .arg(&sb.home)
+        .arg("--execute")
+        .output()
+        .expect("spawn mxnode");
+    assert!(!output.status.success(), "expected non-zero exit when state.toml exists");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("refusing to overwrite") || stderr.contains("already exists"),
+        "stderr should explain the refusal: {stderr}",
+    );
+    // Confirm the existing state.toml was NOT modified.
+    let body = std::fs::read_to_string(sb.state_path()).unwrap();
+    assert_eq!(body, "schema_version = 1\n", "state.toml was clobbered");
+}
+
+#[test]
 fn state_path_falls_under_tempdir_state_home() {
     // Sanity: the env-var rewiring works. If this regresses, every other
     // test in the file produces false positives because the binary

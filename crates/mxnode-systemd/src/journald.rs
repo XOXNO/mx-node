@@ -15,7 +15,7 @@ pub const DEFAULT_SYSTEM_MAX_FILE_SIZE: &str = "800M";
 
 /// Compute the journald.conf body after applying mxnode's managed block.
 /// Pure function: returns the new file contents. Caller decides whether
-/// to write (typically via `sudo tee`) — see Task C2.
+/// to write (typically via `sudo tee`).
 ///
 /// Idempotent: re-applying with the same `max_use` / `max_file_size`
 /// returns a byte-identical result.

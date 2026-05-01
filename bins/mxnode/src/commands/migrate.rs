@@ -1,7 +1,6 @@
 //! `mxnode migrate-bash`: import an existing `mx-chain-scripts` (bash) install
 //! into mxnode's cache-derived `state.toml`. Pure inference here — no
-//! filesystem writes, no systemctl probing. The CLI wrapper that wires the
-//! StateStore + dry-run/--execute flag lives in a follow-up commit.
+//! filesystem writes, no systemctl probing.
 
 use std::path::Path;
 
@@ -177,6 +176,14 @@ pub fn run(args: MigrateBashArgs, global: &GlobalArgs) -> Result<(), CliError> {
     }
 
     let store = mxnode_state::StateStore::new(&runtime.paths.state);
+    if store.exists() {
+        return Err(CliError::new(
+            "refusing to overwrite existing state.toml",
+            format!("{} already exists", store.state_path().display()),
+            "delete or move the existing state.toml first, or run on a fresh host",
+        )
+        .json_if(global.json));
+    }
     let guard = store.lock().map_err(|e| {
         CliError::new(
             "failed to acquire state.toml lock",
