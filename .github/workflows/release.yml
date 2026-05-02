@@ -39,6 +39,15 @@ jobs:
     # and manual-dispatch already require write access in the
     # canonical repo; this is belt-and-braces.
     if: github.repository_owner == 'XOXNO'
+    permissions:
+      # `id-token: write` is required for keyless cosign signing via
+      # the GitHub Actions OIDC token. The token is short-lived
+      # (~5 min), scoped to this workflow + this run, and exchanged
+      # at Sigstore Fulcio for a one-time signing certificate. No
+      # long-lived keys are stored anywhere in the repo or in CI.
+      # See https://docs.sigstore.dev/cosign/keyless.
+      id-token: write
+      contents: read
     # Single runner for every target. The self-hosted XOXNO Hetzner
     # box (Ubuntu x86_64) acts as the universal build host:
     #
@@ -176,6 +185,32 @@ jobs:
           ls -lh "$DIST"
           echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
 
+      # Keyless cosign signing via Sigstore + GitHub Actions OIDC.
+      # The signing identity recorded in the Rekor transparency log is:
+      #   https://github.com/<repo>/.github/workflows/release.yml@refs/tags/<tag>
+      # which install.sh's cosign verify-blob path matches against.
+      - uses: sigstore/cosign-installer@v3
+        with:
+          # Pinned to a long-stable cosign release. Newer minor versions
+          # have been signature-format-compatible since 2.x; bump
+          # deliberately when audit log shape changes are needed.
+          cosign-release: 'v2.4.1'
+
+      - name: Sign archive (cosign keyless)
+        env:
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          # `--yes` skips the "I'm about to log to a public transparency
+          # ledger, ok?" prompt — required for non-interactive CI.
+          cosign sign-blob --yes \
+            --output-signature "${ARCHIVE}.sig" \
+            --output-certificate "${ARCHIVE}.pem" \
+            "$ARCHIVE"
+          ls -lh
+
       - uses: actions/upload-artifact@v7
         with:
           name: mxnode-${{ matrix.target }}
@@ -225,8 +260,10 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           # Flatten — each `mxnode-<target>` artifact dir contains
-          # one .tar.gz + one .sha256 stub.
-          find artifacts -type f \( -name '*.tar.gz' -o -name '*.sha256' \) \
+          # one .tar.gz + one .sha256 stub + one .sig + one .pem.
+          find artifacts -type f \
+            \( -name '*.tar.gz' -o -name '*.sha256' \
+               -o -name '*.sig' -o -name '*.pem' \) \
             -exec cp -v {} dist/ \;
           # Combine the per-archive .sha256 stubs into one
           # SHA256SUMS file the install script can curl directly.
@@ -242,4 +279,6 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             dist/*.tar.gz
+            dist/*.tar.gz.sig
+            dist/*.tar.gz.pem
             dist/SHA256SUMS
