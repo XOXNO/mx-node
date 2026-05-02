@@ -186,7 +186,9 @@ assert "multikey + --with-proxy rejected"     "$MXNODE install --role multikey -
 assert "--keys-file with observer rejected"   "$MXNODE install --role observer --squad --keys-file /tmp/fake-keys.pem --dry-run" 0
 assert "--keys-file with validator rejected"  "$MXNODE install --role validator --keys-file /tmp/fake-keys.pem --dry-run" 0
 assert "--backup with observer rejected"      "$MXNODE install --role observer --squad --backup --dry-run" 0
-assert "--backup with validator rejected"     "$MXNODE install --role validator --backup --dry-run" 0
+# `--backup` is now allowed for validators (the wizard prompts for
+# RedundancyLevel for both multikey and validator installs). Observers
+# still reject because they don't sign blocks.
 assert "multikey without keys file rejected"  "$MXNODE install --role multikey --dry-run" 0
 rm -f /tmp/fake-keys.pem
 rmdir "$HOME/VALIDATOR_KEYS" 2>/dev/null || true
@@ -206,6 +208,11 @@ assert "observer --squad --with-proxy dry-run" "$MXNODE install --role observer 
 assert "multikey (implicit squad) dry-run"    "$MXNODE install --role multikey --binary-tag $NODE_TAG --config-tag $CONFIG_TAG --dry-run"
 assert "multikey --backup dry-run"            "$MXNODE install --role multikey --backup --binary-tag $NODE_TAG --config-tag $CONFIG_TAG --dry-run"
 assert "multikey --backup 2 dry-run"          "$MXNODE install --role multikey --backup 2 --binary-tag $NODE_TAG --config-tag $CONFIG_TAG --dry-run"
+# Validator-with-backup is the new positive case after we widened the
+# contract: a validator running as a backup-of-primary host stamps
+# RedundancyLevel into prefs.toml.
+assert "validator --backup dry-run"           "$MXNODE install --role validator --backup --binary-tag $NODE_TAG --config-tag $CONFIG_TAG --dry-run"
+assert "validator --backup 3 dry-run"         "$MXNODE install --role validator --backup 3 --binary-tag $NODE_TAG --config-tag $CONFIG_TAG --dry-run"
 assert "multikey --squad (no-op) dry-run"     "$MXNODE install --role multikey --squad --binary-tag $NODE_TAG --config-tag $CONFIG_TAG --dry-run"
 assert "--json install dry-run"               "$MXNODE --json install --role multikey --binary-tag $NODE_TAG --config-tag $CONFIG_TAG --dry-run"
 
