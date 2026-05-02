@@ -637,10 +637,17 @@ fn draw_instance(frame: &mut Frame, area: Rect, label: &str, snap: &NodeSnapshot
         Cell::from(lbl("Redundancy")),
         Cell::from(val(redundancy_text)),
     ]));
-    // Managed-keys row only shows when the node responds to
-    // `/node/managed-keys/count` — older / non-multikey builds 404
-    // there, in which case the row stays hidden.
-    if let Some(n) = snap.managed_keys_count {
+    // Managed-keys row only shows when the node is actively in
+    // multikey mode (count > 0). Newer mx-chain-go builds expose
+    // `/node/managed-keys/count` on every node — a regular validator
+    // with a single `.pem` and a plain observer both report `0`
+    // because they don't load keys via the multikey handler. We hide
+    // the row in those cases so operators see "Managed Keys" only
+    // when there's an `allValidatorsKeys.pem` actually loaded
+    // (multikey main, multikey backup with redundancy > 0, etc).
+    // A None here (endpoint missing on older builds) also stays
+    // hidden — same outcome.
+    if let Some(n) = snap.managed_keys_count.filter(|c| *c > 0) {
         rows.push(Row::new(vec![
             Cell::from(lbl("Managed Keys")),
             Cell::from(Line::from(vec![
