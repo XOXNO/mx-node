@@ -35,7 +35,7 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # GitHub Actions sanitizes PATH on self-hosted runners; the
       # rustup-installed cargo at ~/.cargo/bin isn't picked up unless
@@ -68,7 +68,7 @@ jobs:
         if: env.DOCS_READ_TOKEN != ''
         env:
           DOCS_READ_TOKEN: ${{ secrets.DOCS_READ_TOKEN }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: XOXNO/mintlify-docs
           token: ${{ secrets.DOCS_READ_TOKEN }}
@@ -131,12 +131,12 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
 
       - name: cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -151,7 +151,7 @@ jobs:
         if: env.DOCS_READ_TOKEN != ''
         env:
           DOCS_READ_TOKEN: ${{ secrets.DOCS_READ_TOKEN }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: XOXNO/mintlify-docs
           token: ${{ secrets.DOCS_READ_TOKEN }}
