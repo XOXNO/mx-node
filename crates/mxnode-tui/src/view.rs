@@ -1004,43 +1004,109 @@ fn draw_network_row(frame: &mut Frame, area: Rect, snap: &NodeSnapshot) {
         .unwrap_or(0);
     let rx_data = snap.netin_hist.as_vec();
     let tx_data = snap.netout_hist.as_vec();
-    // Title format: `Rx <rate>/s (X%)  peak <Y>/s  ·  <Z> epoch` —
-    // four numbers ordered "now / saturation / peak this epoch /
-    // cumulative this epoch". Dropped the "this " word from the
-    // suffix so the title fits on terminals wider than the 110-col
-    // narrow threshold but not absurdly wide; on tighter terminals
-    // ratatui clips the trailing edge automatically.
-    frame.render_widget(
-        Sparkline::default()
-            .block(bordered(Line::from(vec![
-                Span::raw(" "),
-                Span::styled("Rx ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::styled(format!("{}/s", human_bytes(rx)), theme::ok()),
-                Span::styled(format!("  ({}%)", rx_pct), theme::dim()),
-                Span::styled(format!("  peak {}/s", human_bytes(rx_peak)), theme::dim()),
-                Span::styled("  ·  ", theme::dim()),
-                Span::styled(human_bytes(recv_epoch), theme::ok()),
-                Span::styled(" epoch ", theme::dim()),
-            ])))
-            .style(theme::ok())
-            .data(&rx_data),
+    render_net_gauge(
+        frame,
         halves[0],
+        "Rx",
+        theme::ok(),
+        rx,
+        rx_pct,
+        rx_peak,
+        recv_epoch,
+        &rx_data,
     );
+    render_net_gauge(
+        frame,
+        halves[1],
+        "Tx",
+        theme::warn(),
+        tx,
+        tx_pct,
+        tx_peak,
+        sent_epoch,
+        &tx_data,
+    );
+}
+
+/// Render one Rx or Tx gauge with a width-aware title.
+///
+/// The title is built progressively: we always include the label + the
+/// current rate, then add `(X%)`, `peak Y/s`, and the cumulative epoch
+/// total only if there's room. The cumulative bytes get one of three
+/// shapes depending on what fits:
+///
+///   - `· <Z> this epoch` — full form, ≥ ~14 chars of room
+///   - `· <Z> epoch`      — medium form, ≥ ~9 chars
+///   - `· <Z>`            — minimal form, ≥ ~3 chars
+///
+/// At very narrow widths the suffix is dropped entirely. Inter-segment
+/// spacing is a single space (was double historically) so the title
+/// reads compactly on every supported terminal width without losing
+/// information.
+#[allow(clippy::too_many_arguments)]
+fn render_net_gauge(
+    frame: &mut Frame,
+    area: Rect,
+    label: &str,
+    color: Style,
+    rate: u64,
+    pct: u64,
+    peak: u64,
+    epoch_total: u64,
+    sparkline_data: &[u64],
+) {
+    // The gauge's `bordered` block consumes 2 columns (left + right
+    // border). One leading + one trailing space inside the title keep
+    // it from butting against the corners.
+    let usable = (area.width as usize).saturating_sub(4);
+
+    let label_str = format!("{label} ");
+    let rate_str = format!("{}/s", human_bytes(rate));
+    let pct_seg = format!(" ({}%)", pct);
+    let peak_seg = format!(" peak {}/s", human_bytes(peak));
+    let epoch_long = format!(" · {} this epoch", human_bytes(epoch_total));
+    let epoch_med = format!(" · {} epoch", human_bytes(epoch_total));
+    let epoch_short = format!(" · {}", human_bytes(epoch_total));
+
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(6);
+    spans.push(Span::raw(" "));
+    spans.push(Span::styled(
+        label_str.clone(),
+        Style::default().add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::styled(rate_str.clone(), color));
+    let mut used = label_str.len() + rate_str.len();
+
+    let try_push = |seg: String, used: &mut usize, spans: &mut Vec<Span<'static>>| -> bool {
+        if *used + seg.len() <= usable {
+            *used += seg.len();
+            spans.push(Span::styled(seg, theme::dim()));
+            true
+        } else {
+            false
+        }
+    };
+
+    // Drop priorities, in order of "what to ditch first when we run
+    // out of room": peak (most expendable since the sparkline already
+    // shows the silhouette), then `(X%)` saturation, then the epoch
+    // total. The cumulative epoch number in particular is the most
+    // unique-to-the-title datum (no other widget shows it now), so we
+    // protect it with a three-tier fallback before giving up.
+    let _ = try_push(pct_seg, &mut used, &mut spans);
+    let _ = try_push(peak_seg, &mut used, &mut spans);
+    let _ = try_push(epoch_long, &mut used, &mut spans)
+        || try_push(epoch_med, &mut used, &mut spans)
+        || try_push(epoch_short, &mut used, &mut spans);
+
+    spans.push(Span::raw(" "));
+
     frame.render_widget(
         Sparkline::default()
-            .block(bordered(Line::from(vec![
-                Span::raw(" "),
-                Span::styled("Tx ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::styled(format!("{}/s", human_bytes(tx)), theme::warn()),
-                Span::styled(format!("  ({}%)", tx_pct), theme::dim()),
-                Span::styled(format!("  peak {}/s", human_bytes(tx_peak)), theme::dim()),
-                Span::styled("  ·  ", theme::dim()),
-                Span::styled(human_bytes(sent_epoch), theme::warn()),
-                Span::styled(" epoch ", theme::dim()),
-            ])))
-            .style(theme::warn())
-            .data(&tx_data),
-        halves[1],
+            .block(bordered(Line::from(spans)))
+            .style(color)
+            .data(sparkline_data),
+        area,
     );
 }
 
