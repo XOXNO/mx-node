@@ -428,7 +428,8 @@ fn run_install_wizard(args: &mut InstallArgs, global: &GlobalArgs) -> Result<(),
     }
 
     use super::prompts::{
-        prompt_for_count, prompt_for_install_type, prompt_for_redundancy, InstallType,
+        prompt_for_count, prompt_for_install_type, prompt_for_redundancy, prompt_for_yes_no,
+        InstallType,
     };
     let mut stdin = std::io::stdin().lock();
     let mut stdout = std::io::stdout().lock();
@@ -450,6 +451,25 @@ fn run_install_wizard(args: &mut InstallArgs, global: &GlobalArgs) -> Result<(),
     ) {
         let count = prompt_for_count(&mut stdin, &mut stdout, 1, true).map_err(read_io)?;
         args.count = Some(count);
+    }
+
+    // Proxy is operator-optional for the observers-squad layout. Bash
+    // always co-installs the proxy; mxnode lets the operator opt out
+    // (many production setups host the proxy on a separate box).
+    // Multikey rejects --with-proxy entirely (signing + public RPC on
+    // the same host is unsafe), and free-count validators / observers
+    // don't have the shard-pinning a proxy needs to route requests, so
+    // we don't ask there either.
+    if matches!(install_type, InstallType::ObserversSquad) {
+        let want_proxy = prompt_for_yes_no(
+            &mut stdin,
+            &mut stdout,
+            "Install MultiversX proxy alongside the squad?",
+            true,
+            true,
+        )
+        .map_err(read_io)?;
+        args.with_proxy = want_proxy;
     }
 
     if matches!(
@@ -501,7 +521,11 @@ fn apply_install_type(args: &mut InstallArgs, install_type: super::prompts::Inst
         InstallType::ObserversSquad => {
             args.role = RoleArg::Observer;
             args.squad = true;
-            args.with_proxy = true;
+            // Proxy is asked separately further down the wizard so the
+            // operator can opt out (many production setups host the
+            // proxy on a different box). Default to off here; the
+            // dedicated yes/no prompt flips it on when accepted.
+            args.with_proxy = false;
         }
         InstallType::MultikeySquad => {
             args.role = RoleArg::Multikey;

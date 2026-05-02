@@ -95,7 +95,7 @@ pub fn prompt_for_install_type<R: BufRead, W: Write>(
     )?;
     writeln!(
         writer,
-        "  3) Observers squad   (4 observers pinned to shards 0/1/2/metachain + proxy)",
+        "  3) Observers squad   (4 observers pinned to shards 0/1/2/metachain; proxy optional)",
     )?;
     writeln!(
         writer,
@@ -148,6 +148,43 @@ pub fn prompt_for_count<R: BufRead, W: Write>(
             Ok(default)
         }
     }
+}
+
+/// Prompt the operator for a yes/no question with an explicit default.
+/// Accepts `y` / `yes` / `n` / `no` (case-insensitive); blank line picks
+/// the default. Garbage input falls back to the default with a hint so
+/// a misread never blocks the wizard.
+pub fn prompt_for_yes_no<R: BufRead, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    question: &str,
+    default: bool,
+    interactive: bool,
+) -> std::io::Result<bool> {
+    if !interactive {
+        return Ok(default);
+    }
+    let suffix = if default { "[Y/n]" } else { "[y/N]" };
+    write!(writer, "{question} {suffix}: ")?;
+    writer.flush()?;
+    let mut line = String::new();
+    if reader.read_line(&mut line)? == 0 {
+        return Ok(default);
+    }
+    let answer = line.trim().to_ascii_lowercase();
+    Ok(match answer.as_str() {
+        "" => default,
+        "y" | "yes" => true,
+        "n" | "no" => false,
+        other => {
+            writeln!(
+                writer,
+                "  unrecognised answer {other:?}; using {}",
+                if default { "yes" } else { "no" },
+            )?;
+            default
+        }
+    })
 }
 
 /// Prompt for `Preferences.RedundancyLevel`. `0` = primary (default),
@@ -531,6 +568,62 @@ mod tests {
         let mut writer: Vec<u8> = Vec::new();
         let n = prompt_for_count(&mut reader, &mut writer, 2, true).unwrap();
         assert_eq!(n, 2);
+    }
+
+    #[test]
+    fn yes_no_prompt_blank_returns_default_true() {
+        let mut reader = Cursor::new(b"\n".to_vec());
+        let mut writer: Vec<u8> = Vec::new();
+        let v = prompt_for_yes_no(&mut reader, &mut writer, "Q?", true, true).unwrap();
+        assert!(v);
+    }
+
+    #[test]
+    fn yes_no_prompt_blank_returns_default_false() {
+        let mut reader = Cursor::new(b"\n".to_vec());
+        let mut writer: Vec<u8> = Vec::new();
+        let v = prompt_for_yes_no(&mut reader, &mut writer, "Q?", false, true).unwrap();
+        assert!(!v);
+    }
+
+    #[test]
+    fn yes_no_prompt_explicit_y_n() {
+        for (input, expected) in [
+            ("y\n", true),
+            ("Y\n", true),
+            ("yes\n", true),
+            ("YES\n", true),
+            ("n\n", false),
+            ("N\n", false),
+            ("no\n", false),
+            ("No\n", false),
+        ] {
+            let mut reader = Cursor::new(input.as_bytes().to_vec());
+            let mut writer: Vec<u8> = Vec::new();
+            // Use the OPPOSITE default so we know the input flipped it.
+            let default = !expected;
+            let v = prompt_for_yes_no(&mut reader, &mut writer, "Q?", default, true).unwrap();
+            assert_eq!(v, expected, "input: {input:?}");
+        }
+    }
+
+    #[test]
+    fn yes_no_prompt_garbage_falls_back_to_default() {
+        let mut reader = Cursor::new(b"yeah-but-also-no\n".to_vec());
+        let mut writer: Vec<u8> = Vec::new();
+        let v = prompt_for_yes_no(&mut reader, &mut writer, "Q?", true, true).unwrap();
+        assert!(v);
+        let out = String::from_utf8(writer).unwrap();
+        assert!(out.contains("unrecognised answer"));
+    }
+
+    #[test]
+    fn yes_no_prompt_non_interactive_returns_default() {
+        let mut reader = Cursor::new(Vec::new());
+        let mut writer: Vec<u8> = Vec::new();
+        let v = prompt_for_yes_no(&mut reader, &mut writer, "Q?", true, false).unwrap();
+        assert!(v);
+        assert!(writer.is_empty());
     }
 
     #[test]
