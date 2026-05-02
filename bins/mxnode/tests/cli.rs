@@ -121,8 +121,11 @@ fn first_use_auto_inits_config() {
     let sandbox = Sandbox::new();
     let output = sandbox.cmd().args(["status"]).output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
+    // Banner phrasing covers both the legacy "auto-initializing" form
+    // and the post-prompt "auto-initialized" form so this assertion
+    // survives banner-wording polishes.
     assert!(
-        stderr.contains("auto-initializing"),
+        stderr.contains("auto-initializ"),
         "expected auto-init banner on stderr; got: {stderr}",
     );
     let body = std::fs::read_to_string(sandbox.config_path())

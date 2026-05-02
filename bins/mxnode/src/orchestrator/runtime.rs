@@ -68,8 +68,12 @@ impl Runtime {
 
 /// Stamp out a fresh config from the detected environment. Caller
 /// has already verified `ConfigSource::None` so we never overwrite
-/// operator state here. Banner goes to stderr (so `--json` consumers
-/// see clean stdout) and is suppressed entirely under `--json`.
+/// operator state here. The banner goes to stderr (so `--json`
+/// consumers see clean stdout) and is suppressed entirely under
+/// `--json`. The interactive network prompt lives inside
+/// `init::auto_init`; we surface its result here so the banner names
+/// the actual network the operator picked rather than the historical
+/// "mainnet" placeholder.
 fn auto_init(global: &GlobalArgs) -> Result<(), CliError> {
     let target = user_config_path().map_err(|e| {
         CliError::new(
@@ -79,16 +83,27 @@ fn auto_init(global: &GlobalArgs) -> Result<(), CliError> {
         )
         .json_if(global.json)
     })?;
+    let chosen = init::auto_init(global)?;
     if !global.json {
-        eprintln!(
-            "→ no mxnode config found; auto-initializing {} (network=mainnet)",
-            target.display(),
-        );
-        eprintln!(
-            "  switch network with: `mxnode config set network.environment <testnet|devnet>`",
-        );
+        match chosen {
+            Some(network) => {
+                eprintln!(
+                    "→ no mxnode config found; auto-initialized {} (network={})",
+                    target.display(),
+                    network,
+                );
+                eprintln!(
+                    "  switch network later with: `mxnode config set network.environment <testnet|devnet>`",
+                );
+            }
+            None => {
+                // Concurrent writer raced us — config already exists.
+                // Stay silent here; the load() that runs next will pick
+                // up whatever they wrote.
+            }
+        }
     }
-    init::auto_init(global)
+    Ok(())
 }
 
 /// Helper extension trait used inside command modules: lets us write

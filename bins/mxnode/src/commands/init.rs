@@ -14,11 +14,13 @@ use crate::cli::GlobalArgs;
 use crate::errors::CliError;
 use crate::orchestrator::runtime::CliErrorExt;
 
-/// Write a fresh config with auto-detected `$USER`/`$HOME` and
-/// `network = mainnet`. No-op (returns Ok) if the file already
-/// exists, since the runtime caller has already verified
-/// `ConfigSource::None` — but defensive against TOCTOU.
-pub fn auto_init(global: &GlobalArgs) -> Result<(), CliError> {
+/// Write a fresh config with auto-detected `$USER`/`$HOME` and the
+/// operator-chosen network (mainnet by default). No-op (returns
+/// `Ok(None)`) if the file already exists, since the runtime caller
+/// has already verified `ConfigSource::None` — but defensive against
+/// TOCTOU. On success, returns `Some(Environment)` so the runtime
+/// banner can name the actual network the operator picked.
+pub fn auto_init(global: &GlobalArgs) -> Result<Option<Environment>, CliError> {
     let target = user_config_path().map_err(|e| {
         CliError::new(
             "could not determine where to write config.toml",
@@ -29,11 +31,29 @@ pub fn auto_init(global: &GlobalArgs) -> Result<(), CliError> {
     })?;
     if target.exists() {
         // Concurrent writer raced us; respect what's there.
-        return Ok(());
+        return Ok(None);
     }
-    let answers = build_answers();
+
+    // Prompt for the network on a TTY; the `--json` and non-TTY paths
+    // fall through to the historical default so CI / automation is
+    // never blocked waiting for stdin.
+    let interactive = !global.json && std::io::IsTerminal::is_terminal(&std::io::stdin());
+    let mut stdin = std::io::stdin().lock();
+    let mut stdout = std::io::stdout().lock();
+    let network = super::prompts::prompt_for_network(&mut stdin, &mut stdout, interactive)
+        .map_err(|e| {
+            CliError::new(
+                "failed to read network choice from stdin",
+                e.to_string(),
+                "rerun with `--json` to skip the prompt and use mainnet",
+            )
+            .json_if(global.json)
+        })?;
+
+    let answers = build_answers(network);
     let body = render_sparse_config(&answers);
-    write_config(&target, &body, global)
+    write_config(&target, &body, global)?;
+    Ok(Some(network))
 }
 
 #[derive(Debug)]
@@ -47,11 +67,11 @@ struct Answers {
     artifact_source: ArtifactSource,
 }
 
-fn build_answers() -> Answers {
+fn build_answers(network: Environment) -> Answers {
     let (custom_home, custom_user) = platform_defaults();
     let key_dir = custom_home.join("VALIDATOR_KEYS");
     Answers {
-        network: Environment::Mainnet,
+        network,
         custom_user,
         custom_home,
         key_dir,

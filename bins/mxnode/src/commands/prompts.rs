@@ -9,6 +9,53 @@
 
 use std::io::{BufRead, Write};
 
+use mxnode_core::Environment;
+
+/// Prompt the operator for the MultiversX network on first-time install.
+///
+/// `interactive == false` (non-TTY, `--json`, or operator opt-out) yields
+/// `Environment::Mainnet` silently — the same default the auto-init has
+/// always used so CI/automation paths behave identically to before. When
+/// interactive, accept either the digit shortcut (`1`/`2`/`3`), the
+/// literal name (`mainnet`/`testnet`/`devnet`, case-insensitive), or a
+/// blank line for the default.
+pub fn prompt_for_network<R: BufRead, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    interactive: bool,
+) -> std::io::Result<Environment> {
+    if !interactive {
+        return Ok(Environment::Mainnet);
+    }
+    writeln!(writer)?;
+    writeln!(writer, "Select the MultiversX network for this install:")?;
+    writeln!(writer, "  1) mainnet  (default)")?;
+    writeln!(writer, "  2) testnet")?;
+    writeln!(writer, "  3) devnet")?;
+    write!(writer, "  network [1]: ")?;
+    writer.flush()?;
+    let mut line = String::new();
+    if reader.read_line(&mut line)? == 0 {
+        // EOF — accept the default rather than fail the bare-bones first
+        // command an operator runs on a fresh box.
+        return Ok(Environment::Mainnet);
+    }
+    let answer = line.trim().to_ascii_lowercase();
+    Ok(match answer.as_str() {
+        "" | "1" | "mainnet" => Environment::Mainnet,
+        "2" | "testnet" => Environment::Testnet,
+        "3" | "devnet" => Environment::Devnet,
+        other => {
+            // Unrecognised input falls back to mainnet so a misread does
+            // not fail the operator's first command. The warning is
+            // visible enough that they can `mxnode config set
+            // network.environment <env>` immediately if needed.
+            writeln!(writer, "  unrecognised choice {other:?}; using mainnet")?;
+            Environment::Mainnet
+        }
+    })
+}
+
 /// Substitute `{env}` and `{index}` in a name template, matching the
 /// expansion done by the install orchestrator. Pure helper so prompts
 /// and the orchestrator agree on what "the default" is byte-for-byte.
@@ -157,6 +204,72 @@ mod tests {
             out.contains("input closed"),
             "operator must see the EOF hint: {out:?}"
         );
+    }
+
+    #[test]
+    fn network_prompt_non_interactive_returns_mainnet_silently() {
+        let mut reader = Cursor::new(Vec::new());
+        let mut writer: Vec<u8> = Vec::new();
+        let env = prompt_for_network(&mut reader, &mut writer, false).unwrap();
+        assert_eq!(env, Environment::Mainnet);
+        assert!(writer.is_empty());
+    }
+
+    #[test]
+    fn network_prompt_blank_line_picks_default() {
+        let mut reader = Cursor::new(b"\n".to_vec());
+        let mut writer: Vec<u8> = Vec::new();
+        let env = prompt_for_network(&mut reader, &mut writer, true).unwrap();
+        assert_eq!(env, Environment::Mainnet);
+    }
+
+    #[test]
+    fn network_prompt_digit_shortcuts() {
+        for (input, expected) in [
+            ("1\n", Environment::Mainnet),
+            ("2\n", Environment::Testnet),
+            ("3\n", Environment::Devnet),
+        ] {
+            let mut reader = Cursor::new(input.as_bytes().to_vec());
+            let mut writer: Vec<u8> = Vec::new();
+            let env = prompt_for_network(&mut reader, &mut writer, true).unwrap();
+            assert_eq!(env, expected, "input: {input:?}");
+        }
+    }
+
+    #[test]
+    fn network_prompt_named_values() {
+        for (input, expected) in [
+            ("mainnet\n", Environment::Mainnet),
+            ("Testnet\n", Environment::Testnet),
+            ("DEVNET\n", Environment::Devnet),
+        ] {
+            let mut reader = Cursor::new(input.as_bytes().to_vec());
+            let mut writer: Vec<u8> = Vec::new();
+            let env = prompt_for_network(&mut reader, &mut writer, true).unwrap();
+            assert_eq!(env, expected, "input: {input:?}");
+        }
+    }
+
+    #[test]
+    fn network_prompt_unknown_falls_back_with_warning() {
+        let mut reader = Cursor::new(b"hyperliquid\n".to_vec());
+        let mut writer: Vec<u8> = Vec::new();
+        let env = prompt_for_network(&mut reader, &mut writer, true).unwrap();
+        assert_eq!(env, Environment::Mainnet);
+        let out = String::from_utf8(writer).unwrap();
+        assert!(
+            out.contains("unrecognised"),
+            "warning missing from prompt output: {out}",
+        );
+    }
+
+    #[test]
+    fn network_prompt_eof_falls_back_to_mainnet() {
+        let mut reader = Cursor::new(Vec::new());
+        let mut writer: Vec<u8> = Vec::new();
+        let env = prompt_for_network(&mut reader, &mut writer, true).unwrap();
+        assert_eq!(env, Environment::Mainnet);
     }
 
     #[test]
