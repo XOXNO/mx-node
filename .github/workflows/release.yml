@@ -20,6 +20,12 @@ env:
   # Strip debuginfo aggressively — the release profile already does
   # `strip = "symbols"` but cargo-zigbuild can leave more behind.
   RUSTFLAGS: '-C strip=symbols'
+  # mlugg/setup-zig@v2 still declares `using: node20` in its
+  # action.yml (verified upstream as of 2026-05-02). GitHub's official
+  # opt-in for forcing Node 24 on legacy actions is this env var per
+  # https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/.
+  # Drop this once setup-zig ships a node24 action.yml.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 permissions:
   contents: read
