@@ -673,9 +673,14 @@ fn draw_chain(frame: &mut Frame, area: Rect, snap: &NodeSnapshot) {
     let round = m.get_u64("erd_current_round").unwrap_or(0);
     let synced_round = m.get_u64("erd_synchronized_round").unwrap_or(0);
     let txpool = m.get_u64("erd_tx_pool_load").unwrap_or(0);
-    let tx_processed = m.get_u64("erd_num_processed_txs").unwrap_or(0);
+    // Wire names cross-checked against
+    // mx-chain-go/common/constants.go (constants the node actually
+    // exposes via /node/status). Earlier mxnode read camel-case-ish
+    // shorthands that never appear in the real payload, which is why
+    // the "Processed" / "Val" / block-info widgets stayed at zero.
+    let tx_processed = m.get_u64("erd_num_transactions_processed").unwrap_or(0);
     let peers = m.get_u64("erd_num_connected_peers").unwrap_or(0);
-    let validators = m.get_u64("erd_intra_shard_validators").unwrap_or(0);
+    let validators = m.get_u64("erd_intra_shard_validator_nodes").unwrap_or(0);
     let nodes = m.get_u64("erd_connected_nodes").unwrap_or(0);
     let round_time = m.get_u64("erd_round_time").unwrap_or(0);
     let live_validators = m.get_u64("erd_live_validator_nodes").unwrap_or(0);
@@ -782,8 +787,13 @@ fn draw_chain(frame: &mut Frame, area: Rect, snap: &NodeSnapshot) {
 fn draw_block_info(frame: &mut Frame, area: Rect, snap: &NodeSnapshot) {
     let m = &snap.metrics;
     let nonce = m.get_u64("erd_nonce").unwrap_or(0);
-    let size = m.get_u64("erd_block_size").unwrap_or(0);
-    let tx_in_block = m.get_u64("erd_num_tx_in_block").unwrap_or(0);
+    // The node does not expose a single `erd_block_size`; termui
+    // computes the displayed size as header-size + miniblocks-size,
+    // see mx-chain-go/cmd/termui/presenter/blockInfoGetters.go::GetBlockSize.
+    let header_size = m.get_u64("erd_current_block_size").unwrap_or(0);
+    let mini_blocks_size = m.get_u64("erd_mini_blocks_size").unwrap_or(0);
+    let size = header_size.saturating_add(mini_blocks_size);
+    let tx_in_block = m.get_u64("erd_num_tx_block").unwrap_or(0);
     let mb = m.get_u64("erd_num_mini_blocks").unwrap_or(0);
     let hash = m.get_str("erd_current_block_hash").unwrap_or("");
     let cross = m.get_str("erd_cross_check_block_height").unwrap_or("");
@@ -999,13 +1009,17 @@ fn draw_network_row(frame: &mut Frame, area: Rect, snap: &NodeSnapshot) {
 // ── Epoch traffic per host (cumulative bytes for the current epoch) ──
 
 fn draw_epoch_traffic_row(frame: &mut Frame, area: Rect, snap: &NodeSnapshot) {
+    // mx-chain-go exposes the cumulative epoch bytes under the
+    // `_per_host` suffix (see common/constants.go:191/194). The
+    // un-suffixed names mxnode used historically simply do not exist
+    // in the /node/status payload, which is why the row stayed at 0B.
     let sent = snap
         .metrics
-        .get_u64("erd_network_sent_bytes_in_epoch")
+        .get_u64("erd_network_sent_bytes_in_epoch_per_host")
         .unwrap_or(0);
     let recv = snap
         .metrics
-        .get_u64("erd_network_received_bytes_in_epoch")
+        .get_u64("erd_network_recv_bytes_in_epoch_per_host")
         .unwrap_or(0);
     let line = Line::from(vec![
         Span::raw("  "),
@@ -1239,8 +1253,20 @@ fn draw_log_panel(frame: &mut Frame, area: Rect, app: &App, snap: &NodeSnapshot)
         .iter()
         .map(|(l, eff)| render_log_line(l, *eff, max_width))
         .collect();
+    // Bottom-anchor the visible logs so the freshest line always sits
+    // against the bottom of the widget. Without padding, an
+    // under-filled buffer (a freshly-launched dashboard with only a
+    // few historic journal lines) renders top-aligned and leaves a
+    // huge blank gap at the bottom — confusing because the operator
+    // expects "logs scroll up, newest at the bottom" semantics.
+    let pad = max_lines.saturating_sub(rendered.len());
+    let mut bottom_anchored: Vec<Line> = Vec::with_capacity(max_lines);
+    for _ in 0..pad {
+        bottom_anchored.push(Line::raw(""));
+    }
+    bottom_anchored.extend(rendered);
     frame.render_widget(
-        Paragraph::new(rendered).wrap(Wrap { trim: false }),
+        Paragraph::new(bottom_anchored).wrap(Wrap { trim: false }),
         logs_area,
     );
 
