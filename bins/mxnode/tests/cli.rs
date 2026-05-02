@@ -941,6 +941,104 @@ fn migrate_bash_dry_run_prints_summary() {
 }
 
 #[test]
+fn migrate_bash_execute_merges_variables_cfg_and_service_files() {
+    let sb = Sandbox::new();
+
+    // 1. Bash sentinels (4-node observer squad).
+    std::fs::write(sb.home.join(".installedenv"), "mainnet").unwrap();
+    std::fs::write(sb.home.join(".numberofnodes"), "4").unwrap();
+    std::fs::write(sb.home.join(".squad_install"), "Observers Squad").unwrap();
+
+    // 2. variables.cfg with operator customisations.
+    let scripts_dir = sb.home.join("mx-chain-scripts");
+    std::fs::create_dir_all(scripts_dir.join("config")).unwrap();
+    std::fs::write(
+        scripts_dir.join("config/variables.cfg"),
+        r#"ENVIRONMENT="mainnet"
+CUSTOM_HOME="/srv/mvx"
+CUSTOM_USER="mvxuser"
+NODE_KEYS_LOCATION="/srv/mvx/keys"
+GITHUBTOKEN="ghp_secret_xyz_12345"
+NODE_EXTRA_FLAGS="-profile-mode true"
+GITHUB_ORG="myfork"
+"#,
+    )
+    .unwrap();
+
+    // 3. Service files — node-2 has divergent extra flags.
+    let systemd_dir = sb.home.join("systemd");
+    std::fs::create_dir_all(&systemd_dir).unwrap();
+    for i in 0u16..4 {
+        let extras = if i == 2 {
+            "-profile-mode true -display-name shard2-special"
+        } else {
+            "-profile-mode true"
+        };
+        let unit = format!(
+            "[Service]\nUser=mvxuser\nWorkingDirectory=/srv/mvx/elrond-nodes/node-{i}\nExecStart=/srv/mvx/node -use-log-view -log-logger-name -log-correlation -log-level *:DEBUG -rest-api-interface localhost:{port} {extras}\n",
+            port = 8080 + i,
+        );
+        std::fs::write(systemd_dir.join(format!("elrond-node-{i}.service")), unit).unwrap();
+    }
+
+    // 4. Run with --execute.
+    let output = sb
+        .cmd()
+        .args(["migrate-bash", "--from"])
+        .arg(&sb.home)
+        .args(["--scripts-dir"])
+        .arg(&scripts_dir)
+        .args(["--systemd-dir"])
+        .arg(&systemd_dir)
+        .arg("--execute")
+        .output()
+        .expect("spawn mxnode migrate-bash");
+    assert!(
+        output.status.success(),
+        "non-zero exit: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // 5. Token surfaced in stdout but masked.
+    assert!(
+        stdout.contains("ghp_") && stdout.contains("MXNODE_GITHUB_TOKEN"),
+        "missing token notice: {stdout}"
+    );
+    assert!(
+        !stdout.contains("ghp_secret_xyz_12345"),
+        "stdout leaked unmasked token: {stdout}"
+    );
+
+    // 6. config.toml has the merged fields and the per-node override.
+    let cfg = std::fs::read_to_string(sb.config_path()).unwrap();
+    assert!(cfg.contains(r#"environment = "mainnet""#), "{cfg}");
+    assert!(cfg.contains(r#"custom_home = "/srv/mvx""#), "{cfg}");
+    assert!(cfg.contains(r#"custom_user = "mvxuser""#), "{cfg}");
+    assert!(cfg.contains(r#"github_org = "myfork""#), "{cfg}");
+    assert!(
+        cfg.contains(r#"extra_flags = "-profile-mode true""#),
+        "{cfg}"
+    );
+    assert!(
+        cfg.contains(r#"shard = "two""#) && cfg.contains("shard2-special"),
+        "per-node override missing or wrong shard: {cfg}",
+    );
+
+    // 7. Token is NEVER written to disk.
+    assert!(
+        !cfg.contains("ghp_secret_xyz_12345") && !cfg.contains("github_token"),
+        "config.toml leaked token: {cfg}"
+    );
+
+    // 8. state.toml exists and shows 4 observer nodes.
+    let state = std::fs::read_to_string(sb.state_path()).unwrap();
+    assert!(state.contains(r#"kind = "observers-squad""#), "{state}");
+    assert!(state.contains(r#"environment = "mainnet""#), "{state}");
+}
+
+#[test]
 fn migrate_bash_execute_refuses_when_state_toml_exists() {
     let sb = Sandbox::new();
     // Lay down bash sentinels so infer succeeds.
