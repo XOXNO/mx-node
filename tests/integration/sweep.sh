@@ -266,10 +266,14 @@ $MXNODE stop --all >/dev/null 2>&1
 # DB ops
 assert "db remove without --yes refuses" "$MXNODE db remove --node 0" 0
 assert "db remove --yes" "$MXNODE db remove --node 0 --yes"
-# db prune against synthetic Epoch_N dirs
+# db prune against synthetic Epoch_N dirs. We assert against ONLY the
+# Epoch_* glob — the node also creates Static/ and friends inside db/
+# that prune is not supposed to touch, so a bare `wc -l` of the dir
+# would count those and fail spuriously.
 for i in 0 1 2 3 4; do mkdir -p "$HOME/elrond-nodes/node-1/db/Epoch_$i"; done
 assert "db prune trims to --epochs 2" "$MXNODE db prune --node 1 --epochs 2"
-assert "after prune: 2 Epoch_N dirs left" "[ \$(ls $HOME/elrond-nodes/node-1/db | wc -l) -eq 2 ]"
+assert "after prune: 2 Epoch_N dirs left" \
+    "[ \$(find $HOME/elrond-nodes/node-1/db -maxdepth 1 -type d -name 'Epoch_*' | wc -l) -eq 2 ]"
 
 # add-nodes refuses on squad install
 assert "add-nodes refuses on squad" "$MXNODE add-nodes --count 1 --role observer" 0
