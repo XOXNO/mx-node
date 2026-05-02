@@ -68,8 +68,13 @@ async fn try_run(unit: &str, snapshot: &Arc<Mutex<NodeSnapshot>>) -> std::io::Re
     let mut child = Command::new("journalctl")
         .arg("--unit")
         .arg(unit)
+        // Preload up to LOG_BUFFER_CAP lines of history so the dashboard
+        // looks populated immediately rather than slowly filling over a
+        // few minutes. The ring buffer trims older entries on push, so
+        // asking journalctl for more than the buffer can hold is wasted
+        // work — match the cap exactly.
         .arg("-n")
-        .arg("200")
+        .arg(LOG_BUFFER_CAP.to_string())
         .arg("--follow")
         .arg("--output=cat")
         .arg("--no-pager")

@@ -44,12 +44,15 @@ async fn run(workdir: PathBuf, snapshot: Arc<Mutex<NodeSnapshot>>) {
         if let Some(path) = newest {
             let same = current.as_ref().map(|t| t.path == path).unwrap_or(false);
             if !same {
-                if let Ok(state) = TailState::open(&path).await {
-                    current = Some(state);
-                    push_marker(&snapshot, format!("--- tailing {} ---", path.display())).await;
-                } else {
-                    current = None;
-                    continue;
+                match TailState::open(&path, &snapshot).await {
+                    Ok(state) => {
+                        current = Some(state);
+                        push_marker(&snapshot, format!("--- tailing {} ---", path.display())).await;
+                    }
+                    Err(_) => {
+                        current = None;
+                        continue;
+                    }
                 }
             }
         } else {
@@ -75,9 +78,59 @@ struct TailState {
     leftover: Vec<u8>,
 }
 
+/// How many bytes to read off the end of an existing log file when we
+/// start tailing it. 256 KiB easily covers `LOG_BUFFER_CAP` lines of
+/// typical mx-chain-go output (~150 bytes per INFO line including the
+/// timestamp + hash) while bounding the worst-case memory blip.
+const PRELOAD_BYTES: u64 = 256 * 1024;
+
 impl TailState {
-    async fn open(path: &Path) -> std::io::Result<Self> {
+    async fn open(path: &Path, snapshot: &Arc<Mutex<NodeSnapshot>>) -> std::io::Result<Self> {
         let mut file = OpenOptions::new().read(true).open(path).await?;
+
+        // Preload the tail of the file into the snapshot's ring
+        // buffer so the dashboard renders a populated log panel
+        // immediately. Without this the panel sits nearly empty for
+        // several minutes after launch (newest at the bottom, most
+        // of the area blank) — operators flagged this as confusing.
+        // journal_tail gets the same effect via `journalctl -n`.
+        let len = file.metadata().await?.len();
+        let preload_start = len.saturating_sub(PRELOAD_BYTES);
+        if preload_start < len {
+            file.seek(SeekFrom::Start(preload_start)).await?;
+            let mut backlog: Vec<u8> = Vec::with_capacity((len - preload_start) as usize);
+            file.read_to_end(&mut backlog).await?;
+            let body: &[u8] = if preload_start > 0 {
+                // We almost certainly landed mid-line; drop everything
+                // up to (and including) the first newline so we don't
+                // emit a partial leading line.
+                match backlog.iter().position(|b| *b == b'\n') {
+                    Some(idx) => &backlog[idx + 1..],
+                    None => &[],
+                }
+            } else {
+                &backlog
+            };
+            let mut lines: Vec<String> = body
+                .split(|b| *b == b'\n')
+                .filter(|s| !s.is_empty())
+                .map(strip_ansi)
+                .collect();
+            // Cap at the ring buffer's depth — pushing more would
+            // just trim from the front anyway.
+            if lines.len() > LOG_BUFFER_CAP {
+                lines.drain(..(lines.len() - LOG_BUFFER_CAP));
+            }
+            if !lines.is_empty() {
+                let mut snap = snapshot.lock().await;
+                for line in lines {
+                    push_line(&mut snap, line);
+                }
+            }
+        }
+
+        // Resume tailing from the actual end so subsequent reads only
+        // see brand-new lines (no double-counting of preloaded ones).
         file.seek(SeekFrom::End(0)).await?;
         Ok(Self {
             path: path.to_path_buf(),

@@ -1253,20 +1253,8 @@ fn draw_log_panel(frame: &mut Frame, area: Rect, app: &App, snap: &NodeSnapshot)
         .iter()
         .map(|(l, eff)| render_log_line(l, *eff, max_width))
         .collect();
-    // Bottom-anchor the visible logs so the freshest line always sits
-    // against the bottom of the widget. Without padding, an
-    // under-filled buffer (a freshly-launched dashboard with only a
-    // few historic journal lines) renders top-aligned and leaves a
-    // huge blank gap at the bottom — confusing because the operator
-    // expects "logs scroll up, newest at the bottom" semantics.
-    let pad = max_lines.saturating_sub(rendered.len());
-    let mut bottom_anchored: Vec<Line> = Vec::with_capacity(max_lines);
-    for _ in 0..pad {
-        bottom_anchored.push(Line::raw(""));
-    }
-    bottom_anchored.extend(rendered);
     frame.render_widget(
-        Paragraph::new(bottom_anchored).wrap(Wrap { trim: false }),
+        Paragraph::new(rendered).wrap(Wrap { trim: false }),
         logs_area,
     );
 

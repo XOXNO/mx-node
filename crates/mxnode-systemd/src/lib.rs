@@ -20,9 +20,9 @@ pub use render::{
     render_canonical_node_unit, render_canonical_proxy_unit, NodeUnitSpec, ProxyUnitSpec,
 };
 pub use tomledit::{
-    apply_overrides, clear_cpu_flags, enable_db_lookup_extensions, rewrite_proxy_config,
-    set_destination_shard, set_node_display_name, set_redundancy_level, ObserverEntry,
-    TomlEditError,
+    apply_overrides, clear_cpu_flags, enable_db_lookup_extensions, flatten_inline_tables,
+    rewrite_proxy_config, set_destination_shard, set_node_display_name, set_redundancy_level,
+    ObserverEntry, TomlEditError,
 };
 
 #[cfg(test)]

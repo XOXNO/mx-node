@@ -24,10 +24,10 @@ use mxnode_core::{
 };
 use mxnode_state::{swap_symlink, BinStore, StateStore};
 use mxnode_systemd::{
-    apply_overrides, clear_cpu_flags, enable_db_lookup_extensions, render_canonical_node_plist,
-    render_canonical_node_unit, render_canonical_proxy_unit, rewrite_proxy_config,
-    set_destination_shard, set_node_display_name, set_redundancy_level, NodeUnitSpec,
-    ObserverEntry, ProxyUnitSpec,
+    apply_overrides, clear_cpu_flags, enable_db_lookup_extensions, flatten_inline_tables,
+    render_canonical_node_plist, render_canonical_node_unit, render_canonical_proxy_unit,
+    rewrite_proxy_config, set_destination_shard, set_node_display_name, set_redundancy_level,
+    NodeUnitSpec, ObserverEntry, ProxyUnitSpec,
 };
 use thiserror::Error;
 use toml_edit::DocumentMut;
@@ -622,7 +622,15 @@ pub(crate) fn apply_node_tomledit(input: NodeTomlEdit<'_>) -> Result<(), Install
             path: config_path.display().to_string(),
             source: e,
         })?;
-        let mut doc: DocumentMut = body
+        // mx-chain-{testnet,…}-config from T2.0.0.0 onwards ships
+        // multi-line inline tables (`{\n key = …,\n }`) which Go's
+        // TOML parser tolerates but `toml_edit` rejects with
+        // `invalid inline table / expected }`. Flatten them up front
+        // so the rest of the file parses normally; the writer-side
+        // of toml_edit re-emits whichever shape we hand it, so the
+        // result still serialises cleanly.
+        let normalised = flatten_inline_tables(&body);
+        let mut doc: DocumentMut = normalised
             .parse()
             .map_err(|e| InstallError::Toml(format!("parse {}: {e}", config_path.display())))?;
         if needs_observer_edits {

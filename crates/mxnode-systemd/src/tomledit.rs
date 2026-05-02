@@ -99,6 +99,129 @@ pub fn clear_cpu_flags(doc: &mut DocumentMut) -> Result<(), TomlEditError> {
     Ok(())
 }
 
+/// Flatten multi-line inline tables in a TOML document to the single-line
+/// form the strict spec requires.
+///
+/// `mx-chain-testnet-config` from `T2.0.0.0` onwards (and likely the
+/// next mainnet bump) ships blocks like
+///
+/// ```text
+/// ProcessConfigsByRound = [
+///     {
+///     EnableRound = 0,
+///     MaxRoundsWithoutCommittedBlock = 10,
+///     },
+/// ]
+/// ```
+///
+/// Go's TOML library accepts this — `toml_edit` (and the strict
+/// `toml` crate we lean on) reject it with `invalid inline table /
+/// expected }`. We collapse every newline inside `{ … }` to a single
+/// space so the rest of the document parses normally; comments inside
+/// braces are also flattened (acceptable — they're rarely there in
+/// practice and operators don't hand-edit inline tables).
+///
+/// The pass is intentionally tolerant of the small subset of TOML the
+/// upstream config repos actually emit: it tracks `"`/`'` strings and
+/// `#` line comments, but does not understand multi-line basic strings
+/// (`"""…"""`) or escape sequences inside strings — neither appear in
+/// upstream configs.
+#[must_use]
+pub fn flatten_inline_tables(input: &str) -> String {
+    let chars: Vec<char> = input.chars().collect();
+    let mut out = String::with_capacity(input.len());
+    let mut in_string: Option<char> = None;
+    let mut in_comment = false;
+    let mut brace_depth: usize = 0;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if in_comment {
+            out.push(c);
+            if c == '\n' {
+                in_comment = false;
+            }
+            i += 1;
+            continue;
+        }
+        if let Some(q) = in_string {
+            out.push(c);
+            if c == q {
+                in_string = None;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            '"' | '\'' => {
+                out.push(c);
+                in_string = Some(c);
+                i += 1;
+            }
+            '#' => {
+                if brace_depth > 0 {
+                    // Comments inside an inline table (yes, upstream
+                    // ships them — see `MaxBlockProcessingTimeMs =
+                    // 6000, # …` in mx-chain-testnet-config) would
+                    // otherwise carry their terminating newline into
+                    // the flattened body and re-break the parse. Drop
+                    // the comment entirely; the following newline
+                    // gets folded into a space by the `'\n'` branch.
+                    i += 1;
+                    while i < chars.len() && chars[i] != '\n' {
+                        i += 1;
+                    }
+                } else {
+                    in_comment = true;
+                    out.push(c);
+                    i += 1;
+                }
+            }
+            '{' => {
+                brace_depth += 1;
+                out.push('{');
+                i += 1;
+            }
+            '}' => {
+                brace_depth = brace_depth.saturating_sub(1);
+                // Strip the trailing comma the upstream multi-line
+                // shape leaves behind. After flattening, the input
+                // `{\n a = 0,\n b = 1,\n }` would otherwise become
+                // `{ a = 0, b = 1, }` — which is still invalid TOML
+                // (no trailing commas in inline tables, unlike arrays).
+                let last_non_ws = out.trim_end_matches(|c: char| c.is_whitespace()).len();
+                if out[..last_non_ws].ends_with(',') {
+                    out.truncate(last_non_ws - 1);
+                }
+                if !out.ends_with(' ') {
+                    out.push(' ');
+                }
+                out.push('}');
+                i += 1;
+            }
+            '\n' if brace_depth > 0 => {
+                // Collapse the newline (and the leading whitespace of
+                // the next line) to a single space so `{ … }` ends up
+                // on one logical line. Eating the following indent
+                // matters because otherwise we'd emit `{     key = …`
+                // with the original 4-space indent untouched.
+                if !out.ends_with(' ') {
+                    out.push(' ');
+                }
+                i += 1;
+                while i < chars.len() && chars[i] != '\n' && chars[i].is_whitespace() {
+                    i += 1;
+                }
+            }
+            _ => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
 /// Apply a flat dotted-path → TOML value override map to `doc`.
 ///
 /// Dotted-path keys (e.g. `"Preferences.NodeDisplayName"`) are walked
@@ -503,5 +626,57 @@ key = 1
         assert!(out.contains("# trailing comment"));
         assert!(out.contains("[Other]"));
         assert!(out.contains("key = 1"));
+    }
+
+    #[test]
+    fn flatten_inline_tables_collapses_multi_line_blocks() {
+        // The exact shape mx-chain-testnet-config T2.0.0.0 emits.
+        let raw = "ProcessConfigsByRound = [\n    {\n    EnableRound = 0,\n    MaxRoundsWithoutCommittedBlock = 10,\n    },\n]\n";
+        let flat = flatten_inline_tables(raw);
+        // The whole `{ … }` is now on one logical line and parses.
+        let _: DocumentMut = flat.parse().expect("flattened body must parse");
+        // Single-line shape, no leading indent, no trailing comma.
+        assert!(
+            flat.contains("{ EnableRound = 0, MaxRoundsWithoutCommittedBlock = 10 }"),
+            "unexpected flat output:\n{flat}",
+        );
+    }
+
+    #[test]
+    fn flatten_inline_tables_leaves_top_level_arrays_alone() {
+        let raw = "List = [\n  1,\n  2,\n  3,\n]\n";
+        let flat = flatten_inline_tables(raw);
+        // `[ … ]` newlines are valid TOML and must survive untouched.
+        assert_eq!(flat, raw);
+    }
+
+    #[test]
+    fn flatten_inline_tables_preserves_strings_and_comments() {
+        let raw = "# top comment with { brace } inside\nKey = \"value with } brace\"\n[T]\nA = 1\n";
+        let flat = flatten_inline_tables(raw);
+        assert_eq!(flat, raw);
+    }
+
+    #[test]
+    fn flatten_inline_tables_idempotent() {
+        let raw = "ProcessConfigsByRound = [\n    { EnableRound = 0 },\n]\n";
+        let once = flatten_inline_tables(raw);
+        let twice = flatten_inline_tables(&once);
+        assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn flatten_inline_tables_drops_in_brace_comments() {
+        // mx-chain-testnet-config has lines like
+        //   `MaxBlockProcessingTimeMs = 6000, # only used after Supernova`
+        // inside multi-line inline tables. The comment's terminating
+        // newline must NOT survive the flatten or the inline table
+        // breaks across lines again.
+        let raw = "List = [\n    {\n    A = 1, # comment that runs off\n    B = 2,\n    },\n]\n";
+        let flat = flatten_inline_tables(raw);
+        let _: DocumentMut = flat.parse().expect("flattened body must parse");
+        // Comment is gone, both keys collapsed onto one line.
+        assert!(!flat.contains('#'));
+        assert!(flat.contains("{ A = 1, B = 2 }"));
     }
 }
