@@ -72,9 +72,18 @@ pub async fn run(args: DashboardArgs, global: &GlobalArgs) -> Result<(), CliErro
                 .unwrap_or(true)
         })
         .map(|n| {
-            let display_name = template
-                .replace("{env}", env_str)
-                .replace("{index}", &n.index.get().to_string());
+            // Honour the name persisted on `NodeState` (operator's
+            // wizard / `mxnode rename` choice) before falling back to
+            // re-templating from config. Re-templating without that
+            // check is the bug the dashboard was previously hitting:
+            // the operator typed a custom name, it landed in
+            // state.toml + prefs.toml, and the dashboard ignored both.
+            let display_name = crate::commands::prompts::resolve_display_name(
+                &n.display_name,
+                template,
+                env_str,
+                n.index.get(),
+            );
             NodeSpec {
                 index: n.index,
                 label: if display_name.is_empty() {

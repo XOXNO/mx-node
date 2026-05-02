@@ -237,8 +237,18 @@ fn render_table(state: &State, probes: &[Probe], color: bool) {
         println!("(no nodes)");
         return;
     }
-    println!("H │ idx │ unit                    │ shard      │ nonce      │ pubkey       │ port");
-    println!("──┼─────┼─────────────────────────┼────────────┼────────────┼──────────────┼──────");
+    println!("H │ idx │ name                     │ shard      │ nonce      │ pubkey       │ port");
+    println!("──┼─────┼──────────────────────────┼────────────┼────────────┼──────────────┼──────");
+    let template = &state
+        .install
+        .as_ref()
+        .map(|_| "")  // status doesn't have a config-side template; lean on persisted name only
+        .unwrap_or("");
+    let env_str = state
+        .install
+        .as_ref()
+        .map(|i| i.environment.as_str())
+        .unwrap_or("");
     for (node, probe) in state.nodes.iter().zip(probes.iter()) {
         let nonce = probe
             .nonce
@@ -261,10 +271,25 @@ fn render_table(state: &State, probes: &[Probe], color: bool) {
         } else {
             glyph.to_string()
         };
+        // Show the operator's chosen NodeDisplayName (persisted at
+        // install time) rather than the systemd unit filename. The
+        // unit name is recoverable via `--json` for tooling that
+        // wants it.
+        let label = crate::commands::prompts::resolve_display_name(
+            &node.display_name,
+            template,
+            env_str,
+            node.index.get(),
+        );
+        let label = if label.is_empty() {
+            node.unit.clone()
+        } else {
+            label
+        };
         println!(
-            "{glyph_cell} │ {idx:<3} │ {unit:<23} │ {shard:<10} │ {nonce:<10} │ {pubkey:<12} │ {port}",
+            "{glyph_cell} │ {idx:<3} │ {label:<24} │ {shard:<10} │ {nonce:<10} │ {pubkey:<12} │ {port}",
             idx = node.index.get(),
-            unit = truncate(&node.unit, 23),
+            label = truncate(&label, 24),
             shard = node.shard.as_str(),
             port = node.api_port,
         );
@@ -297,6 +322,9 @@ struct JsonInstall {
 #[derive(Debug, Serialize)]
 struct JsonNode {
     index: u16,
+    /// Operator-chosen `NodeDisplayName` persisted at install time.
+    /// Empty on legacy installs whose state.toml predates the field.
+    display_name: String,
     unit: String,
     shard: String,
     api_port: u16,
@@ -320,6 +348,7 @@ impl JsonReport {
             .zip(probes.iter())
             .map(|(node, probe)| JsonNode {
                 index: node.index.get(),
+                display_name: node.display_name.clone(),
                 unit: node.unit.clone(),
                 shard: node.shard.as_str().to_string(),
                 api_port: node.api_port,

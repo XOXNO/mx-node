@@ -196,6 +196,33 @@ pub fn expand_template(template: &str, env: &str, index: u16) -> String {
         .replace("{index}", &index.to_string())
 }
 
+/// Resolve the display name to show for one node. Used by every
+/// surface that renders a node label (`reapply-config`, `dashboard`,
+/// `status`, the install/add-nodes success output) so they all agree
+/// on what "the operator's chosen name" is.
+///
+/// Precedence:
+///   1. The name persisted on the `NodeState` (stamped at install
+///      time, kept in sync by `mxnode rename`). Honouring this stops
+///      every read-side surface from silently re-templating an
+///      operator's chosen name just because the config-side
+///      `node.name_template` happens to differ.
+///   2. The current `node.name_template`, with `{env}` / `{index}`
+///      substituted. Only used when the persisted name is empty
+///      (legacy installs imported via `migrate-bash`, or installs
+///      from mxnode versions that predated the persisted-name field).
+///   3. Empty string when neither source has a value — callers fall
+///      back to a unit-level label like `node-{index}`.
+pub fn resolve_display_name(persisted: &str, template: &str, env: &str, index: u16) -> String {
+    if !persisted.is_empty() {
+        return persisted.to_string();
+    }
+    if template.is_empty() {
+        return String::new();
+    }
+    expand_template(template, env, index)
+}
+
 /// Resolve per-node display names.
 ///
 /// When `interactive` is true, prompt for each node with the
@@ -401,6 +428,28 @@ mod tests {
         let mut writer: Vec<u8> = Vec::new();
         let env = prompt_for_network(&mut reader, &mut writer, true).unwrap();
         assert_eq!(env, Environment::Mainnet);
+    }
+
+    #[test]
+    fn resolve_display_name_prefers_persisted() {
+        let out = resolve_display_name(
+            "my-validator-prod",
+            "mx-chain-{env}-validator-{index}",
+            "mainnet",
+            0,
+        );
+        assert_eq!(out, "my-validator-prod");
+    }
+
+    #[test]
+    fn resolve_display_name_falls_back_to_template() {
+        let out = resolve_display_name("", "mx-chain-{env}-validator-{index}", "mainnet", 3);
+        assert_eq!(out, "mx-chain-mainnet-validator-3");
+    }
+
+    #[test]
+    fn resolve_display_name_empty_when_neither_source_set() {
+        assert_eq!(resolve_display_name("", "", "mainnet", 0), "");
     }
 
     #[test]
