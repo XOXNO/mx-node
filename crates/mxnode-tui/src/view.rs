@@ -462,7 +462,13 @@ fn draw_body(frame: &mut Frame, area: Rect, label: &str, snap: &NodeSnapshot) {
 
     let halves = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+        // Equal halves so the right column has enough room for the
+        // longer gauge titles ("Rx X (X%) peak Y · Z this epoch")
+        // without truncation. The left column had 58% historically
+        // because the Chain row was the widest line in the panel —
+        // it still fits comfortably at 50% on terminals ≥ 110 cols
+        // (the threshold for the wide layout).
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
 
     let left = Layout::default()
@@ -998,6 +1004,12 @@ fn draw_network_row(frame: &mut Frame, area: Rect, snap: &NodeSnapshot) {
         .unwrap_or(0);
     let rx_data = snap.netin_hist.as_vec();
     let tx_data = snap.netout_hist.as_vec();
+    // Title format: `Rx <rate>/s (X%)  peak <Y>/s  ·  <Z> epoch` —
+    // four numbers ordered "now / saturation / peak this epoch /
+    // cumulative this epoch". Dropped the "this " word from the
+    // suffix so the title fits on terminals wider than the 110-col
+    // narrow threshold but not absurdly wide; on tighter terminals
+    // ratatui clips the trailing edge automatically.
     frame.render_widget(
         Sparkline::default()
             .block(bordered(Line::from(vec![
@@ -1008,7 +1020,7 @@ fn draw_network_row(frame: &mut Frame, area: Rect, snap: &NodeSnapshot) {
                 Span::styled(format!("  peak {}/s", human_bytes(rx_peak)), theme::dim()),
                 Span::styled("  ·  ", theme::dim()),
                 Span::styled(human_bytes(recv_epoch), theme::ok()),
-                Span::styled(" this epoch ", theme::dim()),
+                Span::styled(" epoch ", theme::dim()),
             ])))
             .style(theme::ok())
             .data(&rx_data),
@@ -1024,7 +1036,7 @@ fn draw_network_row(frame: &mut Frame, area: Rect, snap: &NodeSnapshot) {
                 Span::styled(format!("  peak {}/s", human_bytes(tx_peak)), theme::dim()),
                 Span::styled("  ·  ", theme::dim()),
                 Span::styled(human_bytes(sent_epoch), theme::warn()),
-                Span::styled(" this epoch ", theme::dim()),
+                Span::styled(" epoch ", theme::dim()),
             ])))
             .style(theme::warn())
             .data(&tx_data),
