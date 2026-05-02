@@ -28,7 +28,7 @@ use crate::orchestrator::tag_resolver::{
 };
 
 #[tokio::main(flavor = "current_thread")]
-pub async fn run(args: InstallArgs, global: &GlobalArgs) -> Result<(), CliError> {
+pub async fn run(mut args: InstallArgs, global: &GlobalArgs) -> Result<(), CliError> {
     let runtime = Runtime::from_global(global)?;
     let store = StateStore::new(&runtime.paths.state);
     if store.exists() {
@@ -53,6 +53,12 @@ pub async fn run(args: InstallArgs, global: &GlobalArgs) -> Result<(), CliError>
             )
             .json_if(global.json)
         })?;
+
+    // Run the install wizard for `mxnode install` typed bare on a TTY.
+    // Power users who pass any explicit selector (`--role`, `--count`,
+    // `--squad`, etc.) skip the wizard and get the historical
+    // flag-driven flow. `--non-interactive` and `--dry-run` always skip.
+    run_install_wizard(&mut args, global)?;
 
     let role = match args.role {
         RoleArg::Validator => Role::Validator,
@@ -95,7 +101,17 @@ pub async fn run(args: InstallArgs, global: &GlobalArgs) -> Result<(), CliError>
         )
         .json_if(global.json));
     }
-    require_multikey_role("--backup", args.backup.is_some(), role, global)?;
+    // `--backup` (RedundancyLevel) is allowed for validators AND
+    // multikey — both can run a backup-of-primary host. Observers
+    // don't sign blocks, so the field is meaningless there.
+    if args.backup.is_some() && matches!(role, Role::Observer) {
+        return Err(CliError::new(
+            "--backup is rejected for --role observer",
+            "observers don't sign blocks; RedundancyLevel has no effect on them",
+            "drop --backup, or use --role validator or --role multikey",
+        )
+        .json_if(global.json));
+    }
     require_multikey_role("--keys-file", args.keys_file.is_some(), role, global)?;
     let multikey_keys_file = resolve_multikey_keys(&args, role, &runtime, global)?;
     let backup_level = args.backup.unwrap_or(0);
@@ -390,6 +406,113 @@ pub(super) fn emit_dry_run(
         println!("  count:       {count}");
     }
     Ok(())
+}
+
+/// Run the interactive install wizard when `mxnode install` is typed
+/// bare on a TTY. Mutates `args` in place so the rest of `run` reads
+/// the operator's choices via the same fields the CLI flags would
+/// have populated. No-op (and returns `Ok(())`) when the operator
+/// already supplied any selector, set `--non-interactive`, set
+/// `--dry-run`, or stdin is not a TTY.
+fn run_install_wizard(args: &mut InstallArgs, global: &GlobalArgs) -> Result<(), CliError> {
+    if args.non_interactive || args.dry_run {
+        return Ok(());
+    }
+    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        return Ok(());
+    }
+    if !is_bare_install(args) {
+        // Operator passed at least one selector — they know what they
+        // want; don't prompt.
+        return Ok(());
+    }
+
+    use super::prompts::{
+        prompt_for_count, prompt_for_install_type, prompt_for_redundancy, InstallType,
+    };
+    let mut stdin = std::io::stdin().lock();
+    let mut stdout = std::io::stdout().lock();
+    let read_io = |e: std::io::Error| {
+        CliError::new(
+            "failed to read install-wizard input from stdin",
+            e.to_string(),
+            "rerun with --non-interactive plus the explicit flags you want",
+        )
+        .json_if(global.json)
+    };
+
+    let install_type = prompt_for_install_type(&mut stdin, &mut stdout, true).map_err(read_io)?;
+    apply_install_type(args, install_type);
+
+    if matches!(
+        install_type,
+        InstallType::Validators | InstallType::Observers
+    ) {
+        let count = prompt_for_count(&mut stdin, &mut stdout, 1, true).map_err(read_io)?;
+        args.count = Some(count);
+    }
+
+    if matches!(
+        install_type,
+        InstallType::Validators | InstallType::MultikeySquad,
+    ) {
+        let level = prompt_for_redundancy(&mut stdin, &mut stdout, true).map_err(read_io)?;
+        // For multikey, persist the explicit choice (including 0) so
+        // `mxnode config show` reflects the install-time decision.
+        // For validators, only persist non-zero — RedundancyLevel = 0
+        // is the prefs.toml upstream default and writing it is noise.
+        if level > 0 || matches!(install_type, InstallType::MultikeySquad) {
+            args.backup = Some(level);
+        }
+    }
+    Ok(())
+}
+
+/// True when the operator typed `mxnode install` bare — every selector
+/// is at its clap default. Triggers the wizard.
+fn is_bare_install(args: &InstallArgs) -> bool {
+    args.count.is_none()
+        && !args.squad
+        && !args.with_proxy
+        && args.keys_file.is_none()
+        && args.backup.is_none()
+        && args.binary_tag.is_none()
+        && args.config_tag.is_none()
+        && args.proxy_tag.is_none()
+        && args.name_template.is_none()
+        && matches!(args.role, RoleArg::Validator)
+}
+
+/// Translate the wizard's [`super::prompts::InstallType`] choice into
+/// the equivalent flag combination on `InstallArgs`.
+fn apply_install_type(args: &mut InstallArgs, install_type: super::prompts::InstallType) {
+    use super::prompts::InstallType;
+    match install_type {
+        InstallType::Validators => {
+            args.role = RoleArg::Validator;
+            args.squad = false;
+            args.with_proxy = false;
+        }
+        InstallType::Observers => {
+            args.role = RoleArg::Observer;
+            args.squad = false;
+            args.with_proxy = false;
+        }
+        InstallType::ObserversSquad => {
+            args.role = RoleArg::Observer;
+            args.squad = true;
+            args.with_proxy = true;
+        }
+        InstallType::MultikeySquad => {
+            args.role = RoleArg::Multikey;
+            // The orchestrator forces squad=true when role=Multikey
+            // anyway, but mirroring the bash flow here keeps the
+            // post-wizard `args` self-consistent and makes
+            // `--dry-run` output match what the operator picked.
+            args.squad = true;
+            args.with_proxy = false;
+        }
+    }
 }
 
 pub(super) fn install_err(

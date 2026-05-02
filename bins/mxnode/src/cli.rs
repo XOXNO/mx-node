@@ -220,12 +220,15 @@ pub struct InstallArgs {
     /// holds validator zips by convention) and uses it if present.
     #[arg(long, value_name = "PATH")]
     pub keys_file: Option<PathBuf>,
-    /// Mark this multikey host as a backup for an existing primary.
-    /// Both machines must share the **same** `allValidatorsKeys.pem`;
-    /// only the redundancy level differs. Pass `--backup` for level 1
-    /// (the common case), `--backup 2` for a backup-of-backup, etc.
-    /// Omit entirely for a primary install (`RedundancyLevel = 0`).
-    /// Requires `--role multikey`.
+    /// Mark this host as a backup of an existing primary. Pass
+    /// `--backup` for level 1 (the common case), `--backup 2` for a
+    /// backup-of-backup, etc. Omit entirely for a primary install
+    /// (`RedundancyLevel = 0`).
+    ///
+    /// Allowed for `--role validator` and `--role multikey`. For
+    /// multikey, both machines must share the **same**
+    /// `allValidatorsKeys.pem`; only the redundancy level differs.
+    /// Rejected for `--role observer` (observers don't sign blocks).
     #[arg(
         long,
         value_name = "N",

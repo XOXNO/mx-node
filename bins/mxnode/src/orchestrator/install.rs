@@ -579,14 +579,21 @@ pub(crate) fn apply_node_tomledit(input: NodeTomlEdit<'_>) -> Result<(), Install
             set_destination_shard(&mut doc, shard)
                 .map_err(|e| InstallError::Toml(e.to_string()))?;
         }
-        // Multikey is the only role for which RedundancyLevel is
-        // load-bearing — validators historically hand-edit if they
-        // run a backup, observers don't sign blocks at all. Stamp
-        // for multikey at install time; `reapply-config` passes
-        // `None` so it doesn't clobber an operator's hand-edited
-        // value during a re-apply.
-        if matches!(role, Role::Multikey) {
-            if let Some(level) = redundancy_level {
+        // Stamp `RedundancyLevel` for the two roles that sign blocks:
+        // multikey writes the chosen level unconditionally (including
+        // 0 — primary) so `mxnode config show` reflects the install
+        // decision; validators write only when level > 0 to keep the
+        // upstream prefs.toml default untouched in the common case.
+        // Observers never get the field — they don't sign at all.
+        // `reapply-config` passes `None` so re-applying never clobbers
+        // an operator's hand-edited value.
+        if let Some(level) = redundancy_level {
+            let stamp = match role {
+                Role::Multikey => true,
+                Role::Validator => level > 0,
+                Role::Observer => false,
+            };
+            if stamp {
                 set_redundancy_level(&mut doc, level)
                     .map_err(|e| InstallError::Toml(e.to_string()))?;
             }
@@ -899,6 +906,36 @@ mod tests {
     /// reapply-config passes `redundancy_level: None` to keep operator
     /// hand-edits intact. Even on a multikey node, `None` must leave
     /// the existing `RedundancyLevel` line alone.
+    #[test]
+    fn apply_node_tomledit_validator_with_nonzero_redundancy_stamps() {
+        // The wizard now lets validators set RedundancyLevel for
+        // backup hosts (matching the relaxed --backup validation);
+        // confirm the orchestrator stamps non-zero levels into prefs.
+        let dir = tempfile::tempdir().unwrap();
+        let workdir = dir.path().join("node-0");
+        std::fs::create_dir_all(workdir.join("config")).unwrap();
+        std::fs::write(
+            workdir.join("config/prefs.toml"),
+            "[Preferences]\nNodeDisplayName = \"\"\nDestinationShardAsObserver = \"disabled\"\nRedundancyLevel = 0\n",
+        )
+        .unwrap();
+
+        apply_node_tomledit(NodeTomlEdit {
+            workdir: &workdir,
+            display_name: "validator-backup",
+            shard: Shard::Auto,
+            edits: ConfigEdits::Validator,
+            role: Role::Validator,
+            redundancy_level: Some(1),
+            prefs_overrides: &BTreeMap::new(),
+            config_overrides: &BTreeMap::new(),
+        })
+        .unwrap();
+
+        let prefs = std::fs::read_to_string(workdir.join("config/prefs.toml")).unwrap();
+        assert!(prefs.contains("RedundancyLevel = 1"));
+    }
+
     #[test]
     fn apply_node_tomledit_multikey_with_none_redundancy_preserves_existing() {
         let dir = tempfile::tempdir().unwrap();

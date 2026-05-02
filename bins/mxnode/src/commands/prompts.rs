@@ -56,6 +56,137 @@ pub fn prompt_for_network<R: BufRead, W: Write>(
     })
 }
 
+/// Operator's chosen install shape, picked at the top of the wizard.
+/// Maps cleanly onto `InstallArgs.role` + `squad` + `with_proxy`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallType {
+    /// Free-count validator nodes, no shard pinning. Operator supplies
+    /// `node-{i}.zip` per node from `paths.node_keys`.
+    Validators,
+    /// Free-count observer nodes, no shard pinning. mx-chain-go
+    /// auto-generates a throwaway BLS key on first start.
+    Observers,
+    /// Four observers pinned to shards 0/1/2/metachain, with a local
+    /// MultiversX proxy on the same host. Mirrors bash `observing_squad`.
+    ObserversSquad,
+    /// Four multikey nodes signing for an operator-supplied
+    /// `allValidatorsKeys.pem` bundle. Mirrors bash `multikey_squad`.
+    MultikeySquad,
+}
+
+/// Prompt the operator for the install type.
+pub fn prompt_for_install_type<R: BufRead, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    interactive: bool,
+) -> std::io::Result<InstallType> {
+    if !interactive {
+        return Ok(InstallType::Validators);
+    }
+    writeln!(writer)?;
+    writeln!(writer, "What kind of install?")?;
+    writeln!(
+        writer,
+        "  1) Validators        (you supply node-{{i}}.zip per node)",
+    )?;
+    writeln!(
+        writer,
+        "  2) Observers         (free count; throwaway BLS key auto-generated)",
+    )?;
+    writeln!(
+        writer,
+        "  3) Observers squad   (4 observers pinned to shards 0/1/2/metachain + proxy)",
+    )?;
+    writeln!(
+        writer,
+        "  4) Multikey squad    (4 nodes signing allValidatorsKeys.pem)",
+    )?;
+    write!(writer, "  type [1]: ")?;
+    writer.flush()?;
+    let mut line = String::new();
+    if reader.read_line(&mut line)? == 0 {
+        return Ok(InstallType::Validators);
+    }
+    Ok(match line.trim().to_ascii_lowercase().as_str() {
+        "" | "1" | "validator" | "validators" => InstallType::Validators,
+        "2" | "observer" | "observers" => InstallType::Observers,
+        "3" | "squad" | "observers squad" | "observer squad" => InstallType::ObserversSquad,
+        "4" | "multikey" | "multikey squad" => InstallType::MultikeySquad,
+        other => {
+            writeln!(writer, "  unrecognised choice {other:?}; using validators")?;
+            InstallType::Validators
+        }
+    })
+}
+
+/// Prompt for a node count with a numeric default. Rejects 0 and any
+/// non-numeric input by reverting to `default` with a stderr-style
+/// hint, so a misread never blocks the wizard.
+pub fn prompt_for_count<R: BufRead, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    default: u16,
+    interactive: bool,
+) -> std::io::Result<u16> {
+    if !interactive {
+        return Ok(default);
+    }
+    write!(writer, "Number of nodes [{default}]: ")?;
+    writer.flush()?;
+    let mut line = String::new();
+    if reader.read_line(&mut line)? == 0 {
+        return Ok(default);
+    }
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return Ok(default);
+    }
+    match trimmed.parse::<u16>() {
+        Ok(n) if n > 0 => Ok(n),
+        _ => {
+            writeln!(writer, "  invalid count {trimmed:?}; using {default}")?;
+            Ok(default)
+        }
+    }
+}
+
+/// Prompt for `Preferences.RedundancyLevel`. `0` = primary (default),
+/// `1+` = backup level. Used for both multikey and (post-relaxation)
+/// validator installs. Bad input falls back to 0 with a hint.
+pub fn prompt_for_redundancy<R: BufRead, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    interactive: bool,
+) -> std::io::Result<u8> {
+    if !interactive {
+        return Ok(0);
+    }
+    writeln!(writer)?;
+    writeln!(writer, "RedundancyLevel for backup nodes:")?;
+    writeln!(writer, "  0  primary (default)")?;
+    writeln!(
+        writer,
+        "  1+ backup level (1 = first backup, 2 = backup-of-backup, …)"
+    )?;
+    write!(writer, "  redundancy [0]: ")?;
+    writer.flush()?;
+    let mut line = String::new();
+    if reader.read_line(&mut line)? == 0 {
+        return Ok(0);
+    }
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return Ok(0);
+    }
+    match trimmed.parse::<u8>() {
+        Ok(n) => Ok(n),
+        _ => {
+            writeln!(writer, "  invalid redundancy {trimmed:?}; using 0")?;
+            Ok(0)
+        }
+    }
+}
+
 /// Substitute `{env}` and `{index}` in a name template, matching the
 /// expansion done by the install orchestrator. Pure helper so prompts
 /// and the orchestrator agree on what "the default" is byte-for-byte.
@@ -270,6 +401,120 @@ mod tests {
         let mut writer: Vec<u8> = Vec::new();
         let env = prompt_for_network(&mut reader, &mut writer, true).unwrap();
         assert_eq!(env, Environment::Mainnet);
+    }
+
+    #[test]
+    fn install_type_prompt_non_interactive_returns_validators() {
+        let mut reader = Cursor::new(Vec::new());
+        let mut writer: Vec<u8> = Vec::new();
+        let t = prompt_for_install_type(&mut reader, &mut writer, false).unwrap();
+        assert_eq!(t, InstallType::Validators);
+        assert!(writer.is_empty());
+    }
+
+    #[test]
+    fn install_type_prompt_digit_shortcuts() {
+        for (input, expected) in [
+            ("1\n", InstallType::Validators),
+            ("2\n", InstallType::Observers),
+            ("3\n", InstallType::ObserversSquad),
+            ("4\n", InstallType::MultikeySquad),
+        ] {
+            let mut reader = Cursor::new(input.as_bytes().to_vec());
+            let mut writer: Vec<u8> = Vec::new();
+            let t = prompt_for_install_type(&mut reader, &mut writer, true).unwrap();
+            assert_eq!(t, expected, "input: {input:?}");
+        }
+    }
+
+    #[test]
+    fn install_type_prompt_blank_picks_validators() {
+        let mut reader = Cursor::new(b"\n".to_vec());
+        let mut writer: Vec<u8> = Vec::new();
+        let t = prompt_for_install_type(&mut reader, &mut writer, true).unwrap();
+        assert_eq!(t, InstallType::Validators);
+    }
+
+    #[test]
+    fn install_type_prompt_named_values() {
+        for (input, expected) in [
+            ("validators\n", InstallType::Validators),
+            ("Observers\n", InstallType::Observers),
+            ("squad\n", InstallType::ObserversSquad),
+            ("MULTIKEY\n", InstallType::MultikeySquad),
+        ] {
+            let mut reader = Cursor::new(input.as_bytes().to_vec());
+            let mut writer: Vec<u8> = Vec::new();
+            let t = prompt_for_install_type(&mut reader, &mut writer, true).unwrap();
+            assert_eq!(t, expected, "input: {input:?}");
+        }
+    }
+
+    #[test]
+    fn count_prompt_blank_returns_default() {
+        let mut reader = Cursor::new(b"\n".to_vec());
+        let mut writer: Vec<u8> = Vec::new();
+        let n = prompt_for_count(&mut reader, &mut writer, 1, true).unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn count_prompt_parses_valid_input() {
+        let mut reader = Cursor::new(b"7\n".to_vec());
+        let mut writer: Vec<u8> = Vec::new();
+        let n = prompt_for_count(&mut reader, &mut writer, 1, true).unwrap();
+        assert_eq!(n, 7);
+    }
+
+    #[test]
+    fn count_prompt_zero_falls_back_with_warning() {
+        let mut reader = Cursor::new(b"0\n".to_vec());
+        let mut writer: Vec<u8> = Vec::new();
+        let n = prompt_for_count(&mut reader, &mut writer, 4, true).unwrap();
+        assert_eq!(n, 4);
+        let out = String::from_utf8(writer).unwrap();
+        assert!(out.contains("invalid count"));
+    }
+
+    #[test]
+    fn count_prompt_garbage_falls_back() {
+        let mut reader = Cursor::new(b"abc\n".to_vec());
+        let mut writer: Vec<u8> = Vec::new();
+        let n = prompt_for_count(&mut reader, &mut writer, 2, true).unwrap();
+        assert_eq!(n, 2);
+    }
+
+    #[test]
+    fn redundancy_prompt_blank_returns_zero() {
+        let mut reader = Cursor::new(b"\n".to_vec());
+        let mut writer: Vec<u8> = Vec::new();
+        let n = prompt_for_redundancy(&mut reader, &mut writer, true).unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn redundancy_prompt_parses_valid_input() {
+        let mut reader = Cursor::new(b"3\n".to_vec());
+        let mut writer: Vec<u8> = Vec::new();
+        let n = prompt_for_redundancy(&mut reader, &mut writer, true).unwrap();
+        assert_eq!(n, 3);
+    }
+
+    #[test]
+    fn redundancy_prompt_garbage_falls_back_to_zero() {
+        let mut reader = Cursor::new(b"definitely-not-a-number\n".to_vec());
+        let mut writer: Vec<u8> = Vec::new();
+        let n = prompt_for_redundancy(&mut reader, &mut writer, true).unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn redundancy_prompt_non_interactive_returns_zero() {
+        let mut reader = Cursor::new(Vec::new());
+        let mut writer: Vec<u8> = Vec::new();
+        let n = prompt_for_redundancy(&mut reader, &mut writer, false).unwrap();
+        assert_eq!(n, 0);
+        assert!(writer.is_empty());
     }
 
     #[test]
