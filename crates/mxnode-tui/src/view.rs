@@ -560,6 +560,13 @@ fn draw_instance(frame: &mut Frame, area: Rect, label: &str, snap: &NodeSnapshot
         .unwrap_or(0);
     let proposed = m.get_u64("erd_count_leader").unwrap_or(0);
     let proposed_acc = m.get_u64("erd_count_accepted_blocks").unwrap_or(0);
+    // Validator + Proposer counters are inherently zero on a node
+    // whose peer_type isn't a validator (observers don't participate
+    // in consensus). Hide both rows in that case so the panel doesn't
+    // burn lines on permanently-zero data. We show them when peer_type
+    // says "validator" AND when peer_type is unknown / empty (early
+    // boot — better to show 0/0 briefly than to flicker the rows in).
+    let is_validator_peer = peer_type.is_empty() || peer_type.contains("validator");
     let chain_id = m.get_str("erd_chain_id").unwrap_or("?");
     let redundancy_level = m.get_i64("erd_redundancy_level");
     let redundancy_main_active = m.get_str("erd_redundancy_is_main_active");
@@ -593,7 +600,9 @@ fn draw_instance(frame: &mut Frame, area: Rect, label: &str, snap: &NodeSnapshot
             Cell::from(lbl("PubKey")),
             Cell::from(val(pubkey_short)),
         ]),
-        Row::new(vec![
+    ];
+    if is_validator_peer {
+        rows.push(Row::new(vec![
             Cell::from(lbl("Validator")),
             Cell::from(Line::from(vec![
                 val_strong(signed.to_string()),
@@ -602,8 +611,8 @@ fn draw_instance(frame: &mut Frame, area: Rect, label: &str, snap: &NodeSnapshot
                 val_strong(accepted.to_string()),
                 Span::styled(" Accepted", theme::dim()),
             ])),
-        ]),
-        Row::new(vec![
+        ]));
+        rows.push(Row::new(vec![
             Cell::from(lbl("Proposer")),
             Cell::from(Line::from(vec![
                 val_strong(proposed.to_string()),
@@ -612,16 +621,16 @@ fn draw_instance(frame: &mut Frame, area: Rect, label: &str, snap: &NodeSnapshot
                 val_strong(proposed_acc.to_string()),
                 Span::styled(" Accepted", theme::dim()),
             ])),
-        ]),
-        Row::new(vec![
-            Cell::from(lbl("Chain")),
-            Cell::from(val(chain_id.to_string())),
-        ]),
-        Row::new(vec![
-            Cell::from(lbl("Redundancy")),
-            Cell::from(val(redundancy_text)),
-        ]),
-    ];
+        ]));
+    }
+    rows.push(Row::new(vec![
+        Cell::from(lbl("Chain")),
+        Cell::from(val(chain_id.to_string())),
+    ]));
+    rows.push(Row::new(vec![
+        Cell::from(lbl("Redundancy")),
+        Cell::from(val(redundancy_text)),
+    ]));
     // Managed-keys row only shows when the node responds to
     // `/node/managed-keys/count` — older / non-multikey builds 404
     // there, in which case the row stays hidden.
