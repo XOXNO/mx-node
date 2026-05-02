@@ -448,15 +448,15 @@ fn draw_body(frame: &mut Frame, area: Rect, label: &str, snap: &NodeSnapshot) {
                 Constraint::Min(7),
                 Constraint::Length(3),
                 Constraint::Length(3),
-                Constraint::Length(3),
             ])
             .split(area);
         draw_instance(frame, stacked[0], label, snap);
         draw_chain(frame, stacked[1], snap);
         draw_block_info(frame, stacked[2], snap);
         draw_load_row(frame, stacked[3], snap);
-        draw_epoch_traffic_row(frame, stacked[4], snap);
-        draw_network_row(frame, stacked[5], snap);
+        // Epoch-cumulative bytes are folded into draw_network_row's
+        // gauge titles, so no dedicated row is needed here.
+        draw_network_row(frame, stacked[4], snap);
         return;
     }
 
@@ -477,9 +477,8 @@ fn draw_body(frame: &mut Frame, area: Rect, label: &str, snap: &NodeSnapshot) {
         .constraints([
             Constraint::Min(9),    // block info
             Constraint::Length(3), // cpu+mem row
-            Constraint::Length(3), // epoch progress
-            Constraint::Length(3), // epoch traffic
-            Constraint::Length(3), // network rx+tx
+            Constraint::Length(3), // epoch progress (or trie-sync gauge)
+            Constraint::Length(3), // network rx+tx (with epoch totals folded in)
         ])
         .split(halves[1]);
     draw_block_info(frame, right[0], snap);
@@ -492,8 +491,7 @@ fn draw_body(frame: &mut Frame, area: Rect, label: &str, snap: &NodeSnapshot) {
     } else {
         draw_epoch_row(frame, right[2], snap);
     }
-    draw_epoch_traffic_row(frame, right[3], snap);
-    draw_network_row(frame, right[4], snap);
+    draw_network_row(frame, right[3], snap);
 }
 
 // ── Title / value helpers ────────────────────────────────────────────
@@ -976,6 +974,19 @@ fn draw_network_row(frame: &mut Frame, area: Rect, snap: &NodeSnapshot) {
         .metrics
         .get_u64("erd_network_sent_percent")
         .unwrap_or(0);
+    // Cumulative bytes for the current epoch, folded into the gauge
+    // titles so the operator sees current rate / peak / epoch total
+    // in one place. mx-chain-go exposes them under the `_per_host`
+    // suffix; the un-suffixed names mxnode used historically do not
+    // exist in `/node/status`. Source: common/constants.go:191/194.
+    let recv_epoch = snap
+        .metrics
+        .get_u64("erd_network_recv_bytes_in_epoch_per_host")
+        .unwrap_or(0);
+    let sent_epoch = snap
+        .metrics
+        .get_u64("erd_network_sent_bytes_in_epoch_per_host")
+        .unwrap_or(0);
     let rx_data = snap.netin_hist.as_vec();
     let tx_data = snap.netout_hist.as_vec();
     frame.render_widget(
@@ -985,7 +996,10 @@ fn draw_network_row(frame: &mut Frame, area: Rect, snap: &NodeSnapshot) {
                 Span::styled("Rx ", Style::default().add_modifier(Modifier::BOLD)),
                 Span::styled(format!("{}/s", human_bytes(rx)), theme::ok()),
                 Span::styled(format!("  ({}%)", rx_pct), theme::dim()),
-                Span::styled(format!("  peak {}/s ", human_bytes(rx_peak)), theme::dim()),
+                Span::styled(format!("  peak {}/s", human_bytes(rx_peak)), theme::dim()),
+                Span::styled("  ·  ", theme::dim()),
+                Span::styled(human_bytes(recv_epoch), theme::ok()),
+                Span::styled(" this epoch ", theme::dim()),
             ])))
             .style(theme::ok())
             .data(&rx_data),
@@ -998,40 +1012,14 @@ fn draw_network_row(frame: &mut Frame, area: Rect, snap: &NodeSnapshot) {
                 Span::styled("Tx ", Style::default().add_modifier(Modifier::BOLD)),
                 Span::styled(format!("{}/s", human_bytes(tx)), theme::warn()),
                 Span::styled(format!("  ({}%)", tx_pct), theme::dim()),
-                Span::styled(format!("  peak {}/s ", human_bytes(tx_peak)), theme::dim()),
+                Span::styled(format!("  peak {}/s", human_bytes(tx_peak)), theme::dim()),
+                Span::styled("  ·  ", theme::dim()),
+                Span::styled(human_bytes(sent_epoch), theme::warn()),
+                Span::styled(" this epoch ", theme::dim()),
             ])))
             .style(theme::warn())
             .data(&tx_data),
         halves[1],
-    );
-}
-
-// ── Epoch traffic per host (cumulative bytes for the current epoch) ──
-
-fn draw_epoch_traffic_row(frame: &mut Frame, area: Rect, snap: &NodeSnapshot) {
-    // mx-chain-go exposes the cumulative epoch bytes under the
-    // `_per_host` suffix (see common/constants.go:191/194). The
-    // un-suffixed names mxnode used historically simply do not exist
-    // in the /node/status payload, which is why the row stayed at 0B.
-    let sent = snap
-        .metrics
-        .get_u64("erd_network_sent_bytes_in_epoch_per_host")
-        .unwrap_or(0);
-    let recv = snap
-        .metrics
-        .get_u64("erd_network_recv_bytes_in_epoch_per_host")
-        .unwrap_or(0);
-    let line = Line::from(vec![
-        Span::raw("  "),
-        Span::styled("Sent ", theme::label()),
-        val_strong(human_bytes(sent)),
-        Span::styled("    ", theme::dim()),
-        Span::styled("Received ", theme::label()),
-        val_strong(human_bytes(recv)),
-    ]);
-    frame.render_widget(
-        Paragraph::new(line).block(bordered(box_title("Epoch traffic"))),
-        area,
     );
 }
 
