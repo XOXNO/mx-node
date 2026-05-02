@@ -197,14 +197,20 @@ impl NodeSnapshot {
         //    progress bar instead of a flat "starting" badge.
         if let Some(processed) = self
             .bootstrap
-            .get_u64("erd_trie_sync_num_processed_nodes")
+            .get_u64("erd_trie_sync_num_nodes_processed")
             .filter(|n| *n > 0)
         {
-            let pct = self
-                .bootstrap
-                .get_u64("erd_trie_sync_processed_percentage")
-                .filter(|p| *p > 0);
-            self.state = Some(SyncState::TrieSync { processed, pct });
+            // mx-chain-go does NOT expose a precomputed
+            // "trie_sync_processed_percentage" metric — termui itself
+            // computes the ratio on the fly using the gateway-fetched
+            // accounts-snapshot-num-nodes total. We do the same in
+            // `trie_sync_pct()` below; leaving `pct` at None here is
+            // correct (the renderer falls back to processed/total when
+            // the gateway has answered).
+            self.state = Some(SyncState::TrieSync {
+                processed,
+                pct: None,
+            });
             return;
         }
 
