@@ -459,7 +459,7 @@ pub fn build_migration_plan(
     systemd_dir: &Path,
     existing_config: &Config,
 ) -> Result<MigrationPlan, MigrateError> {
-    let state = infer_state_from_bash(custom_home)?;
+    let mut state = infer_state_from_bash(custom_home)?;
     let mut warnings = Vec::new();
 
     // 1. variables.cfg → config patches
@@ -496,6 +496,7 @@ pub fn build_migration_plan(
     //    fallback for `paths.custom_user` when variables.cfg is absent
     //    or didn't set it.
     let services = scan_service_dir(systemd_dir);
+    apply_prefs_display_names(&mut state, &services, &mut warnings);
     plan_service_file_patches(&services, existing_config, &defaults, &mut config_patches);
     if services.is_empty() {
         warnings.push(format!(
@@ -557,6 +558,44 @@ pub fn build_migration_plan(
         warnings,
         github_token,
     })
+}
+
+fn apply_prefs_display_names(
+    state: &mut State,
+    services: &BTreeMap<u16, ServiceFacts>,
+    warnings: &mut Vec<String>,
+) {
+    for node in &mut state.nodes {
+        let idx = node.index.get();
+        let workdir = services
+            .get(&idx)
+            .and_then(|facts| facts.working_directory.as_ref())
+            .unwrap_or(&node.workdir);
+        let prefs_path = workdir.join("config").join("prefs.toml");
+        match read_node_display_name_from_prefs(&prefs_path) {
+            Ok(Some(name)) => node.display_name = name,
+            Ok(None) => {}
+            Err(e) => warnings.push(format!("{}: {e}", prefs_path.display())),
+        }
+    }
+}
+
+fn read_node_display_name_from_prefs(path: &Path) -> Result<Option<String>, String> {
+    let body = match fs::read_to_string(path) {
+        Ok(body) => body,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("could not read prefs.toml: {e}")),
+    };
+    let parsed: toml::Value = body
+        .parse()
+        .map_err(|e| format!("could not parse prefs.toml: {e}"))?;
+    Ok(parsed
+        .get("Preferences")
+        .and_then(|prefs| prefs.get("NodeDisplayName"))
+        .and_then(|name| name.as_str())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(ToOwned::to_owned))
 }
 
 /// Compute config patches from variables.cfg, only filling fields that
@@ -1011,6 +1050,7 @@ fn print_dry_run(plan: &MigrationPlan, global: &GlobalArgs) {
                 "index": n.index.get(),
                 "role": n.role.as_str(),
                 "shard": n.shard.as_str(),
+                "display_name": n.display_name,
                 "unit": n.unit,
                 "api_port": n.api_port,
             })).collect::<Vec<_>>(),
@@ -1038,11 +1078,12 @@ fn print_dry_run(plan: &MigrationPlan, global: &GlobalArgs) {
     }
     for n in &plan.state.nodes {
         println!(
-            "  node-{}: {} on {} ({})",
+            "  node-{}: {} on {} ({}) display_name={:?}",
             n.index.get(),
             n.role,
             n.shard,
             n.unit,
+            n.display_name,
         );
     }
     if plan.state.proxy.is_some() {
@@ -1143,6 +1184,26 @@ mod tests {
             fs::write(dir.path().join(".squad_install"), kind).unwrap();
         }
         dir
+    }
+
+    fn write_prefs(custom_home: &Path, idx: u16, name: &str) {
+        let config_dir = custom_home
+            .join("elrond-nodes")
+            .join(format!("node-{idx}"))
+            .join("config");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(
+            config_dir.join("prefs.toml"),
+            format!(
+                r#"[Preferences]
+   DestinationShardAsObserver = "0"
+   NodeDisplayName = "{name}"
+   Identity = "BOBER"
+   RedundancyLevel = 1
+"#,
+            ),
+        )
+        .unwrap();
     }
 
     // ── sentinel-only inference (existing behaviour, unchanged) ──
@@ -1458,6 +1519,25 @@ NODE_EXTRA_FLAGS="-profile-mode true"
         assert_eq!(patch.role, "observer");
         assert_eq!(patch.shard, "one");
         assert!(patch.extra_flags.contains("-display-name special"));
+    }
+
+    #[test]
+    fn plan_imports_node_display_names_from_prefs_toml() {
+        let custom_home = bash_fixture("", 2, "mainnet");
+        write_prefs(custom_home.path(), 0, "Backup");
+        write_prefs(custom_home.path(), 1, "Primary");
+        let systemd_dir = tempfile::tempdir().unwrap();
+
+        let plan = build_migration_plan(
+            custom_home.path(),
+            None,
+            systemd_dir.path(),
+            &Config::default(),
+        )
+        .unwrap();
+
+        assert_eq!(plan.state.nodes[0].display_name, "Backup");
+        assert_eq!(plan.state.nodes[1].display_name, "Primary");
     }
 
     #[test]
