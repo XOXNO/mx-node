@@ -9,8 +9,11 @@
 
 use std::collections::BTreeMap;
 
+use futures_util::{SinkExt, StreamExt};
+use prost::Message as _;
 use serde::Deserialize;
 use thiserror::Error;
+use tokio_tungstenite::tungstenite::Message;
 
 #[derive(Debug, Error)]
 pub enum RpcError {
@@ -22,6 +25,12 @@ pub enum RpcError {
 
     #[error("malformed response: {0}")]
     Malformed(String),
+
+    #[error("websocket error: {0}")]
+    WebSocket(String),
+
+    #[error("json error: {0}")]
+    Json(#[from] serde_json::Error),
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -72,6 +81,180 @@ impl NodeMetrics {
 pub struct NodeClient {
     base_url: String,
     http: reqwest::Client,
+}
+
+/// Identifier sent by the upstream logviewer/termui when it wants the node's
+/// current default log profile instead of a custom JSON profile.
+pub const DEFAULT_LOG_PROFILE_IDENTIFIER: &str = "[default log profile]";
+
+/// Runtime log profile accepted by the node's `/log` WebSocket.
+///
+/// Field names intentionally match `mx-chain-logger-go/logger.Profile` JSON.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LogProfile {
+    #[serde(rename = "LogLevelPatterns")]
+    pub log_level_patterns: String,
+    #[serde(rename = "WithCorrelation")]
+    pub with_correlation: bool,
+    #[serde(rename = "WithLoggerName")]
+    pub with_logger_name: bool,
+}
+
+impl LogProfile {
+    pub fn new(
+        log_level_patterns: impl Into<String>,
+        with_correlation: bool,
+        with_logger_name: bool,
+    ) -> Self {
+        Self {
+            log_level_patterns: log_level_patterns.into(),
+            with_correlation,
+            with_logger_name,
+        }
+    }
+}
+
+pub struct LogStream {
+    inner: tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum LogStreamEvent {
+    Line(LogLineMessage),
+    Text(String),
+    Closed,
+}
+
+impl LogStream {
+    pub async fn connect(
+        host: &str,
+        port: u16,
+        use_wss: bool,
+        profile: Option<LogProfile>,
+    ) -> Result<Self, RpcError> {
+        let scheme = if use_wss { "wss" } else { "ws" };
+        let url = format!("{scheme}://{host}:{port}/log");
+        let (mut inner, _) = tokio_tungstenite::connect_async(&url)
+            .await
+            .map_err(ws_error)?;
+        let profile_message = match profile {
+            Some(profile) => serde_json::to_string(&profile)?,
+            None => DEFAULT_LOG_PROFILE_IDENTIFIER.to_string(),
+        };
+        inner
+            .send(Message::Text(profile_message))
+            .await
+            .map_err(ws_error)?;
+        Ok(Self { inner })
+    }
+
+    pub async fn next_event(&mut self) -> Result<LogStreamEvent, RpcError> {
+        while let Some(msg) = self.inner.next().await {
+            match msg.map_err(ws_error)? {
+                Message::Binary(bytes) => {
+                    let line = LogLineMessage::decode(&bytes[..])
+                        .map_err(|e| RpcError::Malformed(e.to_string()))?;
+                    return Ok(LogStreamEvent::Line(line));
+                }
+                Message::Text(text) => return Ok(LogStreamEvent::Text(text.to_string())),
+                Message::Close(_) => return Ok(LogStreamEvent::Closed),
+                _ => {}
+            }
+        }
+        Ok(LogStreamEvent::Closed)
+    }
+}
+
+fn ws_error(e: tokio_tungstenite::tungstenite::Error) -> RpcError {
+    RpcError::WebSocket(e.to_string())
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct LogLineMessage {
+    #[prost(string, tag = "1")]
+    pub message: String,
+    #[prost(int32, tag = "2")]
+    pub log_level: i32,
+    #[prost(string, repeated, tag = "3")]
+    pub args: ::prost::alloc::vec::Vec<String>,
+    #[prost(int64, tag = "4")]
+    pub timestamp: i64,
+    #[prost(string, tag = "5")]
+    pub logger_name: String,
+    #[prost(message, optional, tag = "6")]
+    pub correlation: Option<LogCorrelationMessage>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct LogCorrelationMessage {
+    #[prost(string, tag = "1")]
+    pub shard: String,
+    #[prost(uint32, tag = "2")]
+    pub epoch: u32,
+    #[prost(int64, tag = "3")]
+    pub round: i64,
+    #[prost(string, tag = "4")]
+    pub sub_round: String,
+}
+
+impl LogLineMessage {
+    pub fn level_label(&self) -> &'static str {
+        match self.log_level {
+            0 => "TRACE",
+            1 => "DEBUG",
+            2 => "INFO ",
+            3 => "WARN ",
+            4 => "ERROR",
+            _ => "?    ",
+        }
+    }
+
+    /// Format similarly to the upstream Go `PlainFormatter`.
+    pub fn format_plain(&self) -> String {
+        let mut out = format!("{} [{}]", self.level_label(), format_log_ts(self.timestamp));
+        if !self.logger_name.is_empty() {
+            out.push_str(&format!(" [{}]", self.logger_name));
+        }
+        if let Some(c) = &self.correlation {
+            let mut bits = Vec::new();
+            if !c.shard.is_empty() {
+                bits.push(format!("shard={}", c.shard));
+            }
+            if c.epoch != 0 {
+                bits.push(format!("epoch={}", c.epoch));
+            }
+            if c.round != 0 {
+                bits.push(format!("round={}", c.round));
+            }
+            if !c.sub_round.is_empty() {
+                bits.push(format!("sub={}", c.sub_round));
+            }
+            if !bits.is_empty() {
+                out.push_str(&format!(" [{}]", bits.join(" ")));
+            }
+        }
+        out.push(' ');
+        out.push_str(&self.message);
+        for pair in self.args.chunks(2) {
+            if let [k, v] = pair {
+                out.push_str(&format!(" {k} = {v}"));
+            }
+        }
+        out
+    }
+}
+
+fn format_log_ts(raw: i64) -> String {
+    let dt = if raw.unsigned_abs() > 10_000_000_000 {
+        time::OffsetDateTime::from_unix_timestamp_nanos(raw as i128).ok()
+    } else {
+        time::OffsetDateTime::from_unix_timestamp(raw).ok()
+    };
+    let fmt = time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]:[second]");
+    dt.and_then(|d| d.format(&fmt).ok())
+        .unwrap_or_else(|| raw.to_string())
 }
 
 impl NodeClient {
@@ -297,5 +480,69 @@ mod tests {
     fn pubkey_prefix_returns_none_when_missing() {
         let metrics = NodeMetrics::default();
         assert_eq!(metrics.pubkey_prefix(), None);
+    }
+
+    #[test]
+    fn log_profile_serializes_with_go_field_names() {
+        let profile = LogProfile::new("*:DEBUG,api:INFO", true, true);
+        let json = serde_json::to_value(profile).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "LogLevelPatterns": "*:DEBUG,api:INFO",
+                "WithCorrelation": true,
+                "WithLoggerName": true,
+            })
+        );
+    }
+
+    #[test]
+    fn default_log_profile_identifier_matches_upstream() {
+        assert_eq!(DEFAULT_LOG_PROFILE_IDENTIFIER, "[default log profile]");
+    }
+
+    #[test]
+    fn formats_decoded_log_line() {
+        let m = LogLineMessage {
+            message: "added proof to pool".to_string(),
+            log_level: 2,
+            args: vec![
+                "header hash".to_string(),
+                "abc123".to_string(),
+                "epoch".to_string(),
+                "5739".to_string(),
+            ],
+            timestamp: 1_777_158_180_000_000_000,
+            logger_name: "proofscache".to_string(),
+            correlation: Some(LogCorrelationMessage {
+                shard: "0".to_string(),
+                epoch: 5739,
+                round: 13858728,
+                sub_round: String::new(),
+            }),
+        };
+        let s = m.format_plain();
+        assert!(s.starts_with("INFO "));
+        assert!(s.contains("[proofscache]"));
+        assert!(s.contains("shard=0"));
+        assert!(s.contains("added proof to pool"));
+        assert!(s.contains("header hash = abc123"));
+    }
+
+    #[test]
+    fn log_line_round_trips_through_prost() {
+        let m = LogLineMessage {
+            message: "hi".to_string(),
+            log_level: 3,
+            args: vec!["k".to_string(), "v".to_string()],
+            timestamp: 42,
+            logger_name: "lg".to_string(),
+            correlation: None,
+        };
+        let bytes = m.encode_to_vec();
+        let back = LogLineMessage::decode(&bytes[..]).unwrap();
+        assert_eq!(back.message, "hi");
+        assert_eq!(back.log_level, 3);
+        assert_eq!(back.args, vec!["k", "v"]);
     }
 }

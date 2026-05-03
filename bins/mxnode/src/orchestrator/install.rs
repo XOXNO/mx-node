@@ -77,6 +77,7 @@ pub struct InstallPlan<'a> {
     pub restart_sec: u32,
     pub custom_user: &'a str,
     pub extra_flags: &'a str,
+    pub operation_mode: Option<String>,
     pub name_template: &'a str,
     /// Source of the [Preferences] / [DbLookupExtensions] tweaks.
     pub config_edits: ConfigEdits,
@@ -173,23 +174,24 @@ pub async fn run_install(
         path: utils_dir.display().to_string(),
         source: e,
     })?;
-    fs::copy(&keygen_src, utils_dir.join("keygenerator")).map_err(|e| InstallError::Io {
-        path: utils_dir.display().to_string(),
+    copy_executable(&keygen_src, &utils_dir.join("keygenerator"))?;
+
+    // 2b. Acquire seednode utility. The Rust CLI replaces termui/logviewer
+    // with `dashboard`/`logs`, but seednode remains a distinct upstream
+    // tool operators may need for emergency bootstrapping.
+    let seednode_src = acquirer
+        .acquire(Artifact::Seednode, &plan.binary_tag)
+        .await
+        .map_err(|e| InstallError::Acquire(format!("seednode binary: {e}")))?;
+    let _seednode_installed = bin_store
+        .install_binary("seednode", plan.binary_tag.as_str(), &seednode_src)
+        .map_err(|e| InstallError::Acquire(format!("install_binary seednode: {e}")))?;
+    let seednode_dir = utils_dir.join("seednode");
+    fs::create_dir_all(seednode_dir.join("config")).map_err(|e| InstallError::Io {
+        path: seednode_dir.display().to_string(),
         source: e,
     })?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let kg = utils_dir.join("keygenerator");
-        let mut perms = fs::metadata(&kg)
-            .map_err(|e| InstallError::Io {
-                path: kg.display().to_string(),
-                source: e,
-            })?
-            .permissions();
-        perms.set_mode(0o755);
-        let _ = fs::set_permissions(&kg, perms);
-    }
+    copy_executable(&seednode_src, &seednode_dir.join("seednode"))?;
 
     // 3. Acquire proxy (only when this install ships one). The
     // rendered proxy unit lands in `unit_files` after the node loop
@@ -290,6 +292,7 @@ pub async fn run_install(
         &plan.config_tag,
     )
     .await?;
+    install_seednode_configs(&config_repo, &seednode_dir)?;
 
     // 5. Per-node provisioning.
     let mut node_states: Vec<NodeState> = Vec::with_capacity(plan.node_count as usize);
@@ -386,6 +389,7 @@ pub async fn run_install(
             limit_nofile: plan.limit_nofile,
             restart_sec: plan.restart_sec,
             extra_flags: plan.extra_flags,
+            operation_mode: plan.operation_mode.as_deref(),
         };
         let supervisor_text = match mxnode_core::Platform::current() {
             mxnode_core::Platform::Macos => render_canonical_node_plist(&spec),
@@ -439,6 +443,7 @@ pub async fn run_install(
                 .map(|t| vec![t.clone()])
                 .unwrap_or_default(),
             keygenerator: vec![plan.binary_tag.clone()],
+            seednode: vec![plan.binary_tag.clone()],
         },
     };
 
@@ -478,7 +483,7 @@ pub fn build_default_observers(api_port_base: u16, node_count: u16) -> Vec<Obser
     out
 }
 
-fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), InstallError> {
+pub(crate) fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), InstallError> {
     fs::create_dir_all(dst).map_err(|e| InstallError::Io {
         path: dst.display().to_string(),
         source: e,
@@ -515,6 +520,50 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), InstallError> {
             })?;
         }
         // Symlinks inside the upstream config repo are not used; ignore.
+    }
+    Ok(())
+}
+
+pub(crate) fn copy_executable(src: &Path, dst: &Path) -> Result<(), InstallError> {
+    fs::copy(src, dst).map_err(|e| InstallError::Io {
+        path: dst.display().to_string(),
+        source: e,
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(dst)
+            .map_err(|e| InstallError::Io {
+                path: dst.display().to_string(),
+                source: e,
+            })?
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(dst, perms).map_err(|e| InstallError::Io {
+            path: dst.display().to_string(),
+            source: e,
+        })?;
+    }
+    Ok(())
+}
+
+pub(crate) fn install_seednode_configs(
+    config_repo: &Path,
+    seednode_dir: &Path,
+) -> Result<(), InstallError> {
+    let config_dir = seednode_dir.join("config");
+    fs::create_dir_all(&config_dir).map_err(|e| InstallError::Io {
+        path: config_dir.display().to_string(),
+        source: e,
+    })?;
+    for name in ["config.toml", "p2p.toml"] {
+        let src = config_repo.join("seednode").join(name);
+        if src.exists() {
+            fs::copy(&src, config_dir.join(name)).map_err(|e| InstallError::Io {
+                path: config_dir.join(name).display().to_string(),
+                source: e,
+            })?;
+        }
     }
     Ok(())
 }
@@ -1020,6 +1069,28 @@ ThresholdInMicroSeconds = 10000
         assert!(
             out.contains("http://127.0.0.1:8080"),
             "observer not stamped: {out}"
+        );
+    }
+
+    #[test]
+    fn install_seednode_configs_copies_expected_files_only_when_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let seed_cfg = repo.join("seednode");
+        fs::create_dir_all(&seed_cfg).unwrap();
+        fs::write(seed_cfg.join("config.toml"), "port = 10000\n").unwrap();
+        fs::write(seed_cfg.join("p2p.toml"), "seed = true\n").unwrap();
+
+        let seednode_dir = tmp.path().join("elrond-utils/seednode");
+        install_seednode_configs(&repo, &seednode_dir).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(seednode_dir.join("config/config.toml")).unwrap(),
+            "port = 10000\n",
+        );
+        assert_eq!(
+            fs::read_to_string(seednode_dir.join("config/p2p.toml")).unwrap(),
+            "seed = true\n",
         );
     }
 }

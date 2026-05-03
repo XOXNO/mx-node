@@ -13,12 +13,13 @@
 //! `/etc/systemd/system/elrond-node-*.service`.
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
 use mxnode_core::NodeState;
 use mxnode_core::Platform;
-use mxnode_rpc::NodeClient;
+use mxnode_rpc::{LogProfile, LogStream, LogStreamEvent, NodeClient};
 use mxnode_state::StateStore;
 use mxnode_systemd::{scan_supervisor_dir, DiscoveredKind};
 use serde::Serialize;
@@ -33,6 +34,10 @@ use crate::orchestrator::runtime::{CliErrorExt, Runtime};
 const DEFAULT_SYSTEMD_DIR: &str = "/etc/systemd/system";
 
 pub fn run(args: LogsArgs, global: &GlobalArgs) -> Result<(), CliError> {
+    if args.ws {
+        return run_ws_logs(args, global);
+    }
+    reject_ws_only_args(&args, global)?;
     if args.save_archive {
         return run_save_archive(args, global);
     }
@@ -85,6 +90,23 @@ pub fn run(args: LogsArgs, global: &GlobalArgs) -> Result<(), CliError> {
             "journalctl exited non-zero",
             format!("status code {:?}", status.code()),
             "if you saw a permission error, add the user to the `systemd-journal` group, or rerun with sudo",
+        )
+        .json_if(global.json));
+    }
+    Ok(())
+}
+
+fn reject_ws_only_args(args: &LogsArgs, global: &GlobalArgs) -> Result<(), CliError> {
+    if args.log_level.is_some()
+        || args.log_save
+        || args.log_correlation
+        || args.log_logger_name
+        || args.use_wss
+    {
+        return Err(CliError::new(
+            "logviewer flags require --ws",
+            "`--log-level`, `--log-save`, `--log-correlation`, `--log-logger-name`, and `--use-wss` configure the /log WebSocket stream",
+            "rerun with `mxnode logs --ws --node N ...`, or drop the logviewer-specific flags",
         )
         .json_if(global.json));
     }
@@ -270,6 +292,172 @@ fn tail_node_log_files(
     Ok(())
 }
 
+const WS_RETRY_BACKOFF_SECS: u64 = 10;
+
+#[tokio::main(flavor = "current_thread")]
+async fn run_ws_logs(args: LogsArgs, global: &GlobalArgs) -> Result<(), CliError> {
+    if global.json {
+        return Err(CliError::new(
+            "logs --ws cannot emit JSON",
+            "the /log WebSocket is an unbounded log stream",
+            "rerun without --json, or use `mxnode logs --save-archive` for a finite artifact",
+        )
+        .json());
+    }
+    let runtime = Runtime::from_global(global)?;
+    let store = StateStore::new(&runtime.paths.state);
+    let state = store
+        .load()
+        .map_err(|e| {
+            CliError::new(
+                "failed to read state.toml",
+                e.to_string(),
+                "run `mxnode install` first",
+            )
+            .json_if(global.json)
+        })?
+        .ok_or_else(|| {
+            CliError::new(
+                "no state.toml on this host",
+                format!("expected {}", store.state_path().display()),
+                "run `mxnode install` first",
+            )
+            .json_if(global.json)
+        })?;
+    let node = select_ws_log_node(&state.nodes, &args, global)?;
+
+    let mut save_file = if args.log_save {
+        Some(open_ws_log_file(&runtime, node, global)?)
+    } else {
+        None
+    };
+    let profile = ws_log_profile(&args);
+    loop {
+        match LogStream::connect(&args.host, node.api_port, args.use_wss, profile.clone()).await {
+            Ok(mut stream) => {
+                eprintln!(
+                    "connected to {}://{}:{}/log for node-{}",
+                    if args.use_wss { "wss" } else { "ws" },
+                    args.host,
+                    node.api_port,
+                    node.index.get()
+                );
+                loop {
+                    match stream.next_event().await {
+                        Ok(LogStreamEvent::Line(line)) => {
+                            let text = line.format_plain();
+                            println!("{text}");
+                            if let Some(file) = save_file.as_mut() {
+                                writeln!(file, "{text}").map_err(|e| {
+                                    CliError::new(
+                                        "failed to write log file",
+                                        e.to_string(),
+                                        "ensure $CUSTOM_HOME/mx-chain-logs is writable",
+                                    )
+                                    .json_if(global.json)
+                                })?;
+                            }
+                        }
+                        Ok(LogStreamEvent::Text(text)) => {
+                            println!("{text}");
+                            if let Some(file) = save_file.as_mut() {
+                                writeln!(file, "{text}").map_err(|e| {
+                                    CliError::new(
+                                        "failed to write log file",
+                                        e.to_string(),
+                                        "ensure $CUSTOM_HOME/mx-chain-logs is writable",
+                                    )
+                                    .json_if(global.json)
+                                })?;
+                            }
+                        }
+                        Ok(LogStreamEvent::Closed) => break,
+                        Err(e) => {
+                            eprintln!(
+                                "log websocket error: {e}; retrying in {WS_RETRY_BACKOFF_SECS}s"
+                            );
+                            break;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("log websocket error: {e}; retrying in {WS_RETRY_BACKOFF_SECS}s");
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(WS_RETRY_BACKOFF_SECS)).await;
+    }
+}
+
+fn select_ws_log_node<'a>(
+    nodes: &'a [NodeState],
+    args: &LogsArgs,
+    global: &GlobalArgs,
+) -> Result<&'a NodeState, CliError> {
+    match args.node.as_slice() {
+        [idx] => nodes.iter().find(|n| n.index.get() == *idx).ok_or_else(|| {
+            CliError::new(
+                "no such node",
+                format!("state.toml has no node at index {idx}"),
+                "run `mxnode status` to list available indices",
+            )
+            .json_if(global.json)
+        }),
+        [] if nodes.len() == 1 => Ok(&nodes[0]),
+        [] => Err(CliError::new(
+            "logs --ws needs a single node",
+            format!("state.toml has {} nodes", nodes.len()),
+            "pass `--node N`; the upstream logviewer connects to one node API socket at a time",
+        )
+        .json_if(global.json)),
+        many => Err(CliError::new(
+            "logs --ws accepts one node",
+            format!("got node selection {many:?}"),
+            "run one `mxnode logs --ws --node N` session per node, or use `mxnode dashboard --ws-logs` for multi-node viewing",
+        )
+        .json_if(global.json)),
+    }
+}
+
+fn ws_log_profile(args: &LogsArgs) -> Option<LogProfile> {
+    let custom = args.log_level.is_some() || args.log_correlation || args.log_logger_name;
+    custom.then(|| {
+        LogProfile::new(
+            args.log_level.as_deref().unwrap_or("*:INFO"),
+            args.log_correlation,
+            args.log_logger_name,
+        )
+    })
+}
+
+fn open_ws_log_file(
+    runtime: &Runtime,
+    node: &NodeState,
+    global: &GlobalArgs,
+) -> Result<std::io::BufWriter<fs::File>, CliError> {
+    let logs_dir = runtime.paths.custom_home.join("mx-chain-logs");
+    fs::create_dir_all(&logs_dir).map_err(|e| {
+        CliError::new(
+            "failed to create logs directory",
+            format!("{}: {e}", logs_dir.display()),
+            "ensure $CUSTOM_HOME is writable by the current user",
+        )
+        .json_if(global.json)
+    })?;
+    let stamp = timestamp_for_filename(global)?;
+    let path = logs_dir.join(format!("logviewer-node-{}-{stamp}.log", node.index.get()));
+    let file = fs::File::create(&path).map_err(|e| {
+        CliError::new(
+            "failed to open log file",
+            format!("{}: {e}", path.display()),
+            "ensure $CUSTOM_HOME/mx-chain-logs is writable",
+        )
+        .json_if(global.json)
+    })?;
+    eprintln!("saving websocket logs to {}", path.display());
+    Ok(std::io::BufWriter::new(file))
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn run_save_archive(args: LogsArgs, global: &GlobalArgs) -> Result<(), CliError> {
     let runtime = Runtime::from_global(global)?;
@@ -379,17 +567,7 @@ async fn run_save_archive(args: LogsArgs, global: &GlobalArgs) -> Result<(), Cli
 
     // Pack with `tar -zcvf` to match the bash output. We run it inside
     // logs_dir so the archive contains relative paths.
-    let stamp = OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .map_err(|e| {
-            CliError::new(
-                "failed to format timestamp",
-                e.to_string(),
-                "report this as a bug",
-            )
-            .json_if(global.json)
-        })?
-        .replace(':', "");
+    let stamp = timestamp_for_filename(global)?;
     let archive_name = format!("mx-chain-node-logs-{stamp}.tar.gz");
     let archive_path = logs_dir.join(&archive_name);
     let mut tar_cmd = Command::new("tar");
@@ -446,6 +624,21 @@ async fn run_save_archive(args: LogsArgs, global: &GlobalArgs) -> Result<(), Cli
     Ok(())
 }
 
+fn timestamp_for_filename(global: &GlobalArgs) -> Result<String, CliError> {
+    let stamp = OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .map_err(|e| {
+            CliError::new(
+                "failed to format timestamp",
+                e.to_string(),
+                "report this as a bug",
+            )
+            .json_if(global.json)
+        })?
+        .replace(':', "");
+    Ok(stamp)
+}
+
 async fn probe_pubkey_prefix(node: &NodeState) -> Option<String> {
     let client = NodeClient::new("127.0.0.1", node.api_port).ok()?;
     let status = tokio::time::timeout(std::time::Duration::from_secs(2), client.status())
@@ -496,7 +689,55 @@ fn translate_since(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::translate_since;
+    use super::{
+        reject_ws_only_args, select_ws_log_node, translate_since, ws_log_profile, LogProfile,
+    };
+    use crate::cli::{GlobalArgs, LogsArgs};
+    use mxnode_core::{NodeIndex, NodeState, Role, Shard};
+    use std::path::PathBuf;
+
+    fn global(json: bool) -> GlobalArgs {
+        GlobalArgs {
+            config: None,
+            skip_safety_checks: false,
+            json,
+            no_color: false,
+            verbose: false,
+            quiet: false,
+        }
+    }
+
+    fn logs_args() -> LogsArgs {
+        LogsArgs {
+            node: Vec::new(),
+            since: None,
+            follow: false,
+            save_archive: false,
+            ws: false,
+            host: "127.0.0.1".to_string(),
+            log_level: None,
+            log_save: false,
+            log_correlation: false,
+            log_logger_name: false,
+            use_wss: false,
+        }
+    }
+
+    fn node(index: u16) -> NodeState {
+        NodeState {
+            index: NodeIndex::new(index),
+            role: Role::Observer,
+            shard: Shard::Auto,
+            display_name: format!("node-{index}"),
+            api_port: 8080 + index,
+            unit: format!("elrond-node-{index}.service"),
+            unit_override: String::new(),
+            workdir: PathBuf::from(format!("/tmp/node-{index}")),
+            last_known_pubkey: String::new(),
+            last_action: String::new(),
+            last_action_at: None,
+        }
+    }
 
     #[test]
     fn translate_since_handles_shorthand() {
@@ -513,5 +754,53 @@ mod tests {
         assert_eq!(translate_since("yesterday"), "yesterday");
         assert_eq!(translate_since("1 hour ago"), "1 hour ago");
         assert_eq!(translate_since(""), "");
+    }
+
+    #[test]
+    fn ws_log_profile_is_default_unless_runtime_profile_flags_are_set() {
+        let mut args = logs_args();
+        args.log_save = true;
+        assert!(
+            ws_log_profile(&args).is_none(),
+            "--log-save must not change the node's runtime log profile"
+        );
+
+        args.log_level = Some("*:DEBUG,api:INFO".to_string());
+        let profile: LogProfile = ws_log_profile(&args).expect("custom profile expected");
+        assert_eq!(profile.log_level_patterns, "*:DEBUG,api:INFO");
+        assert!(!profile.with_correlation);
+        assert!(!profile.with_logger_name);
+    }
+
+    #[test]
+    fn reject_ws_only_args_requires_ws() {
+        let mut args = logs_args();
+        args.log_level = Some("*:DEBUG".to_string());
+        assert!(reject_ws_only_args(&args, &global(false)).is_err());
+
+        args.log_level = None;
+        assert!(reject_ws_only_args(&args, &global(false)).is_ok());
+    }
+
+    #[test]
+    fn select_ws_log_node_requires_single_target() {
+        let nodes = vec![node(0), node(1)];
+        let mut args = logs_args();
+        assert!(select_ws_log_node(&nodes, &args, &global(false)).is_err());
+
+        args.node = vec![1];
+        let picked = select_ws_log_node(&nodes, &args, &global(false)).unwrap();
+        assert_eq!(picked.index.get(), 1);
+
+        args.node = vec![0, 1];
+        assert!(select_ws_log_node(&nodes, &args, &global(false)).is_err());
+    }
+
+    #[test]
+    fn select_ws_log_node_uses_only_node_by_default() {
+        let nodes = vec![node(7)];
+        let args = logs_args();
+        let picked = select_ws_log_node(&nodes, &args, &global(false)).unwrap();
+        assert_eq!(picked.index.get(), 7);
     }
 }

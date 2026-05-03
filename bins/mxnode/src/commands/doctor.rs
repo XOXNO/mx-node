@@ -13,6 +13,7 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use mxnode_core::{Environment, Role};
 use mxnode_state::{classify, inflight_path, Inflight, Liveness, StateStore};
 use mxnode_systemd::scan_supervisor_dir;
 use serde::Serialize;
@@ -22,23 +23,26 @@ use crate::errors::CliError;
 use crate::orchestrator::runtime::{CliErrorExt, Runtime};
 
 const DEFAULT_SYSTEMD_DIR: &str = "/etc/systemd/system";
+const MIN_CPU_PER_NODE: usize = 4;
+const MIN_MEMORY_GB_PER_NODE: u64 = 8;
+const MIN_DISK_GB_PER_NODE: u64 = 200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
-enum Severity {
+pub(crate) enum Severity {
     Ok,
     Warn,
     Error,
 }
 
 #[derive(Debug, Serialize)]
-struct Finding {
-    check: &'static str,
-    severity: Severity,
-    summary: String,
+pub(crate) struct Finding {
+    pub(crate) check: &'static str,
+    pub(crate) severity: Severity,
+    pub(crate) summary: String,
     /// Operator-actionable next step. Empty when severity is `Ok`.
     #[serde(skip_serializing_if = "String::is_empty")]
-    action: String,
+    pub(crate) action: String,
 }
 
 impl Finding {
@@ -95,6 +99,7 @@ pub fn run(args: DoctorArgs, global: &GlobalArgs) -> Result<(), CliError> {
 
     if let Some(runtime) = runtime.as_ref() {
         findings.extend(check_state(runtime));
+        findings.extend(check_system_requirements(runtime));
         findings.extend(check_directories(runtime));
         findings.extend(check_inflight(runtime));
         findings.extend(check_discovery(runtime));
@@ -167,6 +172,311 @@ pub fn run(args: DoctorArgs, global: &GlobalArgs) -> Result<(), CliError> {
         .silent());
     }
     Ok(())
+}
+
+pub(crate) fn check_system_requirements(runtime: &Runtime) -> Vec<Finding> {
+    let context = system_requirements_context(runtime);
+    check_system_requirements_with_context(runtime, context)
+}
+
+pub(crate) fn planned_system_requirements_context(
+    node_count: usize,
+    environment: Environment,
+    role: Role,
+) -> SystemRequirementsContext {
+    SystemRequirementsContext {
+        node_count: node_count.max(1),
+        environment: Some(environment),
+        has_validator_role: matches!(role, Role::Validator | Role::Multikey),
+    }
+}
+
+pub(crate) fn check_system_requirements_with_context(
+    runtime: &Runtime,
+    context: SystemRequirementsContext,
+) -> Vec<Finding> {
+    let nodes = context.node_count.max(1);
+    let required_cpu = nodes.saturating_mul(MIN_CPU_PER_NODE);
+    let required_memory_gb = (nodes as u64).saturating_mul(MIN_MEMORY_GB_PER_NODE);
+    let required_disk_gb = (nodes as u64).saturating_mul(MIN_DISK_GB_PER_NODE);
+
+    let mut findings = Vec::new();
+    let available_cpu = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(0);
+    if available_cpu >= required_cpu {
+        findings.push(Finding::ok(
+            "requirements.cpu",
+            format!(
+                "{available_cpu} logical CPU(s) available for {nodes} node(s); docs minimum is {required_cpu}",
+            ),
+        ));
+    } else {
+        findings.push(Finding::err(
+            "requirements.cpu",
+            format!(
+                "{available_cpu} logical CPU(s) available for {nodes} node(s); need at least {required_cpu}",
+            ),
+            "use dedicated CPU cores; shared VPS CPUs can reduce rating and lead to jailing",
+        ));
+    }
+
+    match total_memory_gb() {
+        Some(memory_gb) if memory_gb >= required_memory_gb => findings.push(Finding::ok(
+            "requirements.memory",
+            format!("{memory_gb} GB RAM detected; docs minimum is {required_memory_gb} GB"),
+        )),
+        Some(memory_gb) => findings.push(Finding::err(
+            "requirements.memory",
+            format!("{memory_gb} GB RAM detected; need at least {required_memory_gb} GB"),
+            "run fewer nodes on this host or move to a larger machine",
+        )),
+        None => findings.push(Finding::warn(
+            "requirements.memory",
+            "could not determine total RAM",
+            "verify manually: docs minimum is 8 GB RAM per node",
+        )),
+    }
+
+    let disk_probe = nearest_existing_path(&runtime.paths.custom_home);
+    match free_disk_gb(&disk_probe) {
+        Some(free_gb) if free_gb >= required_disk_gb => findings.push(Finding::ok(
+            "requirements.disk",
+            format!(
+                "{free_gb} GB free at {}; docs minimum is {required_disk_gb} GB",
+                disk_probe.display()
+            ),
+        )),
+        Some(free_gb) => findings.push(Finding::err(
+            "requirements.disk",
+            format!(
+                "{free_gb} GB free at {}; need at least {required_disk_gb} GB",
+                disk_probe.display()
+            ),
+            "free disk space or move paths.custom_home to a larger SSD-backed volume",
+        )),
+        None => findings.push(Finding::warn(
+            "requirements.disk",
+            format!("could not inspect free disk at {}", disk_probe.display()),
+            "verify manually: docs minimum is 200 GB SSD per node",
+        )),
+    }
+
+    findings.extend(check_cpu_features(&context));
+    findings.extend(check_os_floor());
+    findings
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SystemRequirementsContext {
+    pub(crate) node_count: usize,
+    pub(crate) environment: Option<Environment>,
+    pub(crate) has_validator_role: bool,
+}
+
+fn system_requirements_context(runtime: &Runtime) -> SystemRequirementsContext {
+    let store = StateStore::new(&runtime.paths.state);
+    if let Ok(Some(state)) = store.load() {
+        let node_count = state.nodes.len().max(1);
+        let has_validator_role = state
+            .nodes
+            .iter()
+            .any(|n| matches!(n.role, Role::Validator | Role::Multikey));
+        let environment = state.install.as_ref().map(|i| i.environment).or(runtime
+            .loaded
+            .config
+            .network
+            .environment);
+        return SystemRequirementsContext {
+            node_count,
+            environment,
+            has_validator_role,
+        };
+    }
+    SystemRequirementsContext {
+        node_count: 1,
+        environment: runtime.loaded.config.network.environment,
+        has_validator_role: false,
+    }
+}
+
+fn check_cpu_features(context: &SystemRequirementsContext) -> Vec<Finding> {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        let sse41 = std::is_x86_feature_detected!("sse4.1");
+        let sse42 = std::is_x86_feature_detected!("sse4.2");
+        if sse41 && sse42 {
+            return vec![Finding::ok(
+                "requirements.cpu-flags",
+                "SSE4.1 and SSE4.2 detected",
+            )];
+        }
+        return vec![Finding::err(
+            "requirements.cpu-flags",
+            format!("SSE4.1={sse41}, SSE4.2={sse42}"),
+            "use an Intel/AMD CPU with SSE4.1 and SSE4.2; the node cannot sync VM 1.5+ blocks without them",
+        )];
+    }
+
+    #[cfg(any(target_arch = "aarch64", target_arch = "arm"))]
+    {
+        if matches!(context.environment, Some(Environment::Mainnet)) && context.has_validator_role {
+            vec![Finding::warn(
+                "requirements.cpu-flags",
+                "ARM detected for a mainnet validator/multikey host",
+                "official docs do not recommend ARM for mainnet validators; prefer Intel/AMD for production signing",
+            )]
+        } else {
+            vec![Finding::ok(
+                "requirements.cpu-flags",
+                "ARM detected; docs support ARM with genesis-sync and production-validator caveats",
+            )]
+        }
+    }
+
+    #[cfg(not(any(
+        target_arch = "x86",
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "arm"
+    )))]
+    {
+        vec![Finding::warn(
+            "requirements.cpu-flags",
+            format!("unsupported CPU architecture {}", std::env::consts::ARCH),
+            "verify manually against the MultiversX system requirements",
+        )]
+    }
+}
+
+fn check_os_floor() -> Vec<Finding> {
+    use mxnode_core::Platform;
+    match Platform::current() {
+        Platform::Macos => vec![Finding::ok("requirements.os", "macOS supported")],
+        Platform::Unsupported => vec![Finding::err(
+            "requirements.os",
+            format!("{} is not supported", std::env::consts::OS),
+            "use Linux (Ubuntu 22.04/Debian 12 minimum) or macOS",
+        )],
+        Platform::Linux => match linux_os_release() {
+            Some(info) if linux_release_meets_floor(&info) => vec![Finding::ok(
+                "requirements.os",
+                format!(
+                    "{} {} meets Ubuntu 22.04/Debian 12 floor",
+                    info.id,
+                    info.version_id.as_deref().unwrap_or("unknown")
+                ),
+            )],
+            Some(info) if info.id == "ubuntu" || info.id == "debian" => vec![Finding::err(
+                "requirements.os",
+                format!(
+                    "{} {} is below the documented floor",
+                    info.id,
+                    info.version_id.as_deref().unwrap_or("unknown")
+                ),
+                "upgrade to Ubuntu 22.04+ or Debian 12+ before running production nodes",
+            )],
+            Some(info) => vec![Finding::warn(
+                "requirements.os",
+                format!(
+                    "{} {} is not one of the documented baseline distros",
+                    info.id,
+                    info.version_id.as_deref().unwrap_or("unknown")
+                ),
+                "verify manually that the host is equivalent to Ubuntu 22.04/Debian 12 or newer",
+            )],
+            None => vec![Finding::warn(
+                "requirements.os",
+                "could not read /etc/os-release",
+                "verify manually: Linux floor is Ubuntu 22.04 or Debian 12",
+            )],
+        },
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LinuxOsRelease {
+    id: String,
+    version_id: Option<String>,
+}
+
+fn linux_os_release() -> Option<LinuxOsRelease> {
+    let body = std::fs::read_to_string("/etc/os-release").ok()?;
+    parse_linux_os_release(&body)
+}
+
+fn parse_linux_os_release(body: &str) -> Option<LinuxOsRelease> {
+    let mut id = None;
+    let mut version_id = None;
+    for line in body.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let value = value.trim().trim_matches('"').to_ascii_lowercase();
+        match key {
+            "ID" => id = Some(value),
+            "VERSION_ID" => version_id = Some(value),
+            _ => {}
+        }
+    }
+    Some(LinuxOsRelease {
+        id: id?,
+        version_id,
+    })
+}
+
+fn linux_release_meets_floor(info: &LinuxOsRelease) -> bool {
+    let major = info
+        .version_id
+        .as_deref()
+        .and_then(|v| v.split('.').next())
+        .and_then(|v| v.parse::<u32>().ok());
+    match (info.id.as_str(), major) {
+        ("ubuntu", Some(v)) => v >= 22,
+        ("debian", Some(v)) => v >= 12,
+        _ => false,
+    }
+}
+
+fn total_memory_gb() -> Option<u64> {
+    // SAFETY: sysconf has no memory-safety preconditions. We only read
+    // positive return values and convert to bytes with saturating math.
+    let pages = unsafe { libc::sysconf(libc::_SC_PHYS_PAGES) };
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGE_SIZE) };
+    if pages <= 0 || page_size <= 0 {
+        return None;
+    }
+    Some((pages as u64).saturating_mul(page_size as u64) / 1024 / 1024 / 1024)
+}
+
+fn nearest_existing_path(path: &Path) -> std::path::PathBuf {
+    let mut candidate = path;
+    loop {
+        if candidate.exists() {
+            return candidate.to_path_buf();
+        }
+        match candidate.parent() {
+            Some(parent) => candidate = parent,
+            None => return Path::new("/").to_path_buf(),
+        }
+    }
+}
+
+fn free_disk_gb(path: &Path) -> Option<u64> {
+    use std::ffi::CString;
+    use std::mem::MaybeUninit;
+    let path = path.to_string_lossy();
+    let cpath = CString::new(path.as_bytes()).ok()?;
+    // SAFETY: statvfs is a libc syscall that takes a CStr path and a
+    // pointer to a writable struct. Path comes from a CString we own;
+    // the struct is MaybeUninit::zeroed() and only read on success.
+    let mut stat: MaybeUninit<libc::statvfs> = MaybeUninit::zeroed();
+    let rc = unsafe { libc::statvfs(cpath.as_ptr(), stat.as_mut_ptr()) };
+    if rc != 0 {
+        return None;
+    }
+    let stat = unsafe { stat.assume_init() };
+    Some((stat.f_bavail as u64).saturating_mul(stat.f_frsize) / 1024 / 1024 / 1024)
 }
 
 fn check_supervisor_tools() -> Vec<Finding> {
@@ -543,6 +853,8 @@ fn print_findings(findings: &[Finding]) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn journald_managed_block_round_trip_is_noop() {
         // The C1 helper is itself idempotent; this pins that the doctor's
@@ -551,5 +863,44 @@ mod tests {
         // the same string the fix writes.
         let configured = mxnode_systemd::journald::apply_managed_block("", "4000M", "800M");
         assert!(configured.contains("# >>> mxnode journald managed block >>>"));
+    }
+
+    #[test]
+    fn parses_linux_os_release_values_with_quotes() {
+        let parsed = parse_linux_os_release(
+            r#"
+NAME="Ubuntu"
+ID=ubuntu
+VERSION_ID="22.04"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            parsed,
+            LinuxOsRelease {
+                id: "ubuntu".to_string(),
+                version_id: Some("22.04".to_string()),
+            }
+        );
+        assert!(linux_release_meets_floor(&parsed));
+    }
+
+    #[test]
+    fn linux_release_floor_rejects_old_ubuntu_and_accepts_debian_12() {
+        assert!(!linux_release_meets_floor(&LinuxOsRelease {
+            id: "ubuntu".to_string(),
+            version_id: Some("20.04".to_string()),
+        }));
+        assert!(linux_release_meets_floor(&LinuxOsRelease {
+            id: "debian".to_string(),
+            version_id: Some("12".to_string()),
+        }));
+    }
+
+    #[test]
+    fn nearest_existing_path_walks_up_to_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("missing/deep/path");
+        assert_eq!(nearest_existing_path(&missing), tmp.path());
     }
 }

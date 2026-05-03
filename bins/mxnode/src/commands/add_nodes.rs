@@ -89,6 +89,12 @@ pub async fn run(args: AddNodesArgs, global: &GlobalArgs) -> Result<(), CliError
         RoleArg::Observer => Role::Observer,
         RoleArg::Multikey => Role::Multikey,
     };
+    super::install::validate_operation_mode_extra_flags(
+        args.operation_mode,
+        &runtime.loaded.config.node.extra_flags,
+        global,
+    )?;
+    let operation_mode = args.operation_mode.map(|m| m.as_str().to_string());
 
     // Compute the next-N indices.
     let highest_existing = state.nodes.iter().map(|n| n.index.get()).max().unwrap_or(0);
@@ -187,6 +193,7 @@ pub async fn run(args: AddNodesArgs, global: &GlobalArgs) -> Result<(), CliError
         restart_sec: runtime.loaded.config.node.restart_sec,
         custom_user: &runtime.loaded.config.paths.custom_user,
         extra_flags: &runtime.loaded.config.node.extra_flags,
+        operation_mode,
         name_template: args
             .name_template
             .as_deref()

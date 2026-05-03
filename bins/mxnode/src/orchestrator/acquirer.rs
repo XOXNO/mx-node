@@ -45,7 +45,7 @@ pub enum AcquireError {
     Other(String),
 }
 
-/// Which artifact we want — drives the GitHub repo path / Cargo target
+/// Which artifact we want — drives the GitHub repo path / Go target
 /// the implementation will use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Artifact {
@@ -55,6 +55,8 @@ pub enum Artifact {
     Proxy,
     /// `mx-chain-go` → `cmd/keygenerator/keygenerator`
     Keygenerator,
+    /// `mx-chain-go` → `cmd/seednode/seednode`
+    Seednode,
 }
 
 impl Artifact {
@@ -63,6 +65,7 @@ impl Artifact {
             Artifact::Node => "node",
             Artifact::Proxy => "proxy",
             Artifact::Keygenerator => "keygenerator",
+            Artifact::Seednode => "seednode",
         }
     }
 }
@@ -203,7 +206,7 @@ impl SourceBuildAcquirer {
 
     fn repo_url(&self, artifact: Artifact) -> String {
         let repo = match artifact {
-            Artifact::Node | Artifact::Keygenerator => "mx-chain-go",
+            Artifact::Node | Artifact::Keygenerator | Artifact::Seednode => "mx-chain-go",
             Artifact::Proxy => "mx-chain-proxy-go",
         };
         format!("https://github.com/{}/{repo}.git", self.github_org)
@@ -214,6 +217,7 @@ impl SourceBuildAcquirer {
             Artifact::Node => "cmd/node",
             Artifact::Proxy => "cmd/proxy",
             Artifact::Keygenerator => "cmd/keygenerator",
+            Artifact::Seednode => "cmd/seednode",
         }
     }
 }
@@ -297,7 +301,7 @@ impl ReleaseAcquirer {
 
     fn repo_name(&self, artifact: Artifact) -> &'static str {
         match artifact {
-            Artifact::Node | Artifact::Keygenerator => "mx-chain-go",
+            Artifact::Node | Artifact::Keygenerator | Artifact::Seednode => "mx-chain-go",
             Artifact::Proxy => "mx-chain-proxy-go",
         }
     }
@@ -537,5 +541,10 @@ mod tests {
     fn detect_arch_returns_a_nonempty_string() {
         let a = detect_arch();
         assert!(!a.is_empty());
+    }
+
+    #[test]
+    fn seednode_artifact_uses_expected_binary_name() {
+        assert_eq!(Artifact::Seednode.binary_name(), "seednode");
     }
 }

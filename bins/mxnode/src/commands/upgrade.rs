@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use mxnode_core::{
     state::{MigrationEntry, MigrationResult},
-    NodeIndex, NodeState, State, Tag,
+    NodeIndex, NodeState, Role, State, Tag,
 };
 use mxnode_rpc::NodeClient;
 use mxnode_state::{
@@ -33,6 +33,11 @@ use crate::cli::{GlobalArgs, Strategy, UpgradeArgs, UpgradeTarget};
 use crate::errors::CliError;
 use crate::events::{node_op_end, node_op_start, Outcome};
 use crate::orchestrator::acquirer::{Artifact, BinaryAcquirer, SourceBuildAcquirer};
+use crate::orchestrator::config_repo::acquire_config_repo;
+use crate::orchestrator::install::{
+    apply_node_tomledit, copy_dir_recursive, copy_executable, install_seednode_configs,
+    ConfigEdits, NodeTomlEdit,
+};
 use crate::orchestrator::runtime::{CliErrorExt, Runtime};
 
 #[tokio::main(flavor = "current_thread")]
@@ -168,7 +173,13 @@ pub async fn run(mut args: UpgradeArgs, global: &GlobalArgs) -> Result<(), CliEr
     // the migration entry plus per-node results regardless of partial
     // failure status.
 
-    persist_migration(&store, outcome, &inflight_loc, global)
+    persist_migration(
+        &store,
+        outcome,
+        &inflight_loc,
+        runtime.loaded.config.install.binary_keep as usize,
+        global,
+    )
 }
 
 struct Plan {
@@ -327,6 +338,7 @@ fn emit_dry_run(plan: &Plan, global: &GlobalArgs) -> Result<(), CliError> {
 
 struct UpgradeOutcome {
     binary_tag: Tag,
+    config_tag: Option<Tag>,
     started_at: time::OffsetDateTime,
     duration_secs: u64,
     nodes_done: Vec<NodeIndex>,
@@ -368,24 +380,7 @@ async fn execute_upgrade(
     let acquired_path = match acquirer.acquire(Artifact::Node, &plan.binary_tag).await {
         Ok(p) => p,
         Err(e) => {
-            return UpgradeOutcome {
-                binary_tag: plan.binary_tag.clone(),
-                started_at: started,
-                duration_secs: 0,
-                nodes_done: Vec::new(),
-                nodes_failed: plan.selected.clone(),
-                rolled_back: false,
-                per_node: plan
-                    .selected
-                    .iter()
-                    .map(|i| NodeResult {
-                        index: i.get(),
-                        unit: format!("elrond-node-{}.service", i.get()),
-                        ok: false,
-                        error: Some(format!("acquire: {e}")),
-                    })
-                    .collect(),
-            };
+            return failure_outcome(plan, started, format!("acquire: {e}"));
         }
     };
 
@@ -393,26 +388,26 @@ async fn execute_upgrade(
         match bin_store.install_binary("node", plan.binary_tag.as_str(), &acquired_path) {
             Ok(p) => p,
             Err(e) => {
-                return UpgradeOutcome {
-                    binary_tag: plan.binary_tag.clone(),
-                    started_at: started,
-                    duration_secs: 0,
-                    nodes_done: Vec::new(),
-                    nodes_failed: plan.selected.clone(),
-                    rolled_back: false,
-                    per_node: plan
-                        .selected
-                        .iter()
-                        .map(|i| NodeResult {
-                            index: i.get(),
-                            unit: format!("elrond-node-{}.service", i.get()),
-                            ok: false,
-                            error: Some(format!("install_binary: {e}")),
-                        })
-                        .collect(),
-                };
+                return failure_outcome(plan, started, format!("install_binary: {e}"));
             }
         };
+
+    let config_repo = match acquire_upgrade_config_repo(plan, state, runtime).await {
+        Ok(repo) => repo,
+        Err(e) => return failure_outcome(plan, started, e),
+    };
+
+    if let Err(e) = refresh_upgrade_utilities(
+        &acquirer,
+        &bin_store,
+        runtime,
+        &plan.binary_tag,
+        config_repo.as_deref(),
+    )
+    .await
+    {
+        return failure_outcome(plan, started, e);
+    }
 
     let mut nodes_done: Vec<NodeIndex> = Vec::new();
     let mut nodes_failed: Vec<NodeIndex> = Vec::new();
@@ -433,17 +428,17 @@ async fn execute_upgrade(
         inflight.current_step = InflightStep::Resolving;
         let _ = inflight.save(inflight_loc);
 
-        match upgrade_one_node(
-            &ctl,
+        let node_ctx = UpgradeNodeContext {
+            ctl: &ctl,
             state,
-            node,
-            &installed_path,
-            inflight,
+            installed_binary: &installed_path,
             inflight_loc,
-            plan.is_squad,
-        )
-        .await
-        {
+            is_squad: plan.is_squad,
+            config_repo: config_repo.as_deref(),
+            runtime,
+        };
+
+        match upgrade_one_node(node_ctx, node, inflight).await {
             Ok(()) => {
                 nodes_done.push(node.index);
                 per_node.push(NodeResult {
@@ -475,6 +470,7 @@ async fn execute_upgrade(
 
     UpgradeOutcome {
         binary_tag: plan.binary_tag.clone(),
+        config_tag: plan.config_tag.clone(),
         started_at: started,
         duration_secs,
         nodes_done,
@@ -484,14 +480,106 @@ async fn execute_upgrade(
     }
 }
 
-async fn upgrade_one_node(
-    ctl: &Arc<dyn Ctl>,
+fn failure_outcome(plan: &Plan, started: time::OffsetDateTime, error: String) -> UpgradeOutcome {
+    UpgradeOutcome {
+        binary_tag: plan.binary_tag.clone(),
+        config_tag: plan.config_tag.clone(),
+        started_at: started,
+        duration_secs: 0,
+        nodes_done: Vec::new(),
+        nodes_failed: plan.selected.clone(),
+        rolled_back: false,
+        per_node: plan
+            .selected
+            .iter()
+            .map(|i| NodeResult {
+                index: i.get(),
+                unit: format!("elrond-node-{}.service", i.get()),
+                ok: false,
+                error: Some(error.clone()),
+            })
+            .collect(),
+    }
+}
+
+async fn acquire_upgrade_config_repo(
+    plan: &Plan,
     state: &State,
-    node: &NodeState,
-    installed_binary: &Path,
-    inflight: &mut Inflight,
-    inflight_loc: &Path,
+    runtime: &Runtime,
+) -> Result<Option<std::path::PathBuf>, String> {
+    let Some(config_tag) = plan.config_tag.as_ref() else {
+        return Ok(None);
+    };
+    let environment = state
+        .install
+        .as_ref()
+        .map(|install| install.environment)
+        .ok_or_else(|| "config update: state.install.environment is missing".to_string())?;
+    acquire_config_repo(
+        &runtime.paths.binaries,
+        &runtime.loaded.config.network.github_org,
+        environment,
+        config_tag,
+    )
+    .await
+    .map(Some)
+    .map_err(|e| format!("config repo: {e}"))
+}
+
+async fn refresh_upgrade_utilities(
+    acquirer: &Arc<dyn BinaryAcquirer>,
+    bin_store: &BinStore,
+    runtime: &Runtime,
+    binary_tag: &Tag,
+    config_repo: Option<&Path>,
+) -> Result<(), String> {
+    let utils_dir = runtime.paths.elrond_utils_root();
+    std::fs::create_dir_all(&utils_dir)
+        .map_err(|e| format!("create {}: {e}", utils_dir.display()))?;
+
+    let keygen_src = acquirer
+        .acquire(Artifact::Keygenerator, binary_tag)
+        .await
+        .map_err(|e| format!("keygenerator binary: {e}"))?;
+    let keygen_installed = bin_store
+        .install_binary("keygenerator", binary_tag.as_str(), &keygen_src)
+        .map_err(|e| format!("install_binary keygenerator: {e}"))?;
+    copy_executable(&keygen_installed, &utils_dir.join("keygenerator"))
+        .map_err(|e| format!("copy keygenerator: {e}"))?;
+
+    let seednode_src = acquirer
+        .acquire(Artifact::Seednode, binary_tag)
+        .await
+        .map_err(|e| format!("seednode binary: {e}"))?;
+    let seednode_installed = bin_store
+        .install_binary("seednode", binary_tag.as_str(), &seednode_src)
+        .map_err(|e| format!("install_binary seednode: {e}"))?;
+    let seednode_dir = utils_dir.join("seednode");
+    std::fs::create_dir_all(seednode_dir.join("config"))
+        .map_err(|e| format!("create {}: {e}", seednode_dir.display()))?;
+    copy_executable(&seednode_installed, &seednode_dir.join("seednode"))
+        .map_err(|e| format!("copy seednode: {e}"))?;
+    if let Some(config_repo) = config_repo {
+        install_seednode_configs(config_repo, &seednode_dir)
+            .map_err(|e| format!("seednode configs: {e}"))?;
+    }
+    Ok(())
+}
+
+struct UpgradeNodeContext<'a> {
+    ctl: &'a Arc<dyn Ctl>,
+    state: &'a State,
+    installed_binary: &'a Path,
+    inflight_loc: &'a Path,
     is_squad: bool,
+    config_repo: Option<&'a Path>,
+    runtime: &'a Runtime,
+}
+
+async fn upgrade_one_node(
+    ctx: UpgradeNodeContext<'_>,
+    node: &NodeState,
+    inflight: &mut Inflight,
 ) -> Result<(), String> {
     use InflightStep::*;
     node_op_start("upgrade", node.index, &node.unit);
@@ -503,8 +591,8 @@ async fn upgrade_one_node(
     // same target).
 
     inflight.current_step = Stopped;
-    let _ = inflight.save(inflight_loc);
-    if let Err(e) = ctl.stop(&node.unit).await {
+    let _ = inflight.save(ctx.inflight_loc);
+    if let Err(e) = ctx.ctl.stop(&node.unit).await {
         let cause = e.to_string();
         node_op_end(
             "upgrade",
@@ -516,8 +604,21 @@ async fn upgrade_one_node(
     }
 
     inflight.current_step = ConfigApplied;
-    let _ = inflight.save(inflight_loc);
-    if is_squad {
+    let _ = inflight.save(ctx.inflight_loc);
+    if let Some(config_repo) = ctx.config_repo {
+        apply_upstream_config_update(node, config_repo, ctx.runtime, ctx.is_squad).map_err(
+            |e| {
+                let cause = format!("config update: {e}");
+                node_op_end(
+                    "upgrade",
+                    node.index,
+                    &node.unit,
+                    Outcome::Fail { cause: &cause },
+                );
+                cause
+            },
+        )?;
+    } else if ctx.is_squad {
         apply_squad_config_edits(node).map_err(|e| {
             let cause = format!("squad config edits: {e}");
             node_op_end(
@@ -531,9 +632,9 @@ async fn upgrade_one_node(
     }
 
     inflight.current_step = BinaryReplaced;
-    let _ = inflight.save(inflight_loc);
+    let _ = inflight.save(ctx.inflight_loc);
     let symlink = node.workdir.join("node");
-    if let Err(e) = swap_symlink(&symlink, installed_binary) {
+    if let Err(e) = swap_symlink(&symlink, ctx.installed_binary) {
         let cause = e.to_string();
         node_op_end(
             "upgrade",
@@ -545,8 +646,8 @@ async fn upgrade_one_node(
     }
 
     inflight.current_step = Started;
-    let _ = inflight.save(inflight_loc);
-    if let Err(e) = ctl.start(&node.unit).await {
+    let _ = inflight.save(ctx.inflight_loc);
+    if let Err(e) = ctx.ctl.start(&node.unit).await {
         let cause = e.to_string();
         node_op_end(
             "upgrade",
@@ -558,12 +659,12 @@ async fn upgrade_one_node(
     }
 
     inflight.current_step = NonceVerified;
-    let _ = inflight.save(inflight_loc);
+    let _ = inflight.save(ctx.inflight_loc);
     // Readiness probe: wait for the node's nonce to be within K of the
     // highest known network nonce among siblings, OR for the node to
     // report `erd_is_syncing == 0` with a non-zero nonce. Single-node
     // hosts skip the cross-sibling comparison.
-    if let Err(e) = wait_for_node_ready(state, node).await {
+    if let Err(e) = wait_for_node_ready(ctx.state, node).await {
         let cause = format!("readiness probe: {e}");
         node_op_end(
             "upgrade",
@@ -576,6 +677,50 @@ async fn upgrade_one_node(
 
     node_op_end("upgrade", node.index, &node.unit, Outcome::Ok);
     Ok(())
+}
+
+/// Copy a target upstream config repo into one node workdir while preserving
+/// the operator-owned preferences file, then reapply mxnode's typed edits and
+/// override maps. This mirrors the Bash upgrade flow (`cp config/*` followed
+/// by restoring `prefs.toml`) without losing Rust-only config semantics.
+fn apply_upstream_config_update(
+    node: &NodeState,
+    config_repo: &Path,
+    runtime: &Runtime,
+    is_squad: bool,
+) -> Result<(), String> {
+    let config_dir = node.workdir.join("config");
+    std::fs::create_dir_all(&config_dir)
+        .map_err(|e| format!("create {}: {e}", config_dir.display()))?;
+    let prefs_path = config_dir.join("prefs.toml");
+    let preserved_prefs = match std::fs::read_to_string(&prefs_path) {
+        Ok(body) => Some(body),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(format!("read {}: {e}", prefs_path.display())),
+    };
+
+    copy_dir_recursive(config_repo, &config_dir).map_err(|e| format!("copy config repo: {e}"))?;
+    if let Some(body) = preserved_prefs {
+        std::fs::write(&prefs_path, body)
+            .map_err(|e| format!("restore {}: {e}", prefs_path.display()))?;
+    }
+
+    let edits = if is_squad || matches!(node.role, Role::Observer | Role::Multikey) {
+        ConfigEdits::Observer
+    } else {
+        ConfigEdits::Validator
+    };
+    apply_node_tomledit(NodeTomlEdit {
+        workdir: &node.workdir,
+        display_name: &node.display_name,
+        shard: node.shard,
+        edits,
+        role: node.role,
+        redundancy_level: None,
+        prefs_overrides: &runtime.loaded.config.overrides.prefs,
+        config_overrides: &runtime.loaded.config.overrides.config,
+    })
+    .map_err(|e| e.to_string())
 }
 
 /// Apply observer-squad-specific TOML edits to the node's config dir.
@@ -689,32 +834,20 @@ async fn highest_sibling_nonce(state: &State, me: &NodeState) -> Option<u64> {
     highest
 }
 
+fn record_kept_tag(tags: &mut Vec<Tag>, tag: &Tag, keep: usize) {
+    tags.retain(|existing| existing != tag);
+    tags.insert(0, tag.clone());
+    tags.truncate(keep.max(1));
+}
+
 fn persist_migration(
     store: &StateStore,
     outcome: UpgradeOutcome,
     inflight_loc: &Path,
+    binary_keep: usize,
     global: &GlobalArgs,
 ) -> Result<(), CliError> {
-    let entry = MigrationEntry {
-        at: outcome.started_at,
-        from_config: None,
-        to_config: None,
-        from_binary: None,
-        to_binary: Some(outcome.binary_tag.clone()),
-        strategy: "rolling".to_string(),
-        trigger: "cli".to_string(),
-        result: if outcome.rolled_back {
-            MigrationResult::RolledBack
-        } else if outcome.nodes_failed.is_empty() {
-            MigrationResult::Ok
-        } else {
-            MigrationResult::Partial
-        },
-        duration_secs: outcome.duration_secs,
-        nodes_done: outcome.nodes_done.clone(),
-        nodes_failed: outcome.nodes_failed.clone(),
-    };
-
+    let keep = binary_keep.max(1);
     let guard = store.lock().map_err(|e| {
         CliError::new(
             "failed to lock state",
@@ -744,6 +877,33 @@ fn persist_migration(
             .json_if(global.json));
         }
     };
+    let from_config = state
+        .install
+        .as_ref()
+        .and_then(|i| i.versions.config_tag.clone());
+    let from_binary = state
+        .install
+        .as_ref()
+        .and_then(|i| i.versions.binary_tag.clone());
+    let entry = MigrationEntry {
+        at: outcome.started_at,
+        from_config,
+        to_config: outcome.config_tag.clone(),
+        from_binary,
+        to_binary: Some(outcome.binary_tag.clone()),
+        strategy: "rolling".to_string(),
+        trigger: "cli".to_string(),
+        result: if outcome.rolled_back {
+            MigrationResult::RolledBack
+        } else if outcome.nodes_failed.is_empty() {
+            MigrationResult::Ok
+        } else {
+            MigrationResult::Partial
+        },
+        duration_secs: outcome.duration_secs,
+        nodes_done: outcome.nodes_done.clone(),
+        nodes_failed: outcome.nodes_failed.clone(),
+    };
     state.migrations.entries.push(entry);
     if !outcome.nodes_done.is_empty() {
         // Bump the recorded binary tag so `mxnode status` reflects what's
@@ -751,6 +911,16 @@ fn persist_migration(
         // `from_binary` of a future entry will read it from disk.
         if let Some(install) = state.install.as_mut() {
             install.versions.binary_tag = Some(outcome.binary_tag.clone());
+            if let Some(config_tag) = &outcome.config_tag {
+                install.versions.config_tag = Some(config_tag.clone());
+            }
+            record_kept_tag(&mut install.binaries.node, &outcome.binary_tag, keep);
+            record_kept_tag(
+                &mut install.binaries.keygenerator,
+                &outcome.binary_tag,
+                keep,
+            );
+            record_kept_tag(&mut install.binaries.seednode, &outcome.binary_tag, keep);
         }
     }
     store.save(&state, &guard).map_err(|e| {
@@ -772,6 +942,7 @@ fn persist_migration(
         let mut payload = serde_json::json!({
             "ok": !any_failed,
             "binary_tag": outcome.binary_tag.to_string(),
+            "config_tag": outcome.config_tag.as_ref().map(|t| t.to_string()),
             "duration_secs": outcome.duration_secs,
             "nodes_done": outcome.nodes_done.iter().map(|i| i.get()).collect::<Vec<_>>(),
             "nodes_failed": outcome.nodes_failed.iter().map(|i| i.get()).collect::<Vec<_>>(),
@@ -1009,4 +1180,160 @@ async fn upgrade_proxy(
         println!("✓ upgrade proxy → {target_tag} ({})", proxy.unit);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::orchestrator::acquirer::MockAcquirer;
+    use mxnode_config::{ConfigSource, Loaded};
+    use mxnode_core::{Config, Environment, Paths, Shard};
+
+    fn runtime_for_tests(root: &Path) -> Runtime {
+        let mut config = Config::default();
+        config.network.environment = Some(Environment::Testnet);
+        Runtime {
+            loaded: Loaded {
+                config,
+                source: ConfigSource::None,
+                origins: Default::default(),
+            },
+            paths: Paths {
+                custom_home: root.join("home"),
+                custom_user: "validator".to_string(),
+                node_keys: root.join("keys"),
+                binaries: root.join("binaries"),
+                state: root.join("state"),
+                runtime: root.join("run"),
+            },
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn refresh_upgrade_utilities_installs_binstore_and_legacy_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runtime = runtime_for_tests(tmp.path());
+        let tag = Tag::parse("v1.7.99").unwrap();
+        let mock = MockAcquirer::new().with_workdir(tmp.path().join("acquire"));
+        mock.add(
+            Artifact::Keygenerator,
+            tag.as_str(),
+            b"#!/bin/sh\necho keygen\n",
+        );
+        mock.add(
+            Artifact::Seednode,
+            tag.as_str(),
+            b"#!/bin/sh\necho seednode\n",
+        );
+        let acquirer: Arc<dyn BinaryAcquirer> = Arc::new(mock);
+        let bin_store = BinStore::new(runtime.paths.binaries.clone());
+
+        let config_repo = tmp.path().join("config-repo");
+        std::fs::create_dir_all(config_repo.join("seednode")).unwrap();
+        std::fs::write(config_repo.join("seednode/config.toml"), "port = 10000\n").unwrap();
+        std::fs::write(config_repo.join("seednode/p2p.toml"), "seed = true\n").unwrap();
+
+        refresh_upgrade_utilities(&acquirer, &bin_store, &runtime, &tag, Some(&config_repo))
+            .await
+            .unwrap();
+
+        assert!(runtime
+            .paths
+            .binary_path("keygenerator", tag.as_str())
+            .exists());
+        assert!(runtime.paths.binary_path("seednode", tag.as_str()).exists());
+        assert!(runtime
+            .paths
+            .elrond_utils_root()
+            .join("keygenerator")
+            .exists());
+        assert!(runtime
+            .paths
+            .elrond_utils_root()
+            .join("seednode/seednode")
+            .exists());
+        assert_eq!(
+            std::fs::read_to_string(
+                runtime
+                    .paths
+                    .elrond_utils_root()
+                    .join("seednode/config/p2p.toml")
+            )
+            .unwrap(),
+            "seed = true\n"
+        );
+    }
+
+    #[test]
+    fn upstream_config_update_preserves_prefs_and_applies_node_edits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runtime = runtime_for_tests(tmp.path());
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(
+            repo.join("config.toml"),
+            r#"
+[DbLookupExtensions]
+Enabled = false
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            repo.join("prefs.toml"),
+            r#"
+[Preferences]
+NodeDisplayName = "upstream"
+"#,
+        )
+        .unwrap();
+
+        let workdir = tmp.path().join("node-0");
+        std::fs::create_dir_all(workdir.join("config")).unwrap();
+        std::fs::write(
+            workdir.join("config/prefs.toml"),
+            r#"
+[Preferences]
+NodeDisplayName = "old"
+RedundancyLevel = 2
+"#,
+        )
+        .unwrap();
+        let node = NodeState {
+            index: NodeIndex::new(0),
+            role: Role::Observer,
+            shard: Shard::Zero,
+            display_name: "observer-zero".to_string(),
+            api_port: 8080,
+            unit: "elrond-node-0.service".to_string(),
+            unit_override: String::new(),
+            workdir,
+            last_known_pubkey: String::new(),
+            last_action: String::new(),
+            last_action_at: None,
+        };
+
+        apply_upstream_config_update(&node, &repo, &runtime, false).unwrap();
+
+        let prefs = std::fs::read_to_string(node.workdir.join("config/prefs.toml")).unwrap();
+        assert!(prefs.contains("NodeDisplayName = \"observer-zero\""));
+        assert!(prefs.contains("RedundancyLevel = 2"));
+        assert!(prefs.contains("DestinationShardAsObserver = \"0\""));
+
+        let config = std::fs::read_to_string(node.workdir.join("config/config.toml")).unwrap();
+        assert!(config.contains("Enabled = true"));
+    }
+
+    #[test]
+    fn record_kept_tag_deduplicates_and_trims_newest_first() {
+        let mut tags = vec![
+            Tag::parse("v1.0.0").unwrap(),
+            Tag::parse("v0.9.0").unwrap(),
+            Tag::parse("v0.8.0").unwrap(),
+        ];
+        record_kept_tag(&mut tags, &Tag::parse("v0.9.0").unwrap(), 2);
+        assert_eq!(
+            tags,
+            vec![Tag::parse("v0.9.0").unwrap(), Tag::parse("v1.0.0").unwrap()]
+        );
+    }
 }

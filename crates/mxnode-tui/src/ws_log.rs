@@ -18,17 +18,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures_util::SinkExt;
-use prost::Message as _;
+use mxnode_rpc::{LogStream, LogStreamEvent};
 use tokio::sync::Mutex;
-use tokio_tungstenite::tungstenite::Message;
 
 use crate::metrics::{LogLevel, LogLine, NodeSnapshot, LOG_BUFFER_CAP};
-
-/// Default-profile identifier sent as a text message immediately after
-/// the WS handshake. Mirrors `common.DefaultLogProfileIdentifier` in
-/// the upstream Go code.
-const DEFAULT_LOG_PROFILE_IDENTIFIER: &str = "default";
 
 const RETRY_BACKOFF: Duration = Duration::from_secs(10);
 
@@ -73,7 +66,14 @@ async fn run(host: String, port: u16, snapshot: Arc<Mutex<NodeSnapshot>>) {
 }
 
 async fn connect_and_stream(url: &str, snapshot: &Arc<Mutex<NodeSnapshot>>) -> Result<(), String> {
-    let (mut stream, _) = tokio_tungstenite::connect_async(url)
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return Err(format!("invalid url {url}"));
+    };
+    let Some((host, port)) = rest.rsplit_once(':') else {
+        return Err(format!("invalid url {url}"));
+    };
+    let port = port.parse::<u16>().map_err(|e| e.to_string())?;
+    let mut stream = LogStream::connect(host, port, scheme == "wss", None)
         .await
         .map_err(|e| e.to_string())?;
     push(
@@ -83,34 +83,16 @@ async fn connect_and_stream(url: &str, snapshot: &Arc<Mutex<NodeSnapshot>>) -> R
     )
     .await;
 
-    // Send the profile identifier so the node knows which log
-    // patterns to send. We use the default profile (matches Go's
-    // sendDefaultProfileIdentifier).
-    stream
-        .send(Message::Text(DEFAULT_LOG_PROFILE_IDENTIFIER.to_string()))
-        .await
-        .map_err(|e| e.to_string())?;
-
-    use futures_util::StreamExt as _;
-    while let Some(msg) = stream.next().await {
-        let msg = msg.map_err(|e| e.to_string())?;
-        match msg {
-            Message::Binary(bytes) => {
-                if let Some(line) = decode_line(&bytes) {
-                    let level = level_from_int(line.log_level);
-                    push(snapshot, level, format_line(&line)).await;
-                }
+    loop {
+        match stream.next_event().await.map_err(|e| e.to_string())? {
+            LogStreamEvent::Line(line) => {
+                let level = level_from_int(line.log_level);
+                push(snapshot, level, line.format_plain()).await;
             }
-            Message::Text(s) => {
-                // Some chains send plain-text status messages; surface
-                // them as info lines rather than failing on the decode.
-                push(snapshot, LogLevel::Info, s.to_string()).await;
-            }
-            Message::Close(_) => return Ok(()),
-            _ => {}
+            LogStreamEvent::Text(s) => push(snapshot, LogLevel::Info, s).await,
+            LogStreamEvent::Closed => return Ok(()),
         }
     }
-    Ok(())
 }
 
 async fn push(snapshot: &Arc<Mutex<NodeSnapshot>>, level: LogLevel, raw: String) {
@@ -119,64 +101,6 @@ async fn push(snapshot: &Arc<Mutex<NodeSnapshot>>, level: LogLevel, raw: String)
         snap.log_lines.pop_front();
     }
     snap.log_lines.push_back(LogLine { level, raw });
-}
-
-fn decode_line(bytes: &[u8]) -> Option<LogLineMessage> {
-    LogLineMessage::decode(bytes).ok()
-}
-
-/// Format a decoded record similarly to the Go `PlainFormatter`:
-/// `LEVEL [timestamp] (loggerName) (correlation) message  arg = value …`.
-fn format_line(line: &LogLineMessage) -> String {
-    let level = level_label(line.log_level);
-    let ts = format_ts(line.timestamp);
-    let mut out = format!("{level} [{ts}]");
-    if !line.logger_name.is_empty() {
-        out.push_str(&format!(" [{}]", line.logger_name));
-    }
-    if let Some(c) = &line.correlation {
-        let mut bits = Vec::new();
-        if !c.shard.is_empty() {
-            bits.push(format!("shard={}", c.shard));
-        }
-        if c.epoch != 0 {
-            bits.push(format!("epoch={}", c.epoch));
-        }
-        if c.round != 0 {
-            bits.push(format!("round={}", c.round));
-        }
-        if !c.sub_round.is_empty() {
-            bits.push(format!("sub={}", c.sub_round));
-        }
-        if !bits.is_empty() {
-            out.push_str(&format!(" [{}]", bits.join(" ")));
-        }
-    }
-    out.push(' ');
-    out.push_str(&line.message);
-    if !line.args.is_empty() {
-        out.push(' ');
-        let chunks = line.args.chunks(2);
-        for pair in chunks {
-            if let [k, v] = pair {
-                out.push_str(&format!("{k} = {v} "));
-            }
-        }
-    }
-    out
-}
-
-fn level_label(level: i32) -> &'static str {
-    // Matches mx-chain-logger-go's LogLevel enum:
-    //   0 LogTrace, 1 LogDebug, 2 LogInfo, 3 LogWarning, 4 LogError, 5 LogNone
-    match level {
-        0 => "TRACE",
-        1 => "DEBUG",
-        2 => "INFO ",
-        3 => "WARN ",
-        4 => "ERROR",
-        _ => "?    ",
-    }
 }
 
 fn level_from_int(level: i32) -> LogLevel {
@@ -190,46 +114,10 @@ fn level_from_int(level: i32) -> LogLevel {
     }
 }
 
-fn format_ts(ts_secs: i64) -> String {
-    let dt = time::OffsetDateTime::from_unix_timestamp(ts_secs).ok();
-    let fmt = time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]:[second]");
-    dt.and_then(|d| d.format(&fmt).ok())
-        .unwrap_or_else(|| ts_secs.to_string())
-}
-
-// ── Protobuf schema (mx-chain-logger-go/proto/logLineMessage.proto) ──
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct LogLineMessage {
-    #[prost(string, tag = "1")]
-    pub message: String,
-    #[prost(int32, tag = "2")]
-    pub log_level: i32,
-    #[prost(string, repeated, tag = "3")]
-    pub args: ::prost::alloc::vec::Vec<String>,
-    #[prost(int64, tag = "4")]
-    pub timestamp: i64,
-    #[prost(string, tag = "5")]
-    pub logger_name: String,
-    #[prost(message, optional, tag = "6")]
-    pub correlation: Option<LogCorrelationMessage>,
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct LogCorrelationMessage {
-    #[prost(string, tag = "1")]
-    pub shard: String,
-    #[prost(uint32, tag = "2")]
-    pub epoch: u32,
-    #[prost(int64, tag = "3")]
-    pub round: i64,
-    #[prost(string, tag = "4")]
-    pub sub_round: String,
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use mxnode_rpc::{LogCorrelationMessage, LogLineMessage};
+    use prost::Message as _;
 
     #[test]
     fn formats_decoded_log_line() {
@@ -251,7 +139,7 @@ mod tests {
                 sub_round: String::new(),
             }),
         };
-        let s = format_line(&m);
+        let s = m.format_plain();
         assert!(s.starts_with("INFO "));
         assert!(s.contains("[proofscache]"));
         assert!(s.contains("shard=0"));

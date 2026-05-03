@@ -96,6 +96,9 @@ pub enum Command {
     /// Run keygenerator (utility wrapper around mx-chain-go's keygen).
     Keygen(KeygenArgs),
 
+    /// Run the installed seednode utility.
+    Seednode(SeednodeArgs),
+
     /// Key management.
     Keys {
         #[command(subcommand)]
@@ -125,6 +128,9 @@ pub enum Command {
 
     /// Full host diagnostic; suggests fixes.
     Doctor(DoctorArgs),
+
+    /// Generate shell completion scripts.
+    Completions(CompletionsArgs),
 
     /// Replace this `mxnode` binary with the latest (or a pinned) release
     /// from `XOXNO/mx-node`. Verifies the download against `SHA256SUMS`
@@ -206,6 +212,11 @@ pub struct InstallArgs {
     /// the squad layout. Implicit and unnecessary for `--role multikey`.
     #[arg(long)]
     pub squad: bool,
+    /// Pass a first-class mx-chain-go operation mode into every node's
+    /// supervisor command line. Useful for archive, DB lookup,
+    /// historical-balance, or snapshotless observer nodes.
+    #[arg(long, value_enum)]
+    pub operation_mode: Option<OperationModeArg>,
     /// Also install the MultiversX proxy alongside the nodes. Off by
     /// default — many operators host the proxy on a separate box and
     /// point their squads at it over the network.
@@ -259,6 +270,10 @@ pub struct AddNodesArgs {
     /// used `mx-chain-mainnet-validator-{index}`).
     #[arg(long)]
     pub name_template: Option<String>,
+    /// Pass a first-class mx-chain-go operation mode into the new
+    /// nodes' supervisor command lines.
+    #[arg(long, value_enum)]
+    pub operation_mode: Option<OperationModeArg>,
     /// Skip per-node `NodeDisplayName` prompts — every new node gets its
     /// template-expanded default. Set automatically when stdin is not a
     /// TTY (CI, piped input, `< /dev/null`); pass explicitly to suppress
@@ -272,6 +287,25 @@ pub enum RoleArg {
     Validator,
     Observer,
     Multikey,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum OperationModeArg {
+    FullArchive,
+    DbLookupExtension,
+    HistoricalBalances,
+    SnapshotlessObserver,
+}
+
+impl OperationModeArg {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FullArchive => "full-archive",
+            Self::DbLookupExtension => "db-lookup-extension",
+            Self::HistoricalBalances => "historical-balances",
+            Self::SnapshotlessObserver => "snapshotless-observer",
+        }
+    }
 }
 
 /// Mutually-exclusive ways to pick which nodes a lifecycle command targets.
@@ -346,6 +380,29 @@ pub struct LogsArgs {
     /// Cannot be combined with `--follow`.
     #[arg(long)]
     pub save_archive: bool,
+    /// Stream over the node's `/log` WebSocket, matching the upstream
+    /// logviewer protocol. Use `--log-level` to request a custom runtime
+    /// logger profile.
+    #[arg(long, conflicts_with = "save_archive")]
+    pub ws: bool,
+    /// Host used for `--ws` connections. Ports still come from state.toml.
+    #[arg(long, default_value = "127.0.0.1")]
+    pub host: String,
+    /// Runtime logger pattern sent to the node's `/log` WebSocket.
+    #[arg(long, value_name = "PATTERN")]
+    pub log_level: Option<String>,
+    /// Save WebSocket log output to `$CUSTOM_HOME/mx-chain-logs/`.
+    #[arg(long)]
+    pub log_save: bool,
+    /// Request logger correlation fields over `/log`.
+    #[arg(long)]
+    pub log_correlation: bool,
+    /// Request logger names over `/log`.
+    #[arg(long)]
+    pub log_logger_name: bool,
+    /// Use `wss://` instead of `ws://` for `/log`.
+    #[arg(long)]
+    pub use_wss: bool,
 }
 
 #[derive(Debug, Args)]
@@ -436,6 +493,51 @@ pub enum DbCommand {
         #[arg(long)]
         yes: bool,
     },
+    /// Run a stopped node in mx-chain-go import-db mode against a source
+    /// directory that contains a `db/` subdirectory.
+    Import {
+        #[arg(long)]
+        node: u16,
+        #[arg(long, value_name = "DIR")]
+        source: PathBuf,
+        /// Skip block-header signature checks. Only use when the import
+        /// DB comes from a trusted source.
+        #[arg(long)]
+        no_sig_check: bool,
+        /// Empty the target node's db/ before importing. Requires
+        /// `--yes`; without this flag the target db/ must already be
+        /// empty or absent.
+        #[arg(long)]
+        replace: bool,
+        /// Required with `--replace` to confirm destructive intent.
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Validate and print a full shard import-db plan. The source root may
+    /// either contain `db/` directly or immediate child directories that do.
+    ImportPlan {
+        #[arg(long, value_name = "DIR")]
+        source_root: PathBuf,
+        /// Include `--no-sig-check` in generated import commands.
+        #[arg(long)]
+        no_sig_check: bool,
+        /// Include `--replace --yes` in generated import commands after
+        /// confirming target db/ replacement.
+        #[arg(long)]
+        replace: bool,
+        /// Require every mapped node to have config/external.toml configured
+        /// with `[ElasticSearchConnector] Enabled = true` and a non-empty URL.
+        #[arg(long)]
+        require_elasticsearch: bool,
+        /// Required with `--replace`.
+        #[arg(long)]
+        yes: bool,
+        /// Also write the generated plan JSON to this path.
+        #[arg(long, value_name = "PATH")]
+        output: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -444,6 +546,17 @@ pub struct KeygenArgs {
     pub r#for: Option<u16>,
     #[arg(long)]
     pub output: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct SeednodeArgs {
+    /// Print the command that would run instead of starting seednode.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Arguments passed to the upstream seednode binary. Use `--` before
+    /// seednode flags, e.g. `mxnode seednode -- --help`.
+    #[arg(last = true, allow_hyphen_values = true)]
+    pub args: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -466,6 +579,12 @@ pub enum DoctorFix {
 pub enum KeysCommand {
     /// Verify that node-{INDEX}.zip is present for every node.
     Check,
+}
+
+#[derive(Debug, Args)]
+pub struct CompletionsArgs {
+    #[arg(value_enum)]
+    pub shell: clap_complete::Shell,
 }
 
 #[derive(Debug, Args)]
@@ -614,6 +733,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn install_operation_mode_parses_kebab_values() {
+        let cli = Cli::try_parse_from([
+            "mxnode",
+            "install",
+            "--role",
+            "observer",
+            "--operation-mode",
+            "snapshotless-observer",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Install(args) => assert!(matches!(
+                args.operation_mode,
+                Some(OperationModeArg::SnapshotlessObserver)
+            )),
+            other => panic!("expected Install, got {other:?}"),
+        }
+    }
+
     /// Regression: lifecycle selectors are mutually exclusive.
     /// Combining `--all` with `--validators-only` or `--shard` must fail
     /// parsing. Without the `ArgGroup`, the previous CLI silently accepted
@@ -655,6 +794,39 @@ mod tests {
     fn logs_follow_and_save_archive_conflict() {
         let result = Cli::try_parse_from(["mxnode", "logs", "--follow", "--save-archive"]);
         assert!(result.is_err(), "follow + save-archive must conflict");
+    }
+
+    #[test]
+    fn logs_ws_logviewer_flags_parse() {
+        let cli = Cli::try_parse_from([
+            "mxnode",
+            "logs",
+            "--ws",
+            "--node",
+            "0",
+            "--host",
+            "localhost",
+            "--log-level",
+            "*:DEBUG,api:INFO",
+            "--log-save",
+            "--log-correlation",
+            "--log-logger-name",
+            "--use-wss",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Logs(args) => {
+                assert!(args.ws);
+                assert_eq!(args.node, vec![0]);
+                assert_eq!(args.host, "localhost");
+                assert_eq!(args.log_level.as_deref(), Some("*:DEBUG,api:INFO"));
+                assert!(args.log_save);
+                assert!(args.log_correlation);
+                assert!(args.log_logger_name);
+                assert!(args.use_wss);
+            }
+            other => panic!("expected Logs, got {other:?}"),
+        }
     }
 
     #[test]
@@ -731,6 +903,115 @@ mod tests {
                 assert_eq!(node, vec![0]);
             }
             other => panic!("expected Db Remove, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn db_import_parses_source_and_safety_flags() {
+        let cli = Cli::try_parse_from([
+            "mxnode",
+            "db",
+            "import",
+            "--node",
+            "2",
+            "--source",
+            "/tmp/import-db",
+            "--no-sig-check",
+            "--replace",
+            "--yes",
+            "--dry-run",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Db {
+                command:
+                    DbCommand::Import {
+                        node,
+                        source,
+                        no_sig_check,
+                        replace,
+                        yes,
+                        dry_run,
+                    },
+            } => {
+                assert_eq!(node, 2);
+                assert_eq!(source, PathBuf::from("/tmp/import-db"));
+                assert!(no_sig_check);
+                assert!(replace);
+                assert!(yes);
+                assert!(dry_run);
+            }
+            other => panic!("expected Db Import, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn db_import_plan_parses_source_root_and_output() {
+        let cli = Cli::try_parse_from([
+            "mxnode",
+            "db",
+            "import-plan",
+            "--source-root",
+            "/srv/imports",
+            "--no-sig-check",
+            "--replace",
+            "--require-elasticsearch",
+            "--yes",
+            "--output",
+            "/tmp/plan.json",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Db {
+                command:
+                    DbCommand::ImportPlan {
+                        source_root,
+                        no_sig_check,
+                        replace,
+                        require_elasticsearch,
+                        yes,
+                        output,
+                    },
+            } => {
+                assert_eq!(source_root, PathBuf::from("/srv/imports"));
+                assert!(no_sig_check);
+                assert!(replace);
+                assert!(require_elasticsearch);
+                assert!(yes);
+                assert_eq!(output, Some(PathBuf::from("/tmp/plan.json")));
+            }
+            other => panic!("expected Db ImportPlan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn completions_parses_shell_value() {
+        let cli = Cli::try_parse_from(["mxnode", "completions", "bash"]).unwrap();
+        match cli.command {
+            Command::Completions(args) => assert_eq!(args.shell, clap_complete::Shell::Bash),
+            other => panic!("expected Completions, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn seednode_passes_trailing_args() {
+        let cli = Cli::try_parse_from(["mxnode", "seednode", "--", "--help"]).unwrap();
+        match cli.command {
+            Command::Seednode(args) => assert_eq!(args.args, vec!["--help"]),
+            other => panic!("expected Seednode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn seednode_dry_run_keeps_trailing_args() {
+        let cli = Cli::try_parse_from(["mxnode", "seednode", "--dry-run", "--", "--port", "12000"])
+            .unwrap();
+        match cli.command {
+            Command::Seednode(args) => {
+                assert!(args.dry_run);
+                assert_eq!(args.args, vec!["--port", "12000"]);
+            }
+            other => panic!("expected Seednode, got {other:?}"),
         }
     }
 }

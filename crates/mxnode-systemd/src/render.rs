@@ -14,6 +14,7 @@ pub struct NodeUnitSpec<'a> {
     pub limit_nofile: u32,
     pub restart_sec: u32,
     pub extra_flags: &'a str,
+    pub operation_mode: Option<&'a str>,
 }
 
 /// Inputs for `elrond-proxy.service`.
@@ -47,11 +48,16 @@ pub fn render_canonical_node_unit(spec: &NodeUnitSpec<'_>) -> String {
         log_level = spec.log_level,
         port = spec.api_port,
     );
+    let mut exec = exec_base;
+    if let Some(mode) = spec.operation_mode {
+        exec.push_str(" --operation-mode ");
+        exec.push_str(mode);
+    }
     if spec.extra_flags.trim().is_empty() {
-        out.push_str(&exec_base);
+        out.push_str(&exec);
         out.push('\n');
     } else {
-        out.push_str(&exec_base);
+        out.push_str(&exec);
         out.push(' ');
         out.push_str(spec.extra_flags);
         out.push('\n');
@@ -135,6 +141,7 @@ WantedBy=multi-user.target
             limit_nofile: 4096,
             restart_sec: 3,
             extra_flags: "",
+            operation_mode: None,
         };
         let rendered = render_canonical_node_unit(&spec);
         assert_eq!(rendered, golden_canonical_node_0());
@@ -160,6 +167,7 @@ WantedBy=multi-user.target
             limit_nofile: 8192,
             restart_sec: 5,
             extra_flags: "-profile-mode -display-name custom",
+            operation_mode: None,
         };
         let rendered = render_canonical_node_unit(&spec);
         assert!(
@@ -170,5 +178,23 @@ WantedBy=multi-user.target
         assert!(rendered.contains("RestartSec=5"));
         assert!(rendered.contains("LimitNOFILE=8192"));
         assert!(rendered.contains("User=validator"));
+    }
+
+    #[test]
+    fn canonical_node_unit_renders_operation_mode_before_extra_flags() {
+        let workdir = PathBuf::from("/srv/mxnode/elrond-nodes/node-1");
+        let spec = NodeUnitSpec {
+            index: NodeIndex::new(1),
+            custom_user: "validator",
+            workdir: &workdir,
+            api_port: 8081,
+            log_level: "*:INFO",
+            limit_nofile: 8192,
+            restart_sec: 5,
+            extra_flags: "-log-save",
+            operation_mode: Some("full-archive"),
+        };
+        let rendered = render_canonical_node_unit(&spec);
+        assert!(rendered.contains("localhost:8081 --operation-mode full-archive -log-save\n"));
     }
 }

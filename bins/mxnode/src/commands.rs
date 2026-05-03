@@ -3,6 +3,7 @@
 mod add_nodes;
 mod benchmark;
 mod cleanup;
+mod completions;
 mod config;
 mod dashboard;
 mod db;
@@ -17,6 +18,7 @@ pub(crate) mod migrate;
 mod prompts;
 mod reapply_config;
 mod rename;
+mod seednode;
 mod self_update;
 mod status;
 mod upgrade;
@@ -33,12 +35,14 @@ pub fn dispatch(cli: Cli) -> Result<(), CliError> {
         Command::Status(args) => status::run(args, &cli.global),
         Command::Logs(args) => logs::run(args, &cli.global),
         Command::Doctor(args) => doctor::run(args, &cli.global),
+        Command::Completions(args) => completions::run(args, &cli.global),
         Command::Start(args) => lifecycle::run_start(args, &cli.global),
         Command::Stop(args) => lifecycle::run_stop(args, &cli.global),
         Command::Restart(args) => lifecycle::run_restart(args, &cli.global),
         Command::Db { command } => db::run(command, &cli.global),
         Command::Keys { command } => keys::run_keys(command, &cli.global),
         Command::Keygen(args) => keys::run_keygen(args, &cli.global),
+        Command::Seednode(args) => seednode::run(args, &cli.global),
         Command::Benchmark => benchmark::run(&cli.global),
         Command::Cleanup(args) => cleanup::run(args, &cli.global),
         Command::MigrateBash(args) => migrate::run(args, &cli.global),

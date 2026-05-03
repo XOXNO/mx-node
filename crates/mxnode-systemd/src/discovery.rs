@@ -606,6 +606,7 @@ mod tests {
             limit_nofile: 4096,
             restart_sec: 3,
             extra_flags: "",
+            operation_mode: None,
         }
     }
 
@@ -751,6 +752,7 @@ ExecStart=/bin/true
             limit_nofile: 4096,
             restart_sec: 3,
             extra_flags: "",
+            operation_mode: None,
         });
         std::fs::write(dir.join("elrond-node-1.service"), &node_text).unwrap();
         std::fs::write(dir.join("elrond-node-0.service"), &node_text).unwrap();
@@ -818,6 +820,7 @@ ExecStart=/bin/true
             limit_nofile: 4096,
             restart_sec: 3,
             extra_flags: "",
+            operation_mode: None,
         });
         std::fs::write(dir.join("com.multiversx.elrond-node-0.plist"), &plist).unwrap();
         std::fs::write(dir.join("com.multiversx.elrond-proxy.plist"), &plist).unwrap();
@@ -848,6 +851,7 @@ ExecStart=/bin/true
             limit_nofile: 4096,
             restart_sec: 3,
             extra_flags: "",
+            operation_mode: None,
         });
         let view = parse_plist_text(&plist);
         assert_eq!(view.working_directory, Some(workdir));
@@ -886,6 +890,7 @@ ExecStart=/bin/true
             limit_nofile: 4096,
             restart_sec: 3,
             extra_flags: "",
+            operation_mode: None,
         });
         std::fs::write(dir.join("elrond-node-0.service"), &text).unwrap();
         let found = scan_systemd_dir(dir).unwrap();

@@ -14,7 +14,7 @@ use mxnode_core::{Environment, InstallKind, NodeIndex, Role, Shard, Tag};
 use mxnode_state::StateStore;
 use serde::Serialize;
 
-use crate::cli::{GlobalArgs, InstallArgs, RoleArg};
+use crate::cli::{GlobalArgs, InstallArgs, OperationModeArg, RoleArg};
 use crate::errors::CliError;
 use crate::events::global_op;
 use crate::orchestrator::acquirer_factory::build_acquirer;
@@ -115,6 +115,12 @@ pub async fn run(mut args: InstallArgs, global: &GlobalArgs) -> Result<(), CliEr
     require_multikey_role("--keys-file", args.keys_file.is_some(), role, global)?;
     let multikey_keys_file = resolve_multikey_keys(&args, role, &runtime, global)?;
     let backup_level = args.backup.unwrap_or(0);
+    validate_operation_mode_extra_flags(
+        args.operation_mode,
+        &runtime.loaded.config.node.extra_flags,
+        global,
+    )?;
+    let operation_mode = args.operation_mode.map(|m| m.as_str().to_string());
 
     let is_squad = args.squad || matches!(role, Role::Multikey);
     let count = if is_squad {
@@ -122,6 +128,9 @@ pub async fn run(mut args: InstallArgs, global: &GlobalArgs) -> Result<(), CliEr
     } else {
         args.count.unwrap_or(1).max(1)
     };
+    if !args.dry_run {
+        enforce_install_requirements(&runtime, environment, role, count, global)?;
+    }
 
     // Resolve the three GitHub-API tag lookups concurrently. Each is
     // an independent HTTP round-trip on a fresh box; serial they cost
@@ -228,6 +237,7 @@ pub async fn run(mut args: InstallArgs, global: &GlobalArgs) -> Result<(), CliEr
         restart_sec: runtime.loaded.config.node.restart_sec,
         custom_user: &runtime.loaded.config.paths.custom_user,
         extra_flags: &runtime.loaded.config.node.extra_flags,
+        operation_mode,
         name_template: args
             .name_template
             .as_deref()
@@ -270,6 +280,63 @@ pub async fn run(mut args: InstallArgs, global: &GlobalArgs) -> Result<(), CliEr
         persist_state(&runtime.paths, &outcome.state).map_err(|e| install_err(e, global))?;
 
     emit_success(global, &outcome, &state_path, &runtime.paths.node_keys)
+}
+
+fn enforce_install_requirements(
+    runtime: &Runtime,
+    environment: Environment,
+    role: Role,
+    count: u16,
+    global: &GlobalArgs,
+) -> Result<(), CliError> {
+    if global.skip_safety_checks {
+        return Ok(());
+    }
+    let context =
+        super::doctor::planned_system_requirements_context(count as usize, environment, role);
+    let findings = super::doctor::check_system_requirements_with_context(runtime, context);
+    let errors: Vec<_> = findings
+        .iter()
+        .filter(|f| f.severity == super::doctor::Severity::Error)
+        .collect();
+    if errors.is_empty() {
+        return Ok(());
+    }
+    let details = errors
+        .iter()
+        .map(|f| format!("{}: {}", f.check, f.summary))
+        .collect::<Vec<_>>()
+        .join("; ");
+    Err(CliError::new(
+        "host does not meet MultiversX system requirements",
+        details,
+        "run `mxnode doctor` for full details, fix the requirements, or pass --skip-safety-checks to override deliberately",
+    )
+    .json_if(global.json))
+}
+
+pub(super) fn validate_operation_mode_extra_flags(
+    operation_mode: Option<OperationModeArg>,
+    extra_flags: &str,
+    global: &GlobalArgs,
+) -> Result<(), CliError> {
+    if operation_mode.is_some() && extra_flags_contain_operation_mode(extra_flags) {
+        return Err(CliError::new(
+            "--operation-mode conflicts with node.extra_flags",
+            "node.extra_flags already contains an operation-mode flag",
+            "remove the raw operation-mode flag from config, or drop --operation-mode",
+        )
+        .json_if(global.json));
+    }
+    Ok(())
+}
+
+fn extra_flags_contain_operation_mode(extra_flags: &str) -> bool {
+    extra_flags.split_whitespace().any(|flag| {
+        matches!(flag, "-operation-mode" | "--operation-mode")
+            || flag.starts_with("-operation-mode=")
+            || flag.starts_with("--operation-mode=")
+    })
 }
 
 /// Refuse if a multikey-only flag was given for a non-multikey role.
@@ -675,8 +742,11 @@ fn squad_shard_for_index(index: u16) -> Shard {
 
 #[cfg(test)]
 mod tests {
-    use super::squad_shard_for_index;
-    use mxnode_core::Shard;
+    use super::{enforce_install_requirements, squad_shard_for_index};
+    use crate::cli::GlobalArgs;
+    use crate::orchestrator::runtime::Runtime;
+    use mxnode_config::{ConfigSource, Loaded};
+    use mxnode_core::{Config, Environment, Paths, Role, Shard};
 
     #[test]
     fn squad_mapping_pins_canonical_shards() {
@@ -691,6 +761,65 @@ mod tests {
         // Squads are 4-node, but defensive: out-of-range index
         // should not panic.
         assert_eq!(squad_shard_for_index(4), Shard::Auto);
+    }
+
+    #[test]
+    fn install_requirements_gate_can_be_bypassed_explicitly() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runtime = runtime_for_tests(tmp.path());
+        let global = global_for_tests(true);
+        enforce_install_requirements(
+            &runtime,
+            Environment::Mainnet,
+            Role::Validator,
+            u16::MAX,
+            &global,
+        )
+        .expect("--skip-safety-checks must bypass the install gate");
+    }
+
+    #[test]
+    fn install_requirements_gate_reports_planned_node_count() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runtime = runtime_for_tests(tmp.path());
+        let global = global_for_tests(false);
+        let err = enforce_install_requirements(
+            &runtime,
+            Environment::Mainnet,
+            Role::Validator,
+            u16::MAX,
+            &global,
+        )
+        .expect_err("unrealistic node count must fail requirements");
+        assert!(err.cause.contains(&format!("{} node(s)", u16::MAX)));
+        assert!(err.cause.contains("requirements.cpu"));
+    }
+
+    fn global_for_tests(skip_safety_checks: bool) -> GlobalArgs {
+        GlobalArgs {
+            config: None,
+            skip_safety_checks,
+            json: false,
+            no_color: false,
+            verbose: false,
+            quiet: false,
+        }
+    }
+
+    fn runtime_for_tests(custom_home: &std::path::Path) -> Runtime {
+        let mut config = Config::default();
+        config.network.environment = Some(Environment::Mainnet);
+        Runtime {
+            loaded: Loaded {
+                config,
+                source: ConfigSource::None,
+                origins: Default::default(),
+            },
+            paths: Paths {
+                custom_home: custom_home.to_path_buf(),
+                ..Paths::default()
+            },
+        }
     }
 }
 

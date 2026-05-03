@@ -23,6 +23,7 @@ mxnode-build     = { workspace = true }
 mxnode-tui       = { workspace = true }
 
 clap        = { workspace = true }
+clap_complete = { workspace = true }
 anyhow      = { workspace = true }
 serde       = { workspace = true }
 serde_json  = { workspace = true }

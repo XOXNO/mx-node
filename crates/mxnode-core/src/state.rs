@@ -117,6 +117,8 @@ pub struct InstallBinaries {
     pub proxy: Vec<Tag>,
     #[serde(default)]
     pub keygenerator: Vec<Tag>,
+    #[serde(default)]
+    pub seednode: Vec<Tag>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

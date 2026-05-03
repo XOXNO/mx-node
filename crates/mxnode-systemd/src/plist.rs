@@ -87,6 +87,10 @@ fn build_exec_args(spec: &NodeUnitSpec<'_>) -> Vec<String> {
         "-rest-api-interface".to_string(),
         format!("localhost:{}", spec.api_port),
     ];
+    if let Some(mode) = spec.operation_mode {
+        args.push("--operation-mode".to_string());
+        args.push(mode.to_string());
+    }
     // Operator-supplied extra flags are tokenised on whitespace. The
     // bash interpolates them as a single string into ExecStart=, which
     // is the same behaviour systemd applies; on macOS we have to be
@@ -171,6 +175,7 @@ mod tests {
             limit_nofile: 4096,
             restart_sec: 3,
             extra_flags: "",
+            operation_mode: None,
         }
     }
 
@@ -239,6 +244,7 @@ mod tests {
             limit_nofile: 8192,
             restart_sec: 5,
             extra_flags: "-profile-mode -display-name custom",
+            operation_mode: None,
         };
         let plist = render_canonical_node_plist(&spec);
         assert!(plist.contains("<string>-profile-mode</string>"));
@@ -247,6 +253,26 @@ mod tests {
         assert!(plist.contains("<integer>5</integer>")); // ThrottleInterval
         assert!(plist.contains("<integer>8192</integer>")); // SoftResourceLimits
         assert!(plist.contains("<string>localhost:8083</string>"));
+    }
+
+    #[test]
+    fn operation_mode_becomes_program_arguments_entries() {
+        let workdir = PathBuf::from("/Users/op/.mxnode/elrond-nodes/node-1");
+        let spec = NodeUnitSpec {
+            index: NodeIndex::new(1),
+            custom_user: "ignored",
+            workdir: &workdir,
+            api_port: 8081,
+            log_level: "*:INFO",
+            limit_nofile: 8192,
+            restart_sec: 5,
+            extra_flags: "-log-save",
+            operation_mode: Some("db-lookup-extension"),
+        };
+        let plist = render_canonical_node_plist(&spec);
+        assert!(plist.contains("<string>--operation-mode</string>"));
+        assert!(plist.contains("<string>db-lookup-extension</string>"));
+        assert!(plist.contains("<string>-log-save</string>"));
     }
 
     #[test]
