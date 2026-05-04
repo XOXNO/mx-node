@@ -23,3 +23,9 @@ futures-util = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+
+[features]
+# Off by default: the shipping binary doesn't carry the bench harness.
+# Enable from the consuming crate (e.g. `bins/mxnode`) only when
+# building for `cargo xtask bench-size`.
+bench-harness = []

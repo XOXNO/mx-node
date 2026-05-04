@@ -26,6 +26,9 @@ mod theme;
 mod view;
 mod ws_log;
 
+#[cfg(feature = "bench-harness")]
+pub mod bench;
+
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
