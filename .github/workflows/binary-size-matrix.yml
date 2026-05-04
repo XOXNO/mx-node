@@ -1,0 +1,77 @@
+name: binary-size-matrix
+
+# Manual-only. Runs the bench harness on the self-hosted Linux runner
+# to capture canonical musl numbers. Never on tag-push — release.yml is
+# the only auto-triggered pipeline.
+#
+# All workflow_dispatch inputs are read into the env block of the
+# step that consumes them (never interpolated directly into a `run:`
+# shell line) per
+# https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'baseline-only | shortlist | full'
+        required: true
+        default: 'baseline-only'
+
+env:
+  CARGO_TERM_COLOR: always
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+permissions:
+  contents: read
+
+jobs:
+  matrix:
+    if: github.repository_owner == 'XOXNO'
+    runs-on: [self-hosted, Linux, X64]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl,aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Materialise pinned toolchain + targets
+        run: rustup show active-toolchain || rustup show
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: bench-size-${{ inputs.mode }}
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      - name: Install cargo-zigbuild
+        run: cargo install --locked cargo-zigbuild
+
+      - name: Install measurement tools
+        # `apt-get update` is required because Hetzner runners don't
+        # refresh the index automatically; the apt cache will otherwise
+        # 404 against current package versions.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y hyperfine upx-ucl zstd xz-utils
+
+      - name: Run bench-size
+        env:
+          MODE: ${{ inputs.mode }}
+        # Allowlist the input shape so a hostile dispatch can't sneak a
+        # shell metacharacter through MODE.
+        run: |
+          case "$MODE" in
+            baseline-only) cargo xtask bench-size --baseline-only ;;
+            shortlist)     cargo xtask bench-size --shortlist ;;
+            full)          cargo xtask bench-size ;;
+            *) echo "rejecting mode: $MODE" >&2; exit 1 ;;
+          esac
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bench-size-results
+          path: dist/bench-size/
+          retention-days: 90
+          if-no-files-found: error
