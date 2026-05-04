@@ -5,4 +5,5 @@
 
 pub mod csv;
 pub mod matrix;
+pub mod toml_patch;
 pub mod winners;
