@@ -45,11 +45,13 @@ pub fn measure_sizes(binary: &Path, work_dir: &Path) -> Result<SizeMeasurement> 
     if tool_check(Tool::Zstd) {
         // bsdtar (macOS) refuses `-I "zstd -19"` because it parses "-19" as a
         // tar option. Two-step: tar a plain .tar, then zstd it externally.
+        // `-f` forces overwrite so re-running the harness in the same
+        // work_dir doesn't fail on a pre-existing output.
         out.archive_zst_bytes = Some(make_archive_then_compress(
             work_dir,
             "archive.tar.zst",
             "zstd",
-            &["-19", "-q", "-o"],
+            &["-19", "-q", "-f", "-o"],
         )?);
     } else {
         out.tools_missing.push(Tool::Zstd.binary().to_string());
