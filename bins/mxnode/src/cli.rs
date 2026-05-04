@@ -140,6 +140,25 @@ pub enum Command {
 
     /// Print version (also available via --version).
     Version,
+
+    /// Hidden: render N frames of the dashboard against an in-memory
+    /// TestBackend and print `elapsed_ms=<n>` to stderr. Used by
+    /// `cargo xtask bench-size`.
+    #[cfg(feature = "bench-harness")]
+    #[command(hide = true)]
+    BenchRender(BenchRenderArgs),
+}
+
+#[cfg(feature = "bench-harness")]
+#[derive(Debug, Args)]
+pub struct BenchRenderArgs {
+    /// How many frames to render.
+    #[arg(long, default_value_t = 1000)]
+    pub frames: u32,
+
+    /// Path to the snapshot fixture JSON.
+    #[arg(long, value_name = "PATH")]
+    pub fixture: PathBuf,
 }
 
 #[derive(Debug, Subcommand)]

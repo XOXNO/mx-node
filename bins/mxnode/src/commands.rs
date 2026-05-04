@@ -2,6 +2,8 @@
 
 mod add_nodes;
 mod benchmark;
+#[cfg(feature = "bench-harness")]
+mod bench_render;
 mod cleanup;
 mod completions;
 mod config;
@@ -54,5 +56,7 @@ pub fn dispatch(cli: Cli) -> Result<(), CliError> {
         Command::Upgrade(args) => upgrade::run(args, &cli.global),
         Command::Install(args) => install::run(args, &cli.global),
         Command::AddNodes(args) => add_nodes::run(args, &cli.global),
+        #[cfg(feature = "bench-harness")]
+        Command::BenchRender(args) => bench_render::run(args),
     }
 }
