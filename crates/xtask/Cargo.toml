@@ -1,0 +1,30 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Internal automation: binary-size benchmark matrix harness."
+publish = false
+
+[lib]
+name = "xtask"
+path = "src/lib.rs"
+
+[[bin]]
+name = "xtask"
+path = "src/main.rs"
+
+[dependencies]
+anyhow      = { workspace = true }
+clap        = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+toml_edit   = { workspace = true }
+sha2        = "0.10"
+hex         = "0.4"
+which       = "6"
+
+[dev-dependencies]
+tempfile    = { workspace = true }

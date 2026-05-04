@@ -1,5 +1,6 @@
 /target
 /Cargo.lock.bak
+/dist/bench-size/
 **/*.rs.bk
 .DS_Store
 *.swp
