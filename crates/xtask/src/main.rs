@@ -206,8 +206,16 @@ fn run_bench_size(opts: cli::BenchSizeOpts) -> Result<()> {
 
     writer.flush()?;
     // Restore the pristine Cargo.toml so a subsequent normal `cargo build`
-    // sees no leftover edits.
+    // sees no leftover edits — even on the empty-rows path below.
     std::fs::write(&manifest_path, &original_manifest).context("restore Cargo.toml")?;
+
+    if measured_rows.is_empty() {
+        eprintln!(
+            "\nno combos produced a measurement — see CSV at {} and any logs above",
+            csv_path.display()
+        );
+        return Err(anyhow::anyhow!("bench-size produced zero rows"));
+    }
 
     let baseline_for_report = baseline_per_target
         .values()

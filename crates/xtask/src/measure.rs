@@ -39,11 +39,17 @@ pub fn measure_sizes(binary: &Path, work_dir: &Path) -> Result<SizeMeasurement> 
         ..SizeMeasurement::default()
     };
 
+    // gzip is always present via libSystem / glibc tar.
+    out.archive_gz_bytes = Some(make_archive(work_dir, "archive.tar.gz", &["-czf"])?);
+
     if tool_check(Tool::Zstd) {
-        out.archive_zst_bytes = Some(make_archive(
+        // bsdtar (macOS) refuses `-I "zstd -19"` because it parses "-19" as a
+        // tar option. Two-step: tar a plain .tar, then zstd it externally.
+        out.archive_zst_bytes = Some(make_archive_then_compress(
             work_dir,
             "archive.tar.zst",
-            &["-I", "zstd -19", "-cf"],
+            "zstd",
+            &["-19", "-q", "-o"],
         )?);
     } else {
         out.tools_missing.push(Tool::Zstd.binary().to_string());
@@ -54,9 +60,6 @@ pub fn measure_sizes(binary: &Path, work_dir: &Path) -> Result<SizeMeasurement> 
     } else {
         out.tools_missing.push(Tool::Xz.binary().to_string());
     }
-
-    // gzip is always present via libSystem / glibc tar.
-    out.archive_gz_bytes = Some(make_archive(work_dir, "archive.tar.gz", &["-czf"])?);
 
     Ok(out)
 }
@@ -76,6 +79,50 @@ fn make_archive(work_dir: &Path, name: &str, tar_flags: &[&str]) -> Result<u64> 
         return Err(anyhow!("tar failed for {name}: {status}"));
     }
     Ok(fs::metadata(&archive_path)?.len())
+}
+
+/// Two-step archive: produce a plain .tar, then compress it via an
+/// external `compressor` binary. Used for zstd because bsdtar's `-I`
+/// flag mishandles passing arguments to the compressor on macOS.
+fn make_archive_then_compress(
+    work_dir: &Path,
+    final_name: &str,
+    compressor: &str,
+    extra_args: &[&str],
+) -> Result<u64> {
+    let tar_path = work_dir.join(format!("{final_name}.intermediate.tar"));
+    let mut tar_cmd = Command::new("tar");
+    tar_cmd
+        .current_dir(work_dir)
+        .args(["-cf"])
+        .arg(&tar_path)
+        .arg("mxnode")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let status = tar_cmd
+        .status()
+        .with_context(|| format!("run tar for {final_name}"))?;
+    if !status.success() {
+        return Err(anyhow!("tar (intermediate) failed for {final_name}: {status}"));
+    }
+
+    let final_path = work_dir.join(final_name);
+    let mut zip_cmd = Command::new(compressor);
+    zip_cmd.current_dir(work_dir);
+    zip_cmd.args(extra_args);
+    zip_cmd.arg(&final_path);
+    zip_cmd.arg(&tar_path);
+    zip_cmd.stdout(Stdio::null()).stderr(Stdio::null());
+    let status = zip_cmd
+        .status()
+        .with_context(|| format!("run {compressor} for {final_name}"))?;
+    if !status.success() {
+        return Err(anyhow!("{compressor} failed for {final_name}: {status}"));
+    }
+
+    let bytes = fs::metadata(&final_path)?.len();
+    let _ = fs::remove_file(&tar_path);
+    Ok(bytes)
 }
 
 /// Cold-start via hyperfine. Returns `None` if hyperfine is missing or
