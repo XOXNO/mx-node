@@ -7,6 +7,7 @@ pub mod build;
 pub mod csv;
 pub mod matrix;
 pub mod measure;
+pub mod report;
 pub mod tools;
 pub mod toml_patch;
 pub mod winners;
