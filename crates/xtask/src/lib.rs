@@ -3,7 +3,10 @@
 //! (CSV writer, winner-selection rules, toml patcher) without going
 //! through the binary entry point.
 
+pub mod build;
 pub mod csv;
 pub mod matrix;
+pub mod measure;
+pub mod tools;
 pub mod toml_patch;
 pub mod winners;
