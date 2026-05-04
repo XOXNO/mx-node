@@ -4,3 +4,4 @@
 //! through the binary entry point.
 
 pub mod csv;
+pub mod matrix;
