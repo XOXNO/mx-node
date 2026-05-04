@@ -73,7 +73,16 @@ prost     = "0.13"
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 
 [profile.release]
-lto = "thin"
+# `lto = "fat"` over the previously-used "thin": Phase 1 of the
+# binary-size matrix harness measured a consistent 6–9% binary-size
+# reduction across all four release targets (musl x86/arm + macOS
+# x86/arm) with TUI render perf within ±5% of baseline and cold-start
+# unchanged or slightly faster. See
+# docs/superpowers/specs/2026-05-04-binary-size-results-baseline.md and
+# the Stage C rollout note alongside it. opt-level stays at the default
+# 3; opt-level=s/z were measured to regress TUI render by 20–200%, which
+# breaks the perf bar on the dashboard hot path.
+lto = "fat"
 codegen-units = 1
 strip = "symbols"
 panic = "abort"
