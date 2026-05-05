@@ -9,52 +9,16 @@ pub mod paths;
 pub mod platform;
 pub mod types;
 
-// Legacy modules kept as thin re-exports during the call-site sweep.
-// They are scheduled for removal once every consumer has been flipped
-// to read `MxnodeFile` directly.
-pub mod config {
-    pub use crate::file::{
-        BrandingSection, InstallSection, MetricsSection, NetworkSection, NodeOverride,
-        NodeSection, OverridesSection, PathsSection, ProxySection,
-    };
-}
-pub mod state {
-    pub use crate::file::{
-        HostInstall as InstallSection, InstallBinaries, InstallVersions, MigrationEntry,
-        MigrationLog, MigrationResult, NodeState, ProxyState,
-    };
-}
-
 pub use error::Error;
 pub use file::{
-    BrandingSection, HostInstall, HostState, InstallBinaries, InstallVersions, MetricsSection,
-    MigrationEntry, MigrationLog, MigrationResult, MxnodeFile, NetworkSection, NodeOverride,
-    NodeSection, NodeState, OverridesSection, PathsSection, ProxySection, ProxyState,
-    SecretToken, SecretsSection, UpdateCacheSection,
+    BrandingSection, HostInstall, HostState, InstallBinaries, InstallSection, InstallVersions,
+    MetricsSection, MigrationEntry, MigrationLog, MigrationResult, MxnodeFile, NetworkSection,
+    NodeOverride, NodeSection, NodeState, OverridesSection, PathsSection, ProxySection,
+    ProxyState, SecretToken, SecretsSection, UpdateCacheSection,
 };
-
-/// At the top level, `InstallSection` is the **state-side** observed
-/// install record (renamed `HostInstall` in [`file`]). This matches
-/// the historical export from `mxnode_core::state::InstallSection`,
-/// keeping `state.install.as_ref().map(|i| i.kind)` patterns working.
-/// The operator-side install policy lives at [`config::InstallSection`].
-pub use file::HostInstall as InstallSection;
 pub use paths::Paths;
 pub use platform::Platform;
 pub use types::{ArtifactSource, Environment, InstallKind, NodeIndex, Role, Shard, Tag};
-
-/// Transitional alias. `Config` was the operator-side type backed by
-/// `config.toml`; the unified `MxnodeFile` now owns those sections.
-/// Existing call sites read `runtime.loaded.config.X` — that resolves
-/// through this alias until the sweep replaces them with `.file.X`.
-pub type Config = MxnodeFile;
-
-/// Transitional alias. `State` was the cache-derived type backed by
-/// `state.toml`; its content lives under `MxnodeFile.host`. Call sites
-/// that did `state.install.kind` keep compiling because `HostState`
-/// exposes the same field shape (with `installed` renamed from
-/// `install`).
-pub type State = HostState;
 
 /// Schema version this binary writes for `mxnode.toml`. Bumped strictly
 /// monotonically; a binary refuses to act if it encounters a version

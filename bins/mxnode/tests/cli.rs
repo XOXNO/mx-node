@@ -59,31 +59,47 @@ impl Sandbox {
         c
     }
 
-    /// Operator-edited config now lives in the unified `mxnode.toml`.
+    /// Unified `mxnode.toml` — operator settings, host inventory,
+    /// secrets, and update cache all live here.
     fn config_path(&self) -> PathBuf {
         self.xdg_config_home.join("mxnode/mxnode.toml")
     }
 
-    /// Host inventory shares the same file as config (post-unification).
-    /// Tests that previously seeded `state.toml` directly continue to
-    /// work because the loader merges a legacy state file into the
-    /// unified one on first run, and tests that just assert "the path
-    /// exists / falls under the sandbox" still see the unified file.
+    /// Alias retained so tests reading "state-like" things still
+    /// resolve to the unified file. Same path as [`Self::config_path`].
     fn state_path(&self) -> PathBuf {
         self.config_path()
     }
 
-    /// Legacy paths referenced by tests that explicitly seed the old
-    /// two-file world (e.g. testing the migration itself).
-    #[allow(dead_code)]
-    fn legacy_config_path(&self) -> PathBuf {
-        self.xdg_config_home.join("mxnode/config.toml")
+    /// Seed the unified file with a pre-unified `state.toml`-style
+    /// body. The helper:
+    ///   - prepends `schema_version = 1` and a `[host]` header,
+    ///   - rewrites `[install]` → `[host.install]`, `[[nodes]]` →
+    ///     `[[host.nodes]]`, `[proxy]` → `[host.proxy]`, `[migrations]`
+    ///     → `[host.migrations]` so legacy state.toml fixtures drop in
+    ///     unchanged,
+    ///   - chmods the file to 0600 so the loader's mode check passes.
+    fn seed_host(&self, host_body: &str) {
+        std::fs::create_dir_all(self.config_path().parent().unwrap()).unwrap();
+        let wrapped = host_body
+            .replace("[install]", "[host.install]")
+            .replace("[install.", "[host.install.")
+            .replace("[[nodes]]", "[[host.nodes]]")
+            .replace("[proxy]", "[host.proxy]")
+            .replace("[migrations]", "[host.migrations]");
+        let body = format!("schema_version = 1\n\n[host]\n{wrapped}\n");
+        std::fs::write(self.config_path(), body).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                self.config_path(),
+                std::fs::Permissions::from_mode(0o600),
+            )
+            .unwrap();
+        }
     }
 
-    #[allow(dead_code)]
-    fn legacy_state_path(&self) -> PathBuf {
-        self.xdg_state_home.join("mxnode/state.toml")
-    }
 }
 
 /// Render a canonical `elrond-node-{INDEX}.service` text matching what
@@ -192,7 +208,7 @@ fn status_without_state_emits_3_line_error() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     // 3-line summary/cause/try shape.
-    assert!(stderr.contains("error: no state.toml"));
+    assert!(stderr.contains("error: no mxnode.toml"));
     assert!(stderr.contains("cause:"));
     assert!(stderr.contains("try:"));
 }
@@ -207,7 +223,7 @@ fn status_with_no_state_returns_typed_json_error() {
     assert!(v["error"]["summary"]
         .as_str()
         .unwrap()
-        .contains("no state.toml"));
+        .contains("no mxnode.toml"));
 }
 
 #[test]
@@ -316,11 +332,7 @@ fn keys_check_reports_missing_when_state_has_nodes_but_no_zip() {
     let sandbox = Sandbox::new();
     // Manufacture a minimal state.toml with one node so keys check has
     // something to look for. The zip files are intentionally absent.
-    let state_dir = sandbox.xdg_state_home.join("mxnode");
-    std::fs::create_dir_all(&state_dir).unwrap();
-    std::fs::write(
-        state_dir.join("state.toml"),
-        r#"
+    sandbox.seed_host(        r#"
 schema_version = 1
 written_at = "2026-04-25T08:00:00Z"
 written_by = "test"
@@ -354,9 +366,7 @@ last_action = ""
 
 [migrations]
 entries = []
-"#,
-    )
-    .unwrap();
+"#,);
 
     let output = sandbox
         .cmd()
@@ -439,11 +449,7 @@ fn metrics_output_format_validation() {
 fn upgrade_dry_run_emits_plan() {
     let sandbox = Sandbox::new();
     // Synthesise a state.toml so upgrade has nodes to plan over.
-    let state_dir = sandbox.xdg_state_home.join("mxnode");
-    std::fs::create_dir_all(&state_dir).unwrap();
-    std::fs::write(
-        state_dir.join("state.toml"),
-        r#"
+    sandbox.seed_host(        r#"
 schema_version = 1
 written_at = "2026-04-25T08:00:00Z"
 written_by = "test"
@@ -489,9 +495,7 @@ last_action = ""
 
 [migrations]
 entries = []
-"#,
-    )
-    .unwrap();
+"#,);
 
     let output = sandbox
         .cmd()
@@ -514,11 +518,7 @@ entries = []
 fn upgrade_without_binary_tag_or_recorded_version_errors_clearly() {
     let sandbox = Sandbox::new();
     // Minimal state.toml with no recorded versions.
-    let state_dir = sandbox.xdg_state_home.join("mxnode");
-    std::fs::create_dir_all(&state_dir).unwrap();
-    std::fs::write(
-        state_dir.join("state.toml"),
-        r#"
+    sandbox.seed_host(        r#"
 schema_version = 1
 written_at = "2026-04-25T08:00:00Z"
 written_by = "test"
@@ -552,9 +552,7 @@ last_action = ""
 
 [migrations]
 entries = []
-"#,
-    )
-    .unwrap();
+"#,);
 
     // The "no tag → error" guard was removed in favour of GitHub-latest
     // auto-resolution. Pass an explicitly-malformed tag to keep this
@@ -659,15 +657,7 @@ fn install_with_invalid_binary_tag_errors() {
 #[test]
 fn install_refuses_when_state_already_exists() {
     let sandbox = Sandbox::new();
-    let state_dir = sandbox.xdg_state_home.join("mxnode");
-    std::fs::create_dir_all(&state_dir).unwrap();
-    // Seed a realistic legacy state.toml so the unified-file migration
-    // picks it up and `install` then refuses to clobber the existing
-    // host record. A bare `schema_version = 1` would fail to parse —
-    // the test predates the field-required `written_at`/`written_by`.
-    std::fs::write(
-        state_dir.join("state.toml"),
-        r#"
+    sandbox.seed_host(        r#"
 schema_version = 1
 written_at = "2026-04-25T08:00:00Z"
 written_by = "test"
@@ -682,9 +672,7 @@ node_count = 1
 [install.versions]
 config_tag = "v1.7.13.0"
 binary_tag = "v1.7.13"
-"#,
-    )
-    .unwrap();
+"#,);
     let output = sandbox
         .cmd()
         .args([
@@ -706,12 +694,7 @@ binary_tag = "v1.7.13"
 #[test]
 fn add_nodes_refuses_on_squad_install() {
     let sandbox = Sandbox::new();
-    let state_dir = sandbox.xdg_state_home.join("mxnode");
-    std::fs::create_dir_all(&state_dir).unwrap();
-    // Synthesise a state.toml with kind=observers-squad.
-    std::fs::write(
-        state_dir.join("state.toml"),
-        r#"
+    sandbox.seed_host(        r#"
 schema_version = 1
 written_at = "2026-04-25T08:00:00Z"
 written_by = "test"
@@ -735,9 +718,7 @@ keygenerator = ["v1.7.13"]
 
 [migrations]
 entries = []
-"#,
-    )
-    .unwrap();
+"#,);
     let output = sandbox
         .cmd()
         .args(["add-nodes", "--count", "1"])
@@ -754,11 +735,7 @@ entries = []
 fn upgrade_proxy_dry_run_when_no_proxy_errors() {
     let sandbox = Sandbox::new();
     // state.toml without a [proxy] section.
-    let state_dir = sandbox.xdg_state_home.join("mxnode");
-    std::fs::create_dir_all(&state_dir).unwrap();
-    std::fs::write(
-        state_dir.join("state.toml"),
-        r#"
+    sandbox.seed_host(        r#"
 schema_version = 1
 written_at = "2026-04-25T08:00:00Z"
 written_by = "test"
@@ -780,9 +757,7 @@ keygenerator = []
 
 [migrations]
 entries = []
-"#,
-    )
-    .unwrap();
+"#,);
 
     let output = sandbox
         .cmd()
@@ -797,11 +772,7 @@ entries = []
 #[test]
 fn upgrade_proxy_dry_run_with_proxy_succeeds() {
     let sandbox = Sandbox::new();
-    let state_dir = sandbox.xdg_state_home.join("mxnode");
-    std::fs::create_dir_all(&state_dir).unwrap();
-    std::fs::write(
-        state_dir.join("state.toml"),
-        r#"
+    sandbox.seed_host(        r#"
 schema_version = 1
 written_at = "2026-04-25T08:00:00Z"
 written_by = "test"
@@ -829,9 +800,7 @@ server_port = 8079
 
 [migrations]
 entries = []
-"#,
-    )
-    .unwrap();
+"#,);
 
     let output = sandbox
         .cmd()
@@ -864,11 +833,7 @@ entries = []
 #[test]
 fn upgrade_auto_clears_stale_inflight_from_dead_pid() {
     let sandbox = Sandbox::new();
-    let state_dir = sandbox.xdg_state_home.join("mxnode");
-    std::fs::create_dir_all(&state_dir).unwrap();
-    std::fs::write(
-        state_dir.join("state.toml"),
-        r#"
+    sandbox.seed_host(        r#"
 schema_version = 1
 written_at = "2026-04-25T08:00:00Z"
 written_by = "test"
@@ -890,10 +855,10 @@ keygenerator = []
 
 [migrations]
 entries = []
-"#,
-    )
-    .unwrap();
+"#,);
 
+    let state_dir = sandbox.xdg_state_home.join("mxnode");
+    std::fs::create_dir_all(&state_dir).unwrap();
     std::fs::write(
         state_dir.join("inflight.toml"),
         format!(
@@ -934,7 +899,7 @@ fn lifecycle_start_without_state_errors_clearly() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("no state.toml") || stderr.contains("adopt"),
+        stderr.contains("no mxnode.toml") || stderr.contains("adopt"),
         "stderr: {stderr}",
     );
 }

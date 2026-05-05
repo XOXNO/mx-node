@@ -7,8 +7,8 @@
 //!     `mx-chain-node-{INDEX}-{PUBKEY_PREFIX}.log`, then tar.gz the lot
 //!     to `$CUSTOM_HOME/mx-chain-logs/mx-chain-node-logs-{TIMESTAMP}.tar.gz`.
 //!
-//! Picks units from `state.toml` so the operator gets accurate names even on
-//! hosts where the units aren't sequentially indexed. If state.toml is
+//! Picks units from `mxnode.toml` so the operator gets accurate names even on
+//! hosts where the units aren't sequentially indexed. If mxnode.toml is
 //! missing, falls back to whatever filenames currently live in
 //! `/etc/systemd/system/elrond-node-*.service`.
 
@@ -120,7 +120,7 @@ fn pick_units(
 ) -> Result<Vec<String>, CliError> {
     let store = StateStore::new(&runtime.paths.config_dir);
 
-    // Source 1: state.toml (preferred — exact unit names).
+    // Source 1: mxnode.toml (preferred — exact unit names).
     if let Ok(Some(state)) = store.load() {
         let mut units: Vec<String> = if requested_indices.is_empty() {
             state.nodes.iter().map(|n| n.unit.clone()).collect()
@@ -141,15 +141,15 @@ fn pick_units(
                 .collect();
             return Err(CliError::new(
                 "no such node",
-                format!("state.toml has no node(s) at index {missing:?}"),
-                "run `mxnode status` to list available indices, or hand-edit and re-run if state.toml is stale",
+                format!("mxnode.toml has no node(s) at index {missing:?}"),
+                "run `mxnode status` to list available indices, or hand-edit and re-run if mxnode.toml is stale",
             )
             .json_if(global.json));
         }
         if units.is_empty() {
             return Err(CliError::new(
-                "no nodes recorded in state.toml",
-                "state.toml is empty",
+                "no nodes recorded in mxnode.toml",
+                "mxnode.toml is empty",
                 "run `mxnode install` to set up nodes",
             )
             .json_if(global.json));
@@ -158,10 +158,10 @@ fn pick_units(
         return Ok(units);
     }
 
-    // Source 2: discovery (fallback when state.toml is missing).
+    // Source 2: discovery (fallback when mxnode.toml is missing).
     let discovered = scan_supervisor_dir(Path::new(DEFAULT_SYSTEMD_DIR)).map_err(|e| {
         CliError::new(
-            "no state.toml; failed to scan systemd dir",
+            "no mxnode.toml; failed to scan systemd dir",
             e.to_string(),
             "run `mxnode install` first",
         )
@@ -207,7 +207,7 @@ fn tail_node_log_files(
         .load()
         .map_err(|e| {
             CliError::new(
-                "failed to read state.toml",
+                "failed to read mxnode.toml",
                 e.to_string(),
                 "run `mxnode install` first",
             )
@@ -215,7 +215,7 @@ fn tail_node_log_files(
         })?
         .ok_or_else(|| {
             CliError::new(
-                "no state.toml on this host",
+                "no mxnode.toml on this host",
                 format!("expected {}", store.state_path().display()),
                 "run `mxnode install` first",
             )
@@ -310,7 +310,7 @@ async fn run_ws_logs(args: LogsArgs, global: &GlobalArgs) -> Result<(), CliError
         .load()
         .map_err(|e| {
             CliError::new(
-                "failed to read state.toml",
+                "failed to read mxnode.toml",
                 e.to_string(),
                 "run `mxnode install` first",
             )
@@ -318,7 +318,7 @@ async fn run_ws_logs(args: LogsArgs, global: &GlobalArgs) -> Result<(), CliError
         })?
         .ok_or_else(|| {
             CliError::new(
-                "no state.toml on this host",
+                "no mxnode.toml on this host",
                 format!("expected {}", store.state_path().display()),
                 "run `mxnode install` first",
             )
@@ -398,7 +398,7 @@ fn select_ws_log_node<'a>(
         [idx] => nodes.iter().find(|n| n.index.get() == *idx).ok_or_else(|| {
             CliError::new(
                 "no such node",
-                format!("state.toml has no node at index {idx}"),
+                format!("mxnode.toml has no node at index {idx}"),
                 "run `mxnode status` to list available indices",
             )
             .json_if(global.json)
@@ -406,7 +406,7 @@ fn select_ws_log_node<'a>(
         [] if nodes.len() == 1 => Ok(&nodes[0]),
         [] => Err(CliError::new(
             "logs --ws needs a single node",
-            format!("state.toml has {} nodes", nodes.len()),
+            format!("mxnode.toml has {} nodes", nodes.len()),
             "pass `--node N`; the upstream logviewer connects to one node API socket at a time",
         )
         .json_if(global.json)),
@@ -466,7 +466,7 @@ async fn run_save_archive(args: LogsArgs, global: &GlobalArgs) -> Result<(), Cli
         .load()
         .map_err(|e| {
             CliError::new(
-                "failed to read state.toml",
+                "failed to read mxnode.toml",
                 e.to_string(),
                 "run `mxnode install` first",
             )
@@ -474,7 +474,7 @@ async fn run_save_archive(args: LogsArgs, global: &GlobalArgs) -> Result<(), Cli
         })?
         .ok_or_else(|| {
             CliError::new(
-                "no state.toml on this host",
+                "no mxnode.toml on this host",
                 format!("expected {}", store.state_path().display()),
                 "run `mxnode install` first",
             )
@@ -493,7 +493,7 @@ async fn run_save_archive(args: LogsArgs, global: &GlobalArgs) -> Result<(), Cli
     if targets.is_empty() {
         return Err(CliError::new(
             "no nodes match",
-            "state.toml has no nodes (or none matched --node)",
+            "mxnode.toml has no nodes (or none matched --node)",
             "run `mxnode status` to list available indices",
         )
         .json_if(global.json));

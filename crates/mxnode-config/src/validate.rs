@@ -1,4 +1,4 @@
-use mxnode_core::Config;
+use mxnode_core::MxnodeFile;
 
 /// Aggregated validation feedback for `mxnode config validate`.
 ///
@@ -20,7 +20,7 @@ impl ValidationReport {
 /// Network-dependent checks (token works, repos reachable) live behind
 /// `--strict` and call into `mxnode-github`; that's wired up in the CLI
 /// orchestrator, not here.
-pub fn validate(cfg: &Config) -> ValidationReport {
+pub fn validate(cfg: &MxnodeFile) -> ValidationReport {
     let mut report = ValidationReport::default();
 
     if cfg.network.environment.is_none() {
@@ -155,7 +155,7 @@ mod tests {
 
     #[test]
     fn default_config_is_invalid_until_environment_set() {
-        let cfg = Config::default();
+        let cfg = MxnodeFile::default();
         let r = validate(&cfg);
         assert!(!r.ok());
         assert!(r.errors.iter().any(|e| e.contains("environment")));
@@ -163,7 +163,7 @@ mod tests {
 
     #[test]
     fn minimal_valid_config_passes() {
-        let mut cfg = Config::default();
+        let mut cfg = MxnodeFile::default();
         cfg.network.environment = Some(mxnode_core::Environment::Mainnet);
         let r = validate(&cfg);
         assert!(r.ok(), "errors: {:?}", r.errors);
@@ -171,7 +171,7 @@ mod tests {
 
     #[test]
     fn binary_keep_zero_errors() {
-        let mut cfg = Config::default();
+        let mut cfg = MxnodeFile::default();
         cfg.network.environment = Some(mxnode_core::Environment::Mainnet);
         cfg.install.binary_keep = 0;
         let r = validate(&cfg);
@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn low_limit_nofile_warns() {
-        let mut cfg = Config::default();
+        let mut cfg = MxnodeFile::default();
         cfg.network.environment = Some(mxnode_core::Environment::Mainnet);
         cfg.node.limit_nofile = 1024;
         let r = validate(&cfg);
@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn extra_flags_with_newline_rejected() {
-        let mut cfg = Config::default();
+        let mut cfg = MxnodeFile::default();
         cfg.network.environment = Some(mxnode_core::Environment::Mainnet);
         cfg.node.extra_flags = "-display-name something\nmalicious".to_string();
         let r = validate(&cfg);
@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn extra_flags_with_carriage_return_rejected() {
-        let mut cfg = Config::default();
+        let mut cfg = MxnodeFile::default();
         cfg.network.environment = Some(mxnode_core::Environment::Mainnet);
         cfg.node.extra_flags = "-flag\rother".to_string();
         let r = validate(&cfg);
@@ -210,7 +210,7 @@ mod tests {
 
     #[test]
     fn extra_flags_with_unbalanced_quote_rejected() {
-        let mut cfg = Config::default();
+        let mut cfg = MxnodeFile::default();
         cfg.network.environment = Some(mxnode_core::Environment::Mainnet);
         cfg.node.extra_flags = "-display-name \"unterminated".to_string();
         let r = validate(&cfg);
@@ -223,7 +223,7 @@ mod tests {
 
     #[test]
     fn extra_flags_with_balanced_quotes_accepted() {
-        let mut cfg = Config::default();
+        let mut cfg = MxnodeFile::default();
         cfg.network.environment = Some(mxnode_core::Environment::Mainnet);
         cfg.node.extra_flags = "-display-name \"my node\" -profile-mode true".to_string();
         let r = validate(&cfg);
@@ -232,7 +232,7 @@ mod tests {
 
     #[test]
     fn empty_extra_flags_accepted() {
-        let mut cfg = Config::default();
+        let mut cfg = MxnodeFile::default();
         cfg.network.environment = Some(mxnode_core::Environment::Mainnet);
         cfg.node.extra_flags = String::new();
         assert!(validate(&cfg).ok());
@@ -240,9 +240,9 @@ mod tests {
 
     #[test]
     fn per_node_extra_flags_validated_individually() {
-        use mxnode_core::config::NodeOverride;
+        use mxnode_core::NodeOverride;
         use mxnode_core::{NodeIndex, Role, Shard};
-        let mut cfg = Config::default();
+        let mut cfg = MxnodeFile::default();
         cfg.network.environment = Some(mxnode_core::Environment::Mainnet);
         cfg.nodes.push(NodeOverride {
             index: NodeIndex::new(2),
@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn operation_mode_rejects_unknown_values_and_raw_duplicates() {
-        let mut cfg = Config::default();
+        let mut cfg = MxnodeFile::default();
         cfg.network.environment = Some(mxnode_core::Environment::Mainnet);
         cfg.node.operation_mode = Some("full-archive".to_string());
         assert!(validate(&cfg).ok());

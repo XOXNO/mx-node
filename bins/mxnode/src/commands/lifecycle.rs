@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use mxnode_core::{NodeIndex, State};
+use mxnode_core::{NodeIndex, HostState};
 use mxnode_state::StateStore;
 use mxnode_systemd::{ActiveState, Ctl};
 use serde::Serialize;
@@ -326,12 +326,12 @@ struct NodeReport {
     after: &'static str,
 }
 
-fn load_state_or_err(store: &StateStore, global: &GlobalArgs) -> Result<State, CliError> {
+fn load_state_or_err(store: &StateStore, global: &GlobalArgs) -> Result<HostState, CliError> {
     store
         .load()
         .map_err(|e| {
             CliError::new(
-                "failed to read state.toml",
+                "failed to read mxnode.toml",
                 e.to_string(),
                 "run `mxnode install` to set up nodes",
             )
@@ -339,7 +339,7 @@ fn load_state_or_err(store: &StateStore, global: &GlobalArgs) -> Result<State, C
         })?
         .ok_or_else(|| {
             CliError::new(
-                "no state.toml on this host",
+                "no mxnode.toml on this host",
                 format!("expected {}", store.state_path().display()),
                 "run `mxnode install` first",
             )

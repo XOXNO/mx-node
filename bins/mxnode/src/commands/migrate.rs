@@ -1,7 +1,7 @@
 //! `mxnode migrate-bash`: import an existing `mx-chain-scripts` (bash) install
-//! into mxnode's cache-derived `state.toml` and (optionally) merge
+//! into mxnode's cache-derived `mxnode.toml` and (optionally) merge
 //! operator-customised settings from the bash `variables.cfg` and the
-//! rendered systemd unit files into `~/.config/mxnode/config.toml`.
+//! rendered systemd unit files into `~/.config/mxnode/mxnode.toml`.
 //!
 //! Three sources are consulted, all read-only — bash files on disk are
 //! never modified:
@@ -20,12 +20,12 @@
 //!      `extra_flags` override (only when it differs from the global).
 //!      Optional; a missing scan just means no per-node overrides.
 //!
-//! Merge policy (config.toml only — state.toml has its own
+//! Merge policy (mxnode.toml only — mxnode.toml has its own
 //! "refuse-to-overwrite" rule):
 //!
 //!   * A bash-derived value is written only when the corresponding
 //!     mxnode field is at its schema default. Operators who already
-//!     customised mxnode's config.toml win — we never silently flip
+//!     customised mxnode's mxnode.toml win — we never silently flip
 //!     their explicit choice.
 //!   * GITHUBTOKEN is persisted into the unified `mxnode.toml` under
 //!     `[secrets].github_token`. The file lives at mode 0600 (owner
@@ -35,7 +35,7 @@
 //!     override at runtime via `MXNODE_GITHUB_TOKEN` (env wins over
 //!     file). The token is partially masked (first 4 + tail length)
 //!     in dry-run output and `mxnode config show`.
-//!   * Existing TOML comments and section ordering in config.toml are
+//!   * Existing TOML comments and section ordering in mxnode.toml are
 //!     preserved by routing writes through `toml_edit::DocumentMut`,
 //!     same as `mxnode config set`.
 
@@ -47,8 +47,8 @@ use clap::Args;
 use mxnode_config::resolve_paths;
 use mxnode_config::{load, user_config_path_or_default, ConfigSource, LoadOptions};
 use mxnode_core::{
-    state::InstallSection, Config, Environment, InstallKind, NodeIndex, NodeState, Paths,
-    ProxyState, Role, Shard, State, DEFAULT_API_PORT_BASE, DEFAULT_PROXY_PORT,
+    HostInstall, MxnodeFile, Environment, InstallKind, NodeIndex, NodeState, Paths,
+    ProxyState, Role, Shard, HostState, DEFAULT_API_PORT_BASE, DEFAULT_PROXY_PORT,
 };
 use thiserror::Error;
 use toml_edit::{value, DocumentMut};
@@ -77,11 +77,11 @@ pub enum MigrateError {
 
 /// Inspect a `$CUSTOM_HOME` looking for the bash sentinels (`.installedenv`,
 /// `.numberofnodes`, optionally `.squad_install`) and return the
-/// cache-derived [`State`] without touching disk. Tags inside
+/// cache-derived [`HostState`] without touching disk. Tags inside
 /// `InstallVersions` are intentionally left at their default `None` —
-/// bash does not record them as data, and `state.toml` must not lie about
+/// bash does not record them as data, and `mxnode.toml` must not lie about
 /// what's installed. A subsequent `mxnode upgrade` resolves them from GitHub.
-pub fn infer_state_from_bash(custom_home: &Path) -> Result<State, MigrateError> {
+pub fn infer_state_from_bash(custom_home: &Path) -> Result<HostState, MigrateError> {
     let env_raw = fs::read_to_string(custom_home.join(".installedenv"))
         .map_err(|_| MigrateError::NotBash(".installedenv"))?;
     let environment = match env_raw.trim() {
@@ -178,9 +178,9 @@ pub fn infer_state_from_bash(custom_home: &Path) -> Result<State, MigrateError> 
         None
     };
 
-    let mut state = State::empty("mxnode/migrate-bash");
+    let mut state = HostState::empty("mxnode/migrate-bash");
     state.discovered = true;
-    state.install = Some(InstallSection::observed(
+    state.install = Some(HostInstall::observed(
         kind,
         environment,
         "multiversx",
@@ -428,7 +428,7 @@ impl PatchSource {
 
 /// One per-node `[[nodes]]` override emitted when a service file's
 /// extra_flags diverges from the global value. Role / shard mirror
-/// what state.toml inferred for the same node — schema requires them
+/// what mxnode.toml inferred for the same node — schema requires them
 /// to be set, and we don't fabricate values that contradict reality.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PerNodePatch {
@@ -446,9 +446,9 @@ pub struct MigrationPlan {
     /// Resolved bash `$CUSTOM_HOME` the plan was built from. Echoed in
     /// the dry-run header so the operator sees which path was scanned
     /// (especially useful when auto-detection picks a non-default
-    /// home on hosts without a config.toml).
+    /// home on hosts without a mxnode.toml).
     pub custom_home: PathBuf,
-    pub state: State,
+    pub state: HostState,
     pub config_patches: Vec<ConfigPatch>,
     pub per_node_patches: Vec<PerNodePatch>,
     /// Plain warnings (count mismatches, parse oddities) for the
@@ -466,7 +466,7 @@ pub fn build_migration_plan(
     custom_home: &Path,
     scripts_dir: Option<&Path>,
     systemd_dir: &Path,
-    existing_config: &Config,
+    existing_config: &MxnodeFile,
 ) -> Result<MigrationPlan, MigrateError> {
     let mut state = infer_state_from_bash(custom_home)?;
     let mut warnings = Vec::new();
@@ -495,7 +495,7 @@ pub fn build_migration_plan(
         None
     };
 
-    let defaults = Config::default();
+    let defaults = MxnodeFile::default();
     if let Some(ref vars) = bash_vars {
         github_token = vars.github_token.clone();
         plan_variables_cfg_patches(
@@ -558,8 +558,8 @@ pub fn build_migration_plan(
         }
         let trimmed = normalized.extra_flags.trim();
         // Mirror the inferred state's role/shard for this index so the
-        // [[nodes]] override doesn't contradict state.toml. If the
-        // service file exists for an index outside state.toml's range
+        // [[nodes]] override doesn't contradict mxnode.toml. If the
+        // service file exists for an index outside mxnode.toml's range
         // (e.g. operator added a node without updating .numberofnodes),
         // skip it — emitting a half-populated override would lie.
         let Some(node_state) = state.nodes.iter().find(|n| n.index.get() == *idx) else {
@@ -597,7 +597,7 @@ pub fn build_migration_plan(
 }
 
 fn apply_prefs_display_names(
-    state: &mut State,
+    state: &mut HostState,
     services: &BTreeMap<u16, ServiceFacts>,
     warnings: &mut Vec<String>,
 ) {
@@ -666,8 +666,8 @@ fn extract_node_display_name_from_prefs(body: &str) -> Result<Option<String>, St
 /// are still at the schema default in the operator's existing config.
 fn plan_variables_cfg_patches(
     vars: &BashVariables,
-    existing: &Config,
-    defaults: &Config,
+    existing: &MxnodeFile,
+    defaults: &MxnodeFile,
     patches: &mut Vec<ConfigPatch>,
     warnings: &mut Vec<String>,
 ) {
@@ -795,8 +795,8 @@ fn shard_serde_name(shard: Shard) -> &'static str {
 /// somewhere and we should let them resolve it.
 fn plan_service_file_patches(
     services: &BTreeMap<u16, ServiceFacts>,
-    existing: &Config,
-    defaults: &Config,
+    existing: &MxnodeFile,
+    defaults: &MxnodeFile,
     patches: &mut Vec<ConfigPatch>,
 ) {
     if existing.paths.custom_user != defaults.paths.custom_user {
@@ -841,8 +841,8 @@ struct NormalizedOperationFlags {
 /// `[[nodes]]` override.
 fn effective_global_runtime(
     bash_vars: &Option<BashVariables>,
-    existing: &Config,
-    defaults: &Config,
+    existing: &MxnodeFile,
+    defaults: &MxnodeFile,
 ) -> RuntimeFlags {
     let from_bash = bash_vars
         .as_ref()
@@ -866,7 +866,7 @@ fn effective_global_runtime(
 }
 
 fn common_service_operation_mode(
-    state: &State,
+    state: &HostState,
     services: &BTreeMap<u16, ServiceFacts>,
     warnings: &mut Vec<String>,
 ) -> Option<String> {
@@ -971,7 +971,7 @@ fn record_operation_mode(
 }
 
 /// Best-effort discovery of the bash `$CUSTOM_HOME` when no
-/// `config.toml` exists and the operator hasn't passed `--from`. Tried
+/// `mxnode.toml` exists and the operator hasn't passed `--from`. Tried
 /// in order:
 ///
 ///   1. `home` itself if it carries the bash sentinel `.installedenv`.
@@ -1035,23 +1035,23 @@ pub struct MigrateBashArgs {
     pub systemd_dir: PathBuf,
 
     /// Apply the migration. Without this flag, the inferred plan is
-    /// printed and neither `state.toml` nor `config.toml` is modified.
+    /// printed and neither `mxnode.toml` nor `mxnode.toml` is modified.
     #[arg(long)]
     pub execute: bool,
 }
 
-/// Import an existing bash install into mxnode's `state.toml` (and
+/// Import an existing bash install into mxnode's `mxnode.toml` (and
 /// optionally merge variables.cfg + service-file findings into the
-/// user's `config.toml`). Dry-run by default; pass `--execute` to
+/// user's `mxnode.toml`). Dry-run by default; pass `--execute` to
 /// persist. Bash files on disk are never modified.
 ///
 /// We deliberately do NOT go through `Runtime::from_global` here:
-/// that path triggers auto-init when no config.toml exists, which
+/// that path triggers auto-init when no mxnode.toml exists, which
 /// would seed the file with `$USER`/`$HOME`-based defaults BEFORE
 /// migrate runs — and the merge rule "only fill schema-default
 /// fields" would then incorrectly skip those values, leaving the
 /// host's bash-derived install paths unmigrated. Instead, we load
-/// any existing config.toml directly (no auto-init), and treat its
+/// any existing mxnode.toml directly (no auto-init), and treat its
 /// absence as "fresh host → use schema defaults as the baseline."
 pub fn run(args: MigrateBashArgs, global: &GlobalArgs) -> Result<(), CliError> {
     let opts = LoadOptions {
@@ -1066,7 +1066,7 @@ pub fn run(args: MigrateBashArgs, global: &GlobalArgs) -> Result<(), CliError> {
         )
         .json_if(global.json)
     })?;
-    let paths = resolve_paths(&loaded.config).map_err(|e| {
+    let paths = resolve_paths(&loaded.file).map_err(|e| {
         CliError::new(
             "failed to resolve filesystem paths",
             e.to_string(),
@@ -1079,15 +1079,15 @@ pub fn run(args: MigrateBashArgs, global: &GlobalArgs) -> Result<(), CliError> {
     // config file exists (ConfigSource::None). Auto-init has not run,
     // so the loaded `config` is already at schema defaults — this is
     // primarily to make the intent explicit.
-    let baseline_config: Config = match loaded.source {
-        ConfigSource::None => Config::default(),
-        _ => loaded.config.clone(),
+    let baseline_config: MxnodeFile = match loaded.source {
+        ConfigSource::None => MxnodeFile::default(),
+        _ => loaded.file.clone(),
     };
 
     // Resolution order for the bash $CUSTOM_HOME:
     //
     //   1. `--from` if the operator passed it (always wins).
-    //   2. On a fresh host (no config.toml yet) the schema default
+    //   2. On a fresh host (no mxnode.toml yet) the schema default
     //      `/home/ubuntu` rarely matches reality — operators on hosts
     //      with a different service account (e.g. `truststaking`) had
     //      to pass `--from` every time. Try `$HOME` directly, then
@@ -1133,19 +1133,19 @@ pub fn run(args: MigrateBashArgs, global: &GlobalArgs) -> Result<(), CliError> {
         return Ok(());
     }
 
-    // ── apply state.toml ──
+    // ── apply mxnode.toml ──
     let store = mxnode_state::StateStore::new(&paths.config_dir);
     if store.host_initialized() {
         return Err(CliError::new(
-            "refusing to overwrite existing state.toml",
+            "refusing to overwrite existing mxnode.toml",
             format!("{} already exists", store.state_path().display()),
-            "delete or move the existing state.toml first, or run on a fresh host",
+            "delete or move the existing mxnode.toml first, or run on a fresh host",
         )
         .json_if(global.json));
     }
     let guard = store.lock().map_err(|e| {
         CliError::new(
-            "failed to acquire state.toml lock",
+            "failed to acquire mxnode.toml lock",
             e.to_string(),
             "ensure no other mxnode invocation is running, then retry",
         )
@@ -1153,7 +1153,7 @@ pub fn run(args: MigrateBashArgs, global: &GlobalArgs) -> Result<(), CliError> {
     })?;
     store.save(&plan.state, &guard).map_err(|e| {
         CliError::new(
-            "failed to write state.toml",
+            "failed to write mxnode.toml",
             e.to_string(),
             "ensure mxnode has write access to the state directory",
         )
@@ -1176,7 +1176,7 @@ pub fn run(args: MigrateBashArgs, global: &GlobalArgs) -> Result<(), CliError> {
         ) {
             Ok(path) => Some(path),
             Err(e) => {
-                eprintln!("warn: failed to apply config.toml merge: {e}");
+                eprintln!("warn: failed to apply mxnode.toml merge: {e}");
                 None
             }
         }
@@ -1273,9 +1273,9 @@ fn merge_node_overrides(doc: &mut DocumentMut, per_node: &[PerNodePatch]) {
         if !found {
             let mut t = Table::new();
             t.insert("index", value(patch.index as i64));
-            // role / shard mirror what state.toml inferred for this
+            // role / shard mirror what mxnode.toml inferred for this
             // node — never placeholders, so the override never
-            // contradicts state.toml. NodeOverride's schema requires
+            // contradicts mxnode.toml. NodeOverride's schema requires
             // both fields; the operator can refine later if needed.
             t.insert("role", value(patch.role.clone()));
             t.insert("shard", value(patch.shard.clone()));
@@ -1390,7 +1390,7 @@ fn print_dry_run(plan: &MigrationPlan, global: &GlobalArgs) {
     }
     if !plan.config_patches.is_empty() {
         println!();
-        println!("config.toml patches (only fields still at default):");
+        println!("mxnode.toml patches (only fields still at default):");
         for p in &plan.config_patches {
             println!(
                 "  {} = {:?}    (from {})",
@@ -1780,7 +1780,7 @@ GITHUBTOKEN="ghp_abcdefg1234567"
             custom_home.path(),
             Some(scripts_dir.path()),
             systemd_dir.path(),
-            &Config::default(),
+            &MxnodeFile::default(),
         )
         .unwrap();
 
@@ -1807,7 +1807,7 @@ GITHUB_ORG="bash-org"
         .unwrap();
         let systemd_dir = tempfile::tempdir().unwrap();
 
-        let mut existing = Config::default();
+        let mut existing = MxnodeFile::default();
         existing.paths.custom_home = PathBuf::from("/srv/already-set");
         existing.network.github_org = "operator-set".to_string();
 
@@ -1855,14 +1855,14 @@ NODE_EXTRA_FLAGS="-profile-mode true"
             custom_home.path(),
             Some(scripts_dir.path()),
             systemd_dir.path(),
-            &Config::default(),
+            &MxnodeFile::default(),
         )
         .unwrap();
 
         assert_eq!(plan.per_node_patches.len(), 1);
         let patch = &plan.per_node_patches[0];
         assert_eq!(patch.index, 1);
-        // Role and shard mirror state.toml — the diverging override
+        // Role and shard mirror mxnode.toml — the diverging override
         // must not contradict the inferred install layout.
         assert_eq!(patch.role, "observer");
         assert_eq!(patch.shard, "one");
@@ -1896,7 +1896,7 @@ NODE_EXTRA_FLAGS="-profile-mode true"
             custom_home.path(),
             Some(scripts_dir.path()),
             systemd_dir.path(),
-            &Config::default(),
+            &MxnodeFile::default(),
         )
         .unwrap();
 
@@ -1928,7 +1928,7 @@ NODE_EXTRA_FLAGS="-profile-mode true"
             custom_home.path(),
             None,
             systemd_dir.path(),
-            &Config::default(),
+            &MxnodeFile::default(),
         )
         .unwrap();
 
@@ -1959,7 +1959,7 @@ NODE_EXTRA_FLAGS="-profile-mode true"
             custom_home.path(),
             None,
             systemd_dir.path(),
-            &Config::default(),
+            &MxnodeFile::default(),
         )
         .unwrap();
 
@@ -2013,7 +2013,7 @@ NODE_EXTRA_FLAGS="-profile-mode true"
             custom_home.path(),
             Some(scripts_dir.path()),
             systemd_dir.path(),
-            &Config::default(),
+            &MxnodeFile::default(),
         )
         .unwrap();
 
@@ -2034,7 +2034,7 @@ NODE_EXTRA_FLAGS="-profile-mode true"
             custom_home.path(),
             Some(scripts_dir.path()),
             systemd_dir.path(),
-            &Config::default(),
+            &MxnodeFile::default(),
         )
         .unwrap();
         assert!(plan
@@ -2058,7 +2058,7 @@ NODE_EXTRA_FLAGS="-profile-mode true"
             custom_home.path(),
             Some(scripts_dir.path()),
             systemd_dir.path(),
-            &Config::default(),
+            &MxnodeFile::default(),
         )
         .unwrap();
         let env_patch = plan

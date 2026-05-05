@@ -1,4 +1,4 @@
-//! Auto-init: write a sparse `~/.config/mxnode/config.toml` from
+//! Auto-init: write a sparse `~/.config/mxnode/mxnode.toml` from
 //! detected environment when no config exists. Called transparently
 //! by `Runtime::from_global` on first use of any state-changing
 //! command. There is no user-facing `mxnode init` — the workflow is
@@ -23,7 +23,7 @@ use crate::orchestrator::runtime::CliErrorExt;
 pub fn auto_init(global: &GlobalArgs) -> Result<Option<Environment>, CliError> {
     let target = user_config_path().map_err(|e| {
         CliError::new(
-            "could not determine where to write config.toml",
+            "could not determine where to write mxnode.toml",
             e.to_string(),
             "set $XDG_CONFIG_HOME or $HOME so mxnode can place the file under <home>/.config/mxnode/",
         )
@@ -173,7 +173,7 @@ fn write_config(target: &Path, body: &str, global: &GlobalArgs) -> Result<(), Cl
     }
     std::fs::write(target, body).map_err(|e| {
         CliError::new(
-            "failed to write config.toml",
+            "failed to write mxnode.toml",
             e.to_string(),
             "ensure the parent directory is writable",
         )

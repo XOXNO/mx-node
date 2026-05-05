@@ -28,7 +28,7 @@ pub enum UpdateError {
     #[error("github error: {0}")]
     Github(#[from] GithubError),
     #[error("state error: {0}")]
-    State(#[from] StateError),
+    HostState(#[from] StateError),
     #[error("could not parse version {raw:?}: {detail}")]
     BadVersion { raw: String, detail: String },
 }

@@ -1,5 +1,5 @@
 //! `mxnode rename --node N --to NAME [--restart]`: change one node's
-//! `NodeDisplayName` in both `state.toml` and the on-disk `prefs.toml`
+//! `NodeDisplayName` in both `mxnode.toml` and the on-disk `prefs.toml`
 //! atomically.
 //!
 //! The persisted `display_name` is what `reapply-config` and `upgrade`
@@ -40,7 +40,7 @@ pub async fn run(args: RenameArgs, global: &GlobalArgs) -> Result<(), CliError> 
         .load()
         .map_err(|e| {
             CliError::new(
-                "failed to read state.toml",
+                "failed to read mxnode.toml",
                 e.to_string(),
                 "run `mxnode install` first",
             )
@@ -48,7 +48,7 @@ pub async fn run(args: RenameArgs, global: &GlobalArgs) -> Result<(), CliError> 
         })?
         .ok_or_else(|| {
             CliError::new(
-                "no state.toml on this host",
+                "no mxnode.toml on this host",
                 format!("expected {}", store.state_path().display()),
                 "run `mxnode install` first",
             )
@@ -62,7 +62,7 @@ pub async fn run(args: RenameArgs, global: &GlobalArgs) -> Result<(), CliError> 
         .position(|n| n.index.get() == target_index)
         .ok_or_else(|| {
             CliError::new(
-                format!("no node with index {target_index} in state.toml"),
+                format!("no node with index {target_index} in mxnode.toml"),
                 "the supplied --node value matched zero entries",
                 "run `mxnode status` to see available indices",
             )
@@ -127,7 +127,7 @@ pub async fn run(args: RenameArgs, global: &GlobalArgs) -> Result<(), CliError> 
         state.nodes[pos].display_name = new_name.clone();
         let guard = store.lock().map_err(|e| {
             CliError::new(
-                "failed to acquire state.toml lock",
+                "failed to acquire mxnode.toml lock",
                 e.to_string(),
                 "ensure no other mxnode invocation is running",
             )
@@ -135,7 +135,7 @@ pub async fn run(args: RenameArgs, global: &GlobalArgs) -> Result<(), CliError> 
         })?;
         store.save(&state, &guard).map_err(|e| {
             CliError::new(
-                "failed to write state.toml",
+                "failed to write mxnode.toml",
                 e.to_string(),
                 "ensure mxnode has write access to the state directory",
             )

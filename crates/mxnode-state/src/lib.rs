@@ -1,4 +1,4 @@
-//! state.toml read/write, atomic rename, flock, transaction log.
+//! mxnode.toml read/write, atomic rename, flock, transaction log.
 //!
 //! Per plan D7: this file is a **cache**, not the source of truth. The CLI
 //! always treats it as a serialization of what was last observed; on any

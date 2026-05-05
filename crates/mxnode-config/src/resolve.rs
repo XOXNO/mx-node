@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use mxnode_core::{Config, Paths};
+use mxnode_core::{MxnodeFile, Paths};
 
 use crate::xdg::{home_dir, xdg_config_home, xdg_runtime_dir, xdg_state_home};
 use crate::ConfigError;
@@ -12,7 +12,7 @@ use crate::ConfigError;
 /// `{XDG_RUNTIME_DIR}` placeholders. Falls back to `home_dir()` /
 /// `xdg_*` helpers (shared with the loader) when the placeholders are
 /// substituted with the user's actual environment.
-pub fn resolve_paths(cfg: &Config) -> Result<Paths, ConfigError> {
+pub fn resolve_paths(cfg: &MxnodeFile) -> Result<Paths, ConfigError> {
     let custom_home = cfg.paths.custom_home.clone();
     // Use the operator's actual HOME when interpolating `{home}`. Fall back
     // to `custom_home` only if `HOME` is genuinely unavailable, so
@@ -52,7 +52,7 @@ mod tests {
 
     #[test]
     fn default_config_resolves_to_default_paths() {
-        let cfg = Config::default();
+        let cfg = MxnodeFile::default();
         let p = resolve_paths(&cfg).unwrap();
         assert_eq!(p.custom_home, PathBuf::from("/home/ubuntu"));
         assert_eq!(p.custom_user, "ubuntu");
@@ -62,7 +62,7 @@ mod tests {
 
     #[test]
     fn custom_home_is_interpolated_into_node_keys() {
-        let mut cfg = Config::default();
+        let mut cfg = MxnodeFile::default();
         cfg.paths.custom_home = PathBuf::from("/srv/mx");
         cfg.paths.node_keys = "{custom_home}/keys".to_string();
         let p = resolve_paths(&cfg).unwrap();

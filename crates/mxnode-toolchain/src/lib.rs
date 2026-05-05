@@ -29,7 +29,7 @@ static BOOTSTRAP_INSTALLED: OnceLock<()> = OnceLock::new();
 /// Default Go version installed by [`bootstrap`] when no Go is on PATH.
 /// Tracks the floor required by recent `mx-chain-go` `go.mod` files
 /// (`go 1.22`). Operators on a fork that pins a different version
-/// override via `[install].go_version` in `config.toml` or by passing
+/// override via `[install].go_version` in `mxnode.toml` or by passing
 /// `--go-version` to `install` / `upgrade`.
 pub const DEFAULT_GO_VERSION: &str = "1.22.12";
 

@@ -25,14 +25,14 @@ pub fn build_acquirer(
     runtime: &Runtime,
     upstream_go_version: Option<&str>,
 ) -> Arc<dyn BinaryAcquirer> {
-    let github_org = runtime.loaded.config.network.github_org.clone();
+    let github_org = runtime.loaded.file.network.github_org.clone();
     let workdir = runtime.paths.custom_home.join("mxnode/build");
     let token = runtime.github_token();
 
     // Precedence: CLI/config override > upstream goVersion file > DEFAULT_GO_VERSION.
     let go_pinned = runtime
         .loaded
-        .config
+        .file
         .overrides
         .goversion()
         .map(str::to_owned)
@@ -41,7 +41,7 @@ pub fn build_acquirer(
     // Log the precedence decision so operators can trace which Go
     // version the toolchain bootstrap will request, and why.
     if let Some(version) = &go_pinned {
-        let source = if runtime.loaded.config.overrides.goversion().is_some() {
+        let source = if runtime.loaded.file.overrides.goversion().is_some() {
             "config override"
         } else {
             "upstream goVersion"
@@ -70,7 +70,7 @@ pub fn build_acquirer(
         acq
     };
 
-    match runtime.loaded.config.install.artifact_source {
+    match runtime.loaded.file.install.artifact_source {
         ArtifactSource::Source => Arc::new(make_source()),
         ArtifactSource::Release => {
             Arc::new(ReleaseAcquirer::new(github_org, workdir).with_token(token))

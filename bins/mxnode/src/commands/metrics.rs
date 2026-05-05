@@ -15,7 +15,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use mxnode_core::State;
+use mxnode_core::HostState;
 use mxnode_rpc::NodeClient;
 use mxnode_state::StateStore;
 use mxnode_systemd::ActiveState;
@@ -36,7 +36,7 @@ pub async fn run(args: MetricsArgs, global: &GlobalArgs) -> Result<(), CliError>
     let store = Arc::new(StateStore::new(&runtime.paths.config_dir));
     if !store.exists() {
         return Err(CliError::new(
-            "no state.toml on this host",
+            "no mxnode.toml on this host",
             format!("expected {}", store.state_path().display()),
             "run `mxnode install` first",
         )
@@ -95,15 +95,15 @@ async fn render_metrics(store: &StateStore) -> Result<String, String> {
     let state = store
         .load()
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| "state.toml went missing".to_string())?;
+        .ok_or_else(|| "mxnode.toml went missing".to_string())?;
     let mut out = String::with_capacity(2048);
-    out.push_str("# HELP mxnode_state_schema_version state.toml schema version\n");
+    out.push_str("# HELP mxnode_state_schema_version mxnode.toml schema version\n");
     out.push_str("# TYPE mxnode_state_schema_version gauge\n");
     out.push_str(&format!(
         "mxnode_state_schema_version {}\n",
         state.schema_version
     ));
-    out.push_str("# HELP mxnode_node_count number of nodes recorded in state.toml\n");
+    out.push_str("# HELP mxnode_node_count number of nodes recorded in mxnode.toml\n");
     out.push_str("# TYPE mxnode_node_count gauge\n");
     out.push_str(&format!("mxnode_node_count {}\n", state.nodes.len()));
 
@@ -165,7 +165,7 @@ async fn render_metrics(store: &StateStore) -> Result<String, String> {
 
 /// Per-node `is-active` probe in parallel. Result vec is indexed by
 /// `node.index.get() as usize`; entries default to 0 (inactive/unknown).
-async fn probe_active(state: &State) -> Vec<u8> {
+async fn probe_active(state: &HostState) -> Vec<u8> {
     let max_idx = state
         .nodes
         .iter()
@@ -197,7 +197,7 @@ async fn probe_active(state: &State) -> Vec<u8> {
     result
 }
 
-async fn probe_nonces(state: &State) -> Vec<Option<u64>> {
+async fn probe_nonces(state: &HostState) -> Vec<Option<u64>> {
     let max_idx = state
         .nodes
         .iter()

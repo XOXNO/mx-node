@@ -569,7 +569,7 @@ pub fn parse_unit_text(text: &str) -> Result<UnitView, ParseError> {
 }
 
 /// The bash `ExecStart=` line includes `-rest-api-interface localhost:PORT`.
-/// Extracting the port lets us seed `state.toml::nodes[].api_port` from a
+/// Extracting the port lets us seed `mxnode.toml::nodes[].api_port` from a
 /// pure parse instead of probing the running service.
 fn parse_api_port_from_exec_start(exec_start: &str) -> Option<u16> {
     // Tokenise on whitespace, ignoring args inside quotes (the bash never

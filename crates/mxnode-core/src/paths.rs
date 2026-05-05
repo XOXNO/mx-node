@@ -24,12 +24,11 @@ pub struct Paths {
     pub binaries: PathBuf,
     /// Where the unified `mxnode.toml` lives. Resolved from
     /// `XDG_CONFIG_HOME` (defaults to `~/.config/mxnode`). Also holds
-    /// `mxnode.toml.lock`, `inflight.toml`, and any future per-host
-    /// state files.
+    /// `mxnode.toml.lock` and any future per-config files.
     pub config_dir: PathBuf,
-    /// Legacy directory that historically held `state.toml`. Kept for
-    /// compatibility during the single-file rollout — the loader picks
-    /// up content here on first run, then never writes here again.
+    /// Per-user state directory under `XDG_STATE_HOME`. Holds
+    /// `inflight.toml` (in-flight upgrade journal) and any future
+    /// machine-derived run-data that doesn't belong in `mxnode.toml`.
     pub state: PathBuf,
     /// `upgrade.lock` PID-file, future IPC sockets.
     pub runtime: PathBuf,
@@ -70,22 +69,6 @@ impl Paths {
 
     pub fn mxnode_lock_file(&self) -> PathBuf {
         self.config_dir.join("mxnode.toml.lock")
-    }
-
-    /// Legacy `state.toml` location. Read once on first run for
-    /// migration into [`Self::mxnode_file`]; never written after.
-    pub fn legacy_state_file(&self) -> PathBuf {
-        self.state.join("state.toml")
-    }
-
-    pub fn legacy_state_lock_file(&self) -> PathBuf {
-        self.state.join("state.toml.lock")
-    }
-
-    /// Legacy `config.toml` location. Read once on first run for
-    /// migration; never written after.
-    pub fn legacy_config_file(&self) -> PathBuf {
-        self.config_dir.join("config.toml")
     }
 
     pub fn inflight_file(&self) -> PathBuf {

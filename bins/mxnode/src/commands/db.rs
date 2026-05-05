@@ -10,7 +10,7 @@ use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use mxnode_core::{NodeIndex, NodeState, Shard, State};
+use mxnode_core::{NodeIndex, NodeState, Shard, HostState};
 use mxnode_state::StateStore;
 use mxnode_systemd::ActiveState;
 use serde::Serialize;
@@ -272,7 +272,7 @@ async fn run_import(req: ImportRequest, global: &GlobalArgs) -> Result<(), CliEr
         .ok_or_else(|| {
             CliError::new(
                 "no such node",
-                format!("state.toml has no node at index {}", req.node),
+                format!("mxnode.toml has no node at index {}", req.node),
                 "run `mxnode status` to list valid indices",
             )
             .json_if(global.json)
@@ -306,7 +306,7 @@ async fn run_import(req: ImportRequest, global: &GlobalArgs) -> Result<(), CliEr
     prepare_import_target(&node.workdir, &source, req.replace, req.dry_run, global)?;
 
     let args = import_db_args(
-        &runtime.loaded.config.node.log_level,
+        &runtime.loaded.file.node.log_level,
         &source,
         req.no_sig_check,
     );
@@ -427,12 +427,12 @@ fn phase_name(v: DbVerb) -> &'static str {
     }
 }
 
-fn load_state_or_err(store: &StateStore, global: &GlobalArgs) -> Result<State, CliError> {
+fn load_state_or_err(store: &StateStore, global: &GlobalArgs) -> Result<HostState, CliError> {
     store
         .load()
         .map_err(|e| {
             CliError::new(
-                "failed to read state.toml",
+                "failed to read mxnode.toml",
                 e.to_string(),
                 "run `mxnode install` first",
             )
@@ -440,7 +440,7 @@ fn load_state_or_err(store: &StateStore, global: &GlobalArgs) -> Result<State, C
         })?
         .ok_or_else(|| {
             CliError::new(
-                "no state.toml on this host",
+                "no mxnode.toml on this host",
                 format!("expected {}", store.state_path().display()),
                 "run `mxnode install` first",
             )
@@ -449,7 +449,7 @@ fn load_state_or_err(store: &StateStore, global: &GlobalArgs) -> Result<State, C
 }
 
 fn pick_targets<'a>(
-    state: &'a State,
+    state: &'a HostState,
     requested: &[u16],
     global: &GlobalArgs,
 ) -> Result<Vec<&'a NodeState>, CliError> {
@@ -470,7 +470,7 @@ fn pick_targets<'a>(
     if !missing.is_empty() {
         return Err(CliError::new(
             "no such node",
-            format!("state.toml has no node(s) at index {missing:?}"),
+            format!("mxnode.toml has no node(s) at index {missing:?}"),
             "run `mxnode status` to list valid indices",
         )
         .json_if(global.json));
@@ -555,7 +555,7 @@ fn validate_import_source(source: &Path, global: &GlobalArgs) -> Result<PathBuf,
 }
 
 fn validate_node_config_for_import(workdir: &Path, global: &GlobalArgs) -> Result<(), CliError> {
-    for rel in ["config/config.toml", "config/prefs.toml"] {
+    for rel in ["config/mxnode.toml", "config/prefs.toml"] {
         let path = workdir.join(rel);
         if !path.exists() {
             return Err(CliError::new(
@@ -736,7 +736,7 @@ struct ImportPlanEntry {
 }
 
 async fn build_import_plan_report<F, Fut>(
-    state: &State,
+    state: &HostState,
     sources: &[ImportSource],
     req: &ImportPlanRequest,
     global: &GlobalArgs,
@@ -784,7 +784,7 @@ where
             )),
             _ => {}
         }
-        for rel in ["config/config.toml", "config/prefs.toml"] {
+        for rel in ["config/mxnode.toml", "config/prefs.toml"] {
             let path = node.workdir.join(rel);
             if !path.exists() {
                 entry_warnings.push(format!("missing {}", path.display()));
@@ -1215,7 +1215,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn import_plan_requires_full_shard_set() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut state = State::empty("test");
+        let mut state = HostState::empty("test");
         state.nodes = vec![
             node_for_plan(tmp.path(), 0, Shard::Zero),
             node_for_plan(tmp.path(), 1, Shard::One),
@@ -1285,7 +1285,7 @@ URL = "http://localhost:9200"
     fn node_for_plan(root: &Path, index: u16, shard: Shard) -> NodeState {
         let workdir = root.join(format!("node-{index}"));
         std::fs::create_dir_all(workdir.join("config")).unwrap();
-        std::fs::write(workdir.join("config/config.toml"), "[General]\n").unwrap();
+        std::fs::write(workdir.join("config/mxnode.toml"), "[General]\n").unwrap();
         std::fs::write(workdir.join("config/prefs.toml"), "[Preferences]\n").unwrap();
         NodeState {
             index: NodeIndex::new(index),

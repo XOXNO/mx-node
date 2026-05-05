@@ -1,7 +1,7 @@
 //! `mxnode keys check` and `mxnode keygen`.
 //!
 //! `keys check` reports whether `node-{INDEX}.zip` is present for every node
-//! in `state.toml`. `keygen` shells out to the keygenerator binary that
+//! in `mxnode.toml`. `keygen` shells out to the keygenerator binary that
 //! `mxnode install` (Phase 3) puts under `$CUSTOM_HOME/elrond-utils/`. We
 //! refuse cleanly if the binary isn't there yet.
 
@@ -95,7 +95,7 @@ fn check(global: &GlobalArgs) -> Result<(), CliError> {
         .load()
         .map_err(|e| {
             CliError::new(
-                "failed to read state.toml",
+                "failed to read mxnode.toml",
                 e.to_string(),
                 "run `mxnode install` first",
             )
@@ -103,7 +103,7 @@ fn check(global: &GlobalArgs) -> Result<(), CliError> {
         })?
         .ok_or_else(|| {
             CliError::new(
-                "no state.toml on this host",
+                "no mxnode.toml on this host",
                 format!("expected {}", store.state_path().display()),
                 "run `mxnode install` first",
             )
@@ -145,7 +145,7 @@ fn check(global: &GlobalArgs) -> Result<(), CliError> {
         println!("{}", serde_json::to_string(&payload).unwrap_or_default());
     } else if entries.is_empty() {
         println!(
-            "no validator nodes in state.toml — observer/multikey installs use auto-generated keys",
+            "no validator nodes in mxnode.toml — observer/multikey installs use auto-generated keys",
         );
     } else {
         println!("key dir: {}", key_dir.display());

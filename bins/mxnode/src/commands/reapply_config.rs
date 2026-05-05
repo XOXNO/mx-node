@@ -1,4 +1,4 @@
-//! `mxnode reapply-config`: walk every node in `state.toml` and re-run
+//! `mxnode reapply-config`: walk every node in `mxnode.toml` and re-run
 //! the per-node TOML edit pass — display name from the template,
 //! observer-shape edits where applicable, and the operator's
 //! `[overrides.prefs]` / `[overrides.config]` map.
@@ -32,7 +32,7 @@ pub async fn run(args: ReapplyConfigArgs, global: &GlobalArgs) -> Result<(), Cli
         .load()
         .map_err(|e| {
             CliError::new(
-                "failed to read state.toml",
+                "failed to read mxnode.toml",
                 e.to_string(),
                 "run `mxnode install` first",
             )
@@ -40,7 +40,7 @@ pub async fn run(args: ReapplyConfigArgs, global: &GlobalArgs) -> Result<(), Cli
         })?
         .ok_or_else(|| {
             CliError::new(
-                "no state.toml on this host",
+                "no mxnode.toml on this host",
                 format!("expected {}", store.state_path().display()),
                 "run `mxnode install` first, or `mxnode install` for a fresh setup",
             )
@@ -49,7 +49,7 @@ pub async fn run(args: ReapplyConfigArgs, global: &GlobalArgs) -> Result<(), Cli
 
     let install = state.install.clone().ok_or_else(|| {
         CliError::new(
-            "state.toml has no [install] section",
+            "mxnode.toml has no [install] section",
             "expected an existing install",
             "run `mxnode install` first",
         )
@@ -76,15 +76,15 @@ pub async fn run(args: ReapplyConfigArgs, global: &GlobalArgs) -> Result<(), Cli
     if selected.is_empty() {
         return Err(CliError::new(
             "no nodes selected",
-            "the supplied --node list matched zero nodes in state.toml",
+            "the supplied --node list matched zero nodes in mxnode.toml",
             "run `mxnode status` to see available indices",
         )
         .json_if(global.json));
     }
 
-    let prefs_overrides = &runtime.loaded.config.overrides.prefs;
-    let config_overrides = &runtime.loaded.config.overrides.config;
-    let template = &runtime.loaded.config.node.name_template;
+    let prefs_overrides = &runtime.loaded.file.overrides.prefs;
+    let config_overrides = &runtime.loaded.file.overrides.config;
+    let template = &runtime.loaded.file.node.name_template;
 
     global_op(
         "reapply-config",
@@ -114,7 +114,7 @@ pub async fn run(args: ReapplyConfigArgs, global: &GlobalArgs) -> Result<(), Cli
         // by passing `None`: only install-time stamps the value, and
         // re-applying overrides should never silently reset it.
         // Operators who need to flip primary↔backup edit prefs.toml
-        // directly or via `[overrides.prefs]` in config.toml.
+        // directly or via `[overrides.prefs]` in mxnode.toml.
         apply_node_tomledit(NodeTomlEdit {
             workdir: &node.workdir,
             display_name: &display_name,
@@ -190,7 +190,7 @@ struct NodeReport {
     workdir: String,
     unit: String,
     /// The `NodeDisplayName` actually stamped into `prefs.toml` for this
-    /// node. Empty only on legacy installs whose state.toml predates the
+    /// node. Empty only on legacy installs whose mxnode.toml predates the
     /// persisted `display_name` field AND whose `name_template` is empty.
     display_name: String,
 }

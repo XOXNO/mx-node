@@ -3,8 +3,8 @@
 //! Replaces the bash `sed -i` invocations that today rewrite:
 //!   - `prefs.toml` → `NodeDisplayName = "..."`
 //!   - `prefs.toml` → `DestinationShardAsObserver = "..."`
-//!   - `config.toml` → `[DbLookupExtensions] Enabled = true`
-//!   - proxy `config.toml` → `ServerPort = 8079` + observers list
+//!   - `mxnode.toml` → `[DbLookupExtensions] Enabled = true`
+//!   - proxy `mxnode.toml` → `ServerPort = 8079` + observers list
 //!
 //! Every mutator is **idempotent**: applying it twice produces the same
 //! bytes as applying it once. Comments and key ordering survive the
@@ -61,7 +61,7 @@ pub fn set_destination_shard(doc: &mut DocumentMut, shard: Shard) -> Result<(), 
 }
 
 /// Set `[DbLookupExtensions] Enabled = true` inside the node's
-/// `config.toml`. Used for observer squads.
+/// `mxnode.toml`. Used for observer squads.
 pub fn enable_db_lookup_extensions(doc: &mut DocumentMut) -> Result<(), TomlEditError> {
     let section = ensure_table(doc, "DbLookupExtensions")?;
     section["Enabled"] = value(true);
@@ -83,7 +83,7 @@ pub fn set_redundancy_level(doc: &mut DocumentMut, level: u8) -> Result<(), Toml
 }
 
 /// Clear `[HardwareRequirements] CPUFlags = []` in the node's
-/// `config.toml`. The upstream config pins x86-only flags
+/// `mxnode.toml`. The upstream config pins x86-only flags
 /// (`SSE4`, `SSE42`); on non-x86 hosts (Apple Silicon, Linux aarch64,
 /// the AMD/ARM Mac Mini observer profile blessed by the MultiversX
 /// docs) the node refuses to start because `cpuid.CPU.Supports("SSE4")`
@@ -375,7 +375,7 @@ fn substitute_in_value(v: &toml::Value, subs: &[(&str, &str)]) -> toml::Value {
     }
 }
 
-/// One observer entry rendered into the proxy `config.toml`'s
+/// One observer entry rendered into the proxy `mxnode.toml`'s
 /// `[[Observers]]` array-of-tables.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObserverEntry {

@@ -67,7 +67,7 @@ fn show(origin: bool, format: Format, global: &GlobalArgs) -> Result<(), CliErro
 
     match effective_format {
         Format::Toml => {
-            let body = toml::to_string_pretty(&loaded.config).map_err(|e| {
+            let body = toml::to_string_pretty(&loaded.file).map_err(|e| {
                 CliError::new(
                     "failed to render config as TOML",
                     e.to_string(),
@@ -95,7 +95,7 @@ fn show(origin: bool, format: Format, global: &GlobalArgs) -> Result<(), CliErro
                 .map(|(k, v)| (k.clone(), v.label()))
                 .collect::<std::collections::BTreeMap<_, _>>();
             let payload = serde_json::json!({
-                "config": loaded.config,
+                "config": loaded.file,
                 "source": SourceView::from(&loaded.source),
                 "origins": origins,
             });
@@ -115,7 +115,7 @@ fn get(path: String, global: &GlobalArgs) -> Result<(), CliError> {
         )
         .json_if(global.json)
     })?;
-    let body = toml::to_string(&loaded.config).map_err(|e| {
+    let body = toml::to_string(&loaded.file).map_err(|e| {
         CliError::new(
             "failed to serialize config",
             e.to_string(),
@@ -160,7 +160,7 @@ fn run_validate(strict: bool, global: &GlobalArgs) -> Result<(), CliError> {
         )
         .json_if(global.json)
     })?;
-    let mut report = validate(&loaded.config);
+    let mut report = validate(&loaded.file);
     if strict {
         report.warnings.push(
             "--strict checks (network reachability, token validity) are not yet wired up; \

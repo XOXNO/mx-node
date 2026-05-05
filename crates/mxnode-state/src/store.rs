@@ -79,7 +79,7 @@ impl StateStore {
     }
 
     /// Backwards-compatible accessor used by error messages that still
-    /// say `state.toml`. Returns the unified file's path.
+    /// say `mxnode.toml`. Returns the unified file's path.
     pub fn state_path(&self) -> &Path {
         &self.file_path
     }
@@ -112,12 +112,12 @@ impl StateStore {
     /// Load the host inventory section (`[host]`). Returns `Ok(None)`
     /// when the file is missing **or** when the host section is empty
     /// (no install, no nodes) — the latter case preserves the
-    /// pre-unified `state.toml` semantics where "file absent" meant
+    /// pre-unified `mxnode.toml` semantics where "file absent" meant
     /// "host not yet initialized". Callers seed defaults or run
     /// `mxnode adopt` / `migrate-bash` to populate it.
     ///
     /// Backwards-compatible with the pre-unified API: callers receive
-    /// [`HostState`] (aliased as `State`) and continue to access
+    /// [`HostState`] (aliased as `HostState`) and continue to access
     /// `.install`, `.nodes`, etc. directly. The full file is available
     /// via [`Self::load_file`] when callers need the operator sections
     /// too.
@@ -188,7 +188,7 @@ impl StateStore {
     /// Save the host inventory section (`[host]`). Reads the current
     /// file (or defaults), splices in the new `host`, writes the whole
     /// document atomically. Backwards-compatible with the pre-unified
-    /// `state.toml` API.
+    /// `mxnode.toml` API.
     ///
     /// `_guard` proves the caller holds the flock; we don't inspect it
     /// but the parameter makes the API impossible to misuse without
@@ -400,7 +400,7 @@ mod tests {
     fn load_returns_none_for_uninitialised_host() {
         // A file with `[host]` defaulted (no install, no nodes) is
         // semantically equivalent to "host not initialised yet". The
-        // pre-unified API returned None when state.toml was absent;
+        // pre-unified API returned None when mxnode.toml was absent;
         // we preserve that contract here.
         let dir = TempDir::new().unwrap();
         let store = fresh_store(&dir);

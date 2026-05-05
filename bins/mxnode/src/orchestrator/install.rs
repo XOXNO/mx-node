@@ -5,7 +5,7 @@
 //!   1. acquire node (and proxy / keygenerator) binaries
 //!   2. clone the config repo
 //!   3. for each node-i: workdir + config copy + key install + unit
-//!   4. write state.toml
+//!   4. write mxnode.toml
 //!
 //! The actual systemd unit install (sudo mv into /etc/systemd/system + sudo
 //! systemctl enable) lives in the per-command modules so each command can
@@ -18,9 +18,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use mxnode_core::{
-    state::{InstallSection, MigrationLog},
-    Environment, InstallKind, NodeIndex, NodeState, Paths, ProxyState, Role, Shard, State, Tag,
-    DEFAULT_PROXY_PORT, SCHEMA_VERSION,
+    Environment, HostInstall, HostState, InstallKind, MigrationLog, NodeIndex, NodeState, Paths,
+    ProxyState, Role, Shard, Tag, DEFAULT_PROXY_PORT, SCHEMA_VERSION,
 };
 use mxnode_state::{swap_symlink, BinStore, StateStore};
 use mxnode_systemd::{
@@ -48,7 +47,7 @@ pub enum InstallError {
     #[error("config repo: {0}")]
     ConfigRepo(#[from] ConfigRepoError),
     #[error("state store: {0}")]
-    State(String),
+    HostState(String),
     #[error("zip extract: {0}")]
     Zip(String),
     #[error("toml edit: {0}")]
@@ -97,11 +96,11 @@ pub struct InstallPlan<'a> {
     /// `prefs.toml`. Empty by default.
     pub prefs_overrides: &'a BTreeMap<String, toml::Value>,
     /// Operator-supplied dotted-path overrides for every node's
-    /// `config.toml`. Empty by default.
+    /// `mxnode.toml`. Empty by default.
     pub config_overrides: &'a BTreeMap<String, toml::Value>,
 }
 
-/// Per-node spec written into state.toml + used for tomledit.
+/// Per-node spec written into mxnode.toml + used for tomledit.
 #[derive(Debug, Clone)]
 pub struct NodeSpec {
     pub index: NodeIndex,
@@ -121,9 +120,9 @@ pub enum ConfigEdits {
     Observer,
 }
 
-/// Outcome the caller surfaces to the operator + persists to state.toml.
+/// Outcome the caller surfaces to the operator + persists to mxnode.toml.
 pub struct InstallOutcome {
-    pub state: State,
+    pub state: HostState,
     /// Paths of the systemd unit files we rendered. The caller installs
     /// them into /etc/systemd/system (typically via sudo).
     pub unit_files: Vec<UnitFile>,
@@ -250,7 +249,7 @@ pub async fn run_install(
         .await
         .map_err(InstallError::ConfigRepo)?;
 
-        let upstream_cfg = proxy_repo.join("cmd/proxy/config/config.toml");
+        let upstream_cfg = proxy_repo.join("cmd/proxy/config/mxnode.toml");
         let raw = fs::read_to_string(&upstream_cfg).map_err(|e| InstallError::Io {
             path: upstream_cfg.display().to_string(),
             source: e,
@@ -268,11 +267,11 @@ pub async fn run_install(
         rewrite_proxy_config(&mut proxy_config, DEFAULT_PROXY_PORT, &observers)
             .map_err(|e| InstallError::Toml(format!("proxy config: {e}")))?;
         fs::write(
-            proxy_dir.join("config/config.toml"),
+            proxy_dir.join("config/mxnode.toml"),
             proxy_config.to_string(),
         )
         .map_err(|e| InstallError::Io {
-            path: proxy_dir.join("config/config.toml").display().to_string(),
+            path: proxy_dir.join("config/mxnode.toml").display().to_string(),
             source: e,
         })?;
 
@@ -423,8 +422,8 @@ pub async fn run_install(
         unit_files.push(proxy_unit);
     }
 
-    // 6. Build State.
-    let install = InstallSection {
+    // 6. Build HostState.
+    let install = HostInstall {
         kind: plan.kind,
         environment: plan.environment,
         github_org: plan.github_org.to_string(),
@@ -435,7 +434,7 @@ pub async fn run_install(
             proxy_tag: plan.proxy_tag.clone(),
             go_version: String::new(),
         },
-        binaries: mxnode_core::state::InstallBinaries {
+        binaries: mxnode_core::InstallBinaries {
             node: vec![plan.binary_tag.clone()],
             proxy: plan
                 .proxy_tag
@@ -447,7 +446,7 @@ pub async fn run_install(
         },
     };
 
-    let state = State {
+    let state = HostState {
         schema_version: SCHEMA_VERSION,
         written_at: time::OffsetDateTime::now_utc(),
         written_by: format!("mxnode/{}", env!("CARGO_PKG_VERSION")),
@@ -556,7 +555,7 @@ pub(crate) fn install_seednode_configs(
         path: config_dir.display().to_string(),
         source: e,
     })?;
-    for name in ["config.toml", "p2p.toml"] {
+    for name in ["mxnode.toml", "p2p.toml"] {
         let src = config_repo.join("seednode").join(name);
         if src.exists() {
             fs::copy(&src, config_dir.join(name)).map_err(|e| InstallError::Io {
@@ -657,12 +656,12 @@ pub(crate) fn apply_node_tomledit(input: NodeTomlEdit<'_>) -> Result<(), Install
         })?;
     }
 
-    // Edit config.toml when any of these is true:
+    // Edit mxnode.toml when any of these is true:
     //   1. Observer squads enable [DbLookupExtensions].
     //   2. Non-x86 hosts (Apple Silicon, Linux aarch64) need the
     //      [HardwareRequirements] CPUFlags array cleared.
     //   3. The operator supplied [overrides.config] entries.
-    let config_path = workdir.join("config/config.toml");
+    let config_path = workdir.join("config/mxnode.toml");
     let needs_observer_edits = matches!(edits, ConfigEdits::Observer);
     let needs_arm_bypass = !cfg!(target_arch = "x86_64");
     let has_op_overrides = !config_overrides.is_empty();
@@ -802,16 +801,16 @@ pub async fn install_units(units: &[UnitFile], enable: bool) -> Result<(), Insta
     Ok(())
 }
 
-/// Persist the `State` produced by [`run_install`] under the lock + atomic
+/// Persist the `HostState` produced by [`run_install`] under the lock + atomic
 /// write contract enforced by [`StateStore`].
-pub fn persist_state(paths: &Paths, state: &State) -> Result<PathBuf, InstallError> {
+pub fn persist_state(paths: &Paths, state: &HostState) -> Result<PathBuf, InstallError> {
     let store = StateStore::new(&paths.config_dir);
     let guard = store
         .lock()
-        .map_err(|e| InstallError::State(e.to_string()))?;
+        .map_err(|e| InstallError::HostState(e.to_string()))?;
     store
         .save(state, &guard)
-        .map_err(|e| InstallError::State(e.to_string()))?;
+        .map_err(|e| InstallError::HostState(e.to_string()))?;
     drop(guard);
     Ok(store.state_path().to_path_buf())
 }
@@ -849,9 +848,9 @@ mod tests {
         let dst = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(src.path().join(".git")).unwrap();
         std::fs::write(src.path().join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
-        std::fs::write(src.path().join("config.toml"), "key = 1\n").unwrap();
+        std::fs::write(src.path().join("mxnode.toml"), "key = 1\n").unwrap();
         copy_dir_recursive(src.path(), dst.path()).unwrap();
-        assert!(dst.path().join("config.toml").exists());
+        assert!(dst.path().join("mxnode.toml").exists());
         assert!(!dst.path().join(".git").exists());
     }
 
@@ -908,7 +907,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
-            workdir.join("config/config.toml"),
+            workdir.join("config/mxnode.toml"),
             "[DbLookupExtensions]\nEnabled = false\n",
         )
         .unwrap();
@@ -927,7 +926,7 @@ mod tests {
 
         let prefs = std::fs::read_to_string(workdir.join("config/prefs.toml")).unwrap();
         assert!(prefs.contains("DestinationShardAsObserver = \"metachain\""));
-        let config = std::fs::read_to_string(workdir.join("config/config.toml")).unwrap();
+        let config = std::fs::read_to_string(workdir.join("config/mxnode.toml")).unwrap();
         assert!(config.contains("Enabled = true"));
     }
 
@@ -1034,7 +1033,7 @@ mod tests {
         let proxy_config_dir = tmp.path().join("config");
         fs::create_dir_all(&proxy_config_dir).unwrap();
 
-        // Simulate upstream cmd/proxy/config/config.toml with sections we must preserve.
+        // Simulate upstream cmd/proxy/config/mxnode.toml with sections we must preserve.
         let upstream = r#"
 [GeneralSettings]
 ServerPort = 8080
@@ -1048,17 +1047,17 @@ Address = "http://upstream:8083"
 LoggingEnabled = true
 ThresholdInMicroSeconds = 10000
 "#;
-        fs::write(proxy_config_dir.join("config.toml"), upstream).unwrap();
+        fs::write(proxy_config_dir.join("mxnode.toml"), upstream).unwrap();
 
         // Seed from upstream then patch.
-        let raw = fs::read_to_string(proxy_config_dir.join("config.toml")).unwrap();
+        let raw = fs::read_to_string(proxy_config_dir.join("mxnode.toml")).unwrap();
         let mut doc: DocumentMut = raw.parse().unwrap();
         let observers = build_default_observers(8080, 4);
         mxnode_systemd::rewrite_proxy_config(&mut doc, mxnode_core::DEFAULT_PROXY_PORT, &observers)
             .unwrap();
-        fs::write(proxy_config_dir.join("config.toml"), doc.to_string()).unwrap();
+        fs::write(proxy_config_dir.join("mxnode.toml"), doc.to_string()).unwrap();
 
-        let out = fs::read_to_string(proxy_config_dir.join("config.toml")).unwrap();
+        let out = fs::read_to_string(proxy_config_dir.join("mxnode.toml")).unwrap();
         assert!(
             out.contains("RequestTimeoutSec = 60"),
             "upstream value lost: {out}"
@@ -1078,14 +1077,14 @@ ThresholdInMicroSeconds = 10000
         let repo = tmp.path().join("repo");
         let seed_cfg = repo.join("seednode");
         fs::create_dir_all(&seed_cfg).unwrap();
-        fs::write(seed_cfg.join("config.toml"), "port = 10000\n").unwrap();
+        fs::write(seed_cfg.join("mxnode.toml"), "port = 10000\n").unwrap();
         fs::write(seed_cfg.join("p2p.toml"), "seed = true\n").unwrap();
 
         let seednode_dir = tmp.path().join("elrond-utils/seednode");
         install_seednode_configs(&repo, &seednode_dir).unwrap();
 
         assert_eq!(
-            fs::read_to_string(seednode_dir.join("config/config.toml")).unwrap(),
+            fs::read_to_string(seednode_dir.join("config/mxnode.toml")).unwrap(),
             "port = 10000\n",
         );
         assert_eq!(

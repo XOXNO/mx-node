@@ -2,7 +2,7 @@
 //!
 //! Resolution order (lowest → highest precedence):
 //!   1. Built-in defaults (`Default for Config`)
-//!   2. Config file (`~/.config/mxnode/config.toml` then `/etc/mxnode/config.toml`)
+//!   2. Config file (`~/.config/mxnode/mxnode.toml` then `/etc/mxnode/mxnode.toml`)
 //!   3. CLI flags (passed as a sparse `Override` map)
 //!
 //! `MXNODE_GITHUB_TOKEN` is the **only** environment variable read; secrets do
@@ -15,8 +15,8 @@ mod validate;
 mod xdg;
 
 pub use loader::{
-    legacy_system_config_path, legacy_user_config_path, load, system_config_path, user_config_path,
-    user_config_path_or_default, ConfigSource, LoadOptions, Loaded, Scope,
+    load, system_config_path, user_config_path, user_config_path_or_default, ConfigSource,
+    LoadOptions, Loaded, Scope,
 };
 pub use origin::Origin;
 pub use resolve::resolve_paths;

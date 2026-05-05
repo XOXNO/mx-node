@@ -1,7 +1,7 @@
 //! `mxnode.toml` schema — single source of truth on disk.
 //!
-//! Replaces the old split between `config.toml` (operator-edited) and
-//! `state.toml` (machine-derived). Operators now edit one file at
+//! Replaces the old split between `mxnode.toml` (operator-edited) and
+//! `mxnode.toml` (machine-derived). Operators now edit one file at
 //! `<XDG_CONFIG_HOME>/mxnode/mxnode.toml`, mode 0600.
 //!
 //! Layout:
@@ -237,7 +237,7 @@ pub struct OverridesSection {
     pub goversion: String,
     /// Dotted-key TOML overrides applied to every node's `prefs.toml`.
     pub prefs: BTreeMap<String, toml::Value>,
-    /// Dotted-key TOML overrides applied to every node's `config.toml`.
+    /// Dotted-key TOML overrides applied to every node's `mxnode.toml`.
     pub config: BTreeMap<String, toml::Value>,
 }
 
@@ -351,11 +351,11 @@ impl HostState {
 }
 
 /// Observed install metadata — kind / environment / org / version
-/// pinning. Renamed from the old `state::InstallSection` to disambiguate
+/// pinning. Renamed from the old `HostInstall` to disambiguate
 /// from the operator-side [`InstallSection`] (artifact-source policy).
 ///
 /// `#[serde(default)]` lets tag/binary lists fall back to empty when a
-/// migrated legacy `state.toml` omits them — only `kind`, `environment`,
+/// migrated legacy `mxnode.toml` omits them — only `kind`, `environment`,
 /// `github_org` and `node_count` are required.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostInstall {

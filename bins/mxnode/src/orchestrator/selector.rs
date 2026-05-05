@@ -1,4 +1,4 @@
-//! Resolve `LifecycleArgs` against the live `State` to a list of nodes the
+//! Resolve `LifecycleArgs` against the live `HostState` to a list of nodes the
 //! caller is targeting.
 //!
 //! The selector forms (mutually exclusive at parse time via `clap::ArgGroup`):
@@ -12,7 +12,7 @@
 //! When no selector is supplied, the caller decides whether to refuse or
 //! default to "all" — selectors here are pure parsing/filtering, not policy.
 
-use mxnode_core::{NodeIndex, NodeState, Role, Shard, State};
+use mxnode_core::{NodeIndex, NodeState, Role, Shard, HostState};
 
 use crate::cli::LifecycleArgs;
 
@@ -27,7 +27,7 @@ pub enum SelectorError {
     NodeMissing { missing: Vec<u16> },
     /// Selector syntax inside `--select` was malformed.
     BadExpression(String),
-    /// State has zero nodes — running a lifecycle command makes no sense.
+    /// HostState has zero nodes — running a lifecycle command makes no sense.
     EmptyState,
 }
 
@@ -42,7 +42,7 @@ impl std::fmt::Display for SelectorError {
                 write!(f, "could not parse --select expression: {s}")
             }
             SelectorError::EmptyState => {
-                write!(f, "state.toml has no nodes; run `mxnode install` first",)
+                write!(f, "mxnode.toml has no nodes; run `mxnode install` first",)
             }
         }
     }
@@ -54,7 +54,7 @@ impl std::fmt::Display for SelectorError {
 /// production callers (`start` / `stop` / `restart` / upgrade) want
 /// that semantic. Add a `default: DefaultSelection` parameter back
 /// here when a destructive command needs the opposite behaviour.
-pub fn resolve(state: &State, args: &LifecycleArgs) -> Result<Vec<NodeIndex>, SelectorError> {
+pub fn resolve(state: &HostState, args: &LifecycleArgs) -> Result<Vec<NodeIndex>, SelectorError> {
     if state.nodes.is_empty() {
         return Err(SelectorError::EmptyState);
     }
@@ -125,7 +125,7 @@ fn sorted_indices<'a>(iter: impl Iterator<Item = &'a NodeState>) -> Vec<NodeInde
 ///             for shard: 0|1|2|metachain|disabled|auto
 ///             for index: integer (or comma-separated list)
 /// ```
-fn resolve_expression(state: &State, expr: &str) -> Result<Vec<NodeIndex>, SelectorError> {
+fn resolve_expression(state: &HostState, expr: &str) -> Result<Vec<NodeIndex>, SelectorError> {
     let mut matched: Vec<NodeIndex> = Vec::new();
     for clause in expr.split('|').map(str::trim).filter(|s| !s.is_empty()) {
         let preds = parse_clause(clause)?;
@@ -192,7 +192,7 @@ fn parse_clause(clause: &str) -> Result<Vec<Predicate>, SelectorError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mxnode_core::{NodeState, Role, Shard, State};
+    use mxnode_core::{NodeState, Role, Shard, HostState};
 
     fn node(idx: u16, role: Role, shard: Shard) -> NodeState {
         NodeState {
@@ -210,8 +210,8 @@ mod tests {
         }
     }
 
-    fn state_with_mixed_nodes() -> State {
-        let mut s = State::empty("test");
+    fn state_with_mixed_nodes() -> HostState {
+        let mut s = HostState::empty("test");
         s.nodes = vec![
             node(0, Role::Validator, Shard::Zero),
             node(1, Role::Observer, Shard::One),
@@ -234,7 +234,7 @@ mod tests {
 
     #[test]
     fn empty_state_is_an_error() {
-        let s = State::empty("test");
+        let s = HostState::empty("test");
         let err = resolve(&s, &args_default()).unwrap_err();
         assert_eq!(err, SelectorError::EmptyState);
     }

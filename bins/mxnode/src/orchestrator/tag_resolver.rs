@@ -49,7 +49,7 @@ pub enum ResolveError {
 pub enum Source {
     /// Operator passed the flag explicitly.
     Cli,
-    /// Pulled from `[overrides]` in config.toml.
+    /// Pulled from `[overrides]` in mxnode.toml.
     Override,
     /// Looked up `releases/latest` on GitHub.
     GithubLatest,
@@ -69,7 +69,7 @@ pub async fn resolve_binary_tag(
     resolve(
         runtime,
         cli_value,
-        runtime.loaded.config.overrides.binaryver(),
+        runtime.loaded.file.overrides.binaryver(),
         "mx-chain-go",
         "--binary-tag",
     )
@@ -86,7 +86,7 @@ pub async fn resolve_config_tag(
     resolve(
         runtime,
         cli_value,
-        runtime.loaded.config.overrides.configver(),
+        runtime.loaded.file.overrides.configver(),
         &repo,
         "--config-tag",
     )
@@ -101,7 +101,7 @@ pub async fn resolve_proxy_tag(
     resolve(
         runtime,
         cli_value,
-        runtime.loaded.config.overrides.proxyver(),
+        runtime.loaded.file.overrides.proxyver(),
         "mx-chain-proxy-go",
         "--proxy-tag",
     )
@@ -129,8 +129,8 @@ async fn resolve(
             source: Source::Override,
         });
     }
-    let org = &runtime.loaded.config.network.github_org;
-    fetch_latest(org, repo).await
+    let org = &runtime.loaded.file.network.github_org;
+    fetch_latest(org, repo, runtime.github_token()).await
 }
 
 fn parse_tag(raw: &str, flag: &'static str) -> Result<Tag, ResolveError> {
@@ -141,11 +141,13 @@ fn parse_tag(raw: &str, flag: &'static str) -> Result<Tag, ResolveError> {
         })
 }
 
-async fn fetch_latest(org: &str, repo: &str) -> Result<Resolved, ResolveError> {
+async fn fetch_latest(
+    org: &str,
+    repo: &str,
+    token: Option<String>,
+) -> Result<Resolved, ResolveError> {
     let cfg = ClientConfig {
-        token: std::env::var("MXNODE_GITHUB_TOKEN")
-            .ok()
-            .filter(|s| !s.is_empty()),
+        token,
         ..ClientConfig::default()
     };
     let client = Client::new(cfg).map_err(|e| ResolveError::Github {

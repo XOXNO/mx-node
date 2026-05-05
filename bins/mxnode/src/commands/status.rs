@@ -6,7 +6,7 @@
 use std::io::{IsTerminal, Write};
 use std::time::Duration;
 
-use mxnode_core::State;
+use mxnode_core::HostState;
 use mxnode_rpc::{NodeClient, NodeMetrics};
 use mxnode_state::StateStore;
 use serde::Serialize;
@@ -52,7 +52,7 @@ async fn paint_once(
         .load()
         .map_err(|e| {
             CliError::new(
-                "failed to read state.toml",
+                "failed to read mxnode.toml",
                 e.to_string(),
                 "run `mxnode install` to set up nodes",
             )
@@ -60,7 +60,7 @@ async fn paint_once(
         })?
         .ok_or_else(|| {
             CliError::new(
-                "no state.toml on this host",
+                "no mxnode.toml on this host",
                 format!("expected {}", store.state_path().display()),
                 "run `mxnode install` to set up nodes",
             )
@@ -130,7 +130,7 @@ struct Probe {
     pubkey_prefix: Option<String>,
 }
 
-async fn probe_all(state: &State) -> Vec<Probe> {
+async fn probe_all(state: &HostState) -> Vec<Probe> {
     let mut set: JoinSet<(usize, Probe)> = JoinSet::new();
     for (i, node) in state.nodes.iter().enumerate() {
         let port = node.api_port;
@@ -195,7 +195,7 @@ async fn probe_one(port: u16) -> Probe {
     }
 }
 
-fn render_table(state: &State, probes: &[Probe], color: bool) {
+fn render_table(state: &HostState, probes: &[Probe], color: bool) {
     let header = state
         .install
         .as_ref()
@@ -298,7 +298,7 @@ fn render_table(state: &State, probes: &[Probe], color: bool) {
     println!("\nhealth: {summary}");
 }
 
-fn render_json(state: &State, probes: &[Probe]) {
+fn render_json(state: &HostState, probes: &[Probe]) {
     let payload = JsonReport::from_state_and_probes(state, probes);
     println!("{}", serde_json::to_string(&payload).unwrap_or_default());
 }
@@ -323,7 +323,7 @@ struct JsonInstall {
 struct JsonNode {
     index: u16,
     /// Operator-chosen `NodeDisplayName` persisted at install time.
-    /// Empty on legacy installs whose state.toml predates the field.
+    /// Empty on legacy installs whose mxnode.toml predates the field.
     display_name: String,
     unit: String,
     shard: String,
@@ -334,7 +334,7 @@ struct JsonNode {
 }
 
 impl JsonReport {
-    fn from_state_and_probes(state: &State, probes: &[Probe]) -> Self {
+    fn from_state_and_probes(state: &HostState, probes: &[Probe]) -> Self {
         let install = state.install.as_ref().map(|i| JsonInstall {
             environment: i.environment.to_string(),
             kind: i.kind.to_string(),

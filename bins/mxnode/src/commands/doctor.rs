@@ -284,7 +284,7 @@ fn system_requirements_context(runtime: &Runtime) -> SystemRequirementsContext {
             .any(|n| matches!(n.role, Role::Validator | Role::Multikey));
         let environment = state.install.as_ref().map(|i| i.environment).or(runtime
             .loaded
-            .config
+            .file
             .network
             .environment);
         return SystemRequirementsContext {
@@ -295,7 +295,7 @@ fn system_requirements_context(runtime: &Runtime) -> SystemRequirementsContext {
     }
     SystemRequirementsContext {
         node_count: 1,
-        environment: runtime.loaded.config.network.environment,
+        environment: runtime.loaded.file.network.environment,
         has_validator_role: false,
     }
 }
@@ -725,20 +725,20 @@ fn check_state(runtime: &Runtime) -> Vec<Finding> {
         Ok(Some(state)) => {
             out.push(Finding::ok(
                 "state",
-                format!("state.toml schema_version={}", state.schema_version),
+                format!("mxnode.toml schema_version={}", state.schema_version),
             ));
         }
         Ok(None) => {
             out.push(Finding::warn(
                 "state",
-                "no state.toml on this host",
+                "no mxnode.toml on this host",
                 "run `mxnode install` to set up nodes",
             ));
         }
         Err(e) => {
             out.push(Finding::err(
                 "state",
-                format!("could not parse state.toml: {e}"),
+                format!("could not parse mxnode.toml: {e}"),
                 "either fix the file manually or remove it and run hand-edit and re-run",
             ));
         }

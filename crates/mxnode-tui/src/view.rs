@@ -362,7 +362,7 @@ fn fleet_health(app: &App) -> (usize, usize, usize, usize) {
 fn draw_tabs(frame: &mut Frame, area: Rect, app: &App, ctx: &mut DrawContext) {
     if app.nodes.is_empty() {
         frame.render_widget(
-            Paragraph::new(" no nodes in state.toml — run `mxnode adopt` ").style(theme::dim()),
+            Paragraph::new(" no nodes in mxnode.toml — run `mxnode adopt` ").style(theme::dim()),
             area,
         );
         ctx.tab_columns.clear();

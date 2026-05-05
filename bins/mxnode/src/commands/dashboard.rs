@@ -1,6 +1,6 @@
 //! `mxnode dashboard`: multi-node ratatui live dashboard.
 //!
-//! Reads state.toml + the operator's config to build a per-node spec
+//! Reads mxnode.toml + the operator's config to build a per-node spec
 //! (label / unit / api port / workdir) then hands off to mxnode-tui.
 
 use std::io::IsTerminal;
@@ -34,7 +34,7 @@ pub async fn run(args: DashboardArgs, global: &GlobalArgs) -> Result<(), CliErro
         .load()
         .map_err(|e| {
             CliError::new(
-                "failed to read state.toml",
+                "failed to read mxnode.toml",
                 e.to_string(),
                 "run `mxnode install` first",
             )
@@ -42,15 +42,15 @@ pub async fn run(args: DashboardArgs, global: &GlobalArgs) -> Result<(), CliErro
         })?
         .ok_or_else(|| {
             CliError::new(
-                "no state.toml on this host",
+                "no mxnode.toml on this host",
                 format!("expected {}", store.state_path().display()),
                 "run `mxnode install` to set up nodes",
             )
             .json_if(global.json)
         })?;
 
-    let api_port_base = runtime.loaded.config.node.api_port_base;
-    let template = &runtime.loaded.config.node.name_template;
+    let api_port_base = runtime.loaded.file.node.api_port_base;
+    let template = &runtime.loaded.file.node.name_template;
     let env_str = state
         .install
         .as_ref()
@@ -78,7 +78,7 @@ pub async fn run(args: DashboardArgs, global: &GlobalArgs) -> Result<(), CliErro
             // re-templating from config. Re-templating without that
             // check is the bug the dashboard was previously hitting:
             // the operator typed a custom name, it landed in
-            // state.toml + prefs.toml, and the dashboard ignored both.
+            // mxnode.toml + prefs.toml, and the dashboard ignored both.
             let display_name = crate::commands::prompts::resolve_display_name(
                 &n.display_name,
                 template,
@@ -107,7 +107,7 @@ pub async fn run(args: DashboardArgs, global: &GlobalArgs) -> Result<(), CliErro
     if nodes.is_empty() {
         return Err(CliError::new(
             "no nodes to display",
-            "state.toml is empty or the --node filter matched nothing",
+            "mxnode.toml is empty or the --node filter matched nothing",
             "run `mxnode status` to list available indices",
         )
         .json_if(global.json));
@@ -122,7 +122,7 @@ pub async fn run(args: DashboardArgs, global: &GlobalArgs) -> Result<(), CliErro
         .or_else(|| {
             runtime
                 .loaded
-                .config
+                .file
                 .network
                 .environment
                 .map(|e| e.to_string())
@@ -141,10 +141,10 @@ pub async fn run(args: DashboardArgs, global: &GlobalArgs) -> Result<(), CliErro
     let opts = DashboardOpts {
         nodes,
         interval: Duration::from_millis(args.interval.max(100)),
-        gateway: runtime.loaded.config.network.gateway.clone(),
+        gateway: runtime.loaded.file.network.gateway.clone(),
         ws_logs: args.ws_logs,
         environment,
-        title: runtime.loaded.config.branding.title.clone(),
+        title: runtime.loaded.file.branding.title.clone(),
         shares_keys,
     };
 

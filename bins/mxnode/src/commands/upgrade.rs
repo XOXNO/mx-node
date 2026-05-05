@@ -18,8 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mxnode_core::{
-    state::{MigrationEntry, MigrationResult},
-    NodeIndex, NodeState, Role, State, Tag,
+    HostState, MigrationEntry, MigrationResult, NodeIndex, NodeState, Role, Tag,
 };
 use mxnode_rpc::NodeClient;
 use mxnode_state::{
@@ -115,7 +114,7 @@ pub async fn run(mut args: UpgradeArgs, global: &GlobalArgs) -> Result<(), CliEr
         .load()
         .map_err(|e| {
             CliError::new(
-                "failed to read state.toml",
+                "failed to read mxnode.toml",
                 e.to_string(),
                 "run `mxnode install` first",
             )
@@ -123,7 +122,7 @@ pub async fn run(mut args: UpgradeArgs, global: &GlobalArgs) -> Result<(), CliEr
         })?
         .ok_or_else(|| {
             CliError::new(
-                "no state.toml on this host",
+                "no mxnode.toml on this host",
                 format!("expected {}", store.state_path().display()),
                 "run `mxnode install` first",
             )
@@ -177,7 +176,7 @@ pub async fn run(mut args: UpgradeArgs, global: &GlobalArgs) -> Result<(), CliEr
         &store,
         outcome,
         &inflight_loc,
-        runtime.loaded.config.install.binary_keep as usize,
+        runtime.loaded.file.install.binary_keep as usize,
         global,
     )
 }
@@ -196,7 +195,7 @@ struct Plan {
 
 async fn build_plan(
     args: &UpgradeArgs,
-    state: &State,
+    state: &HostState,
     runtime: &Runtime,
     global: &GlobalArgs,
 ) -> Result<Plan, CliError> {
@@ -205,7 +204,7 @@ async fn build_plan(
     };
 
     // Binary: priority CLI > [overrides] > GitHub-latest. We deliberately
-    // skip the state.toml fallback for the *target* tag — staying on the
+    // skip the mxnode.toml fallback for the *target* tag — staying on the
     // currently-installed version isn't an upgrade. Operators who want to
     // redeploy the same tag pass --binary-tag explicitly.
     let binary = resolve_binary_tag(runtime, args.binary_tag.as_deref())
@@ -219,7 +218,7 @@ async fn build_plan(
     // OR set [overrides], otherwise the upgrade flow doesn't touch them.
     let environment = state.install.as_ref().map(|i| i.environment);
     let config_tag =
-        if args.config_tag.is_some() || runtime.loaded.config.overrides.configver().is_some() {
+        if args.config_tag.is_some() || runtime.loaded.file.overrides.configver().is_some() {
             let env = environment.ok_or_else(|| {
                 CliError::new(
                     "cannot resolve --config-tag without an environment",
@@ -237,7 +236,7 @@ async fn build_plan(
             None
         };
     let proxy_tag =
-        if args.proxy_tag.is_some() || runtime.loaded.config.overrides.proxyver().is_some() {
+        if args.proxy_tag.is_some() || runtime.loaded.file.overrides.proxyver().is_some() {
             let r = resolve_proxy_tag(runtime, args.proxy_tag.as_deref())
                 .await
                 .map_err(|e| crate::commands::install::resolve_err(e, global))?;
@@ -358,7 +357,7 @@ struct NodeResult {
 
 async fn execute_upgrade(
     plan: &Plan,
-    state: &State,
+    state: &HostState,
     runtime: &Runtime,
     inflight_loc: &Path,
     inflight: &mut Inflight,
@@ -371,7 +370,7 @@ async fn execute_upgrade(
     // we cloned and built last.
     let build_workdir = runtime.paths.custom_home.join("mxnode/build");
     let acquirer: Arc<dyn BinaryAcquirer> = Arc::new(SourceBuildAcquirer::new(
-        runtime.loaded.config.network.github_org.clone(),
+        runtime.loaded.file.network.github_org.clone(),
         build_workdir,
     ));
     let ctl = crate::orchestrator::supervisor::build_supervisor();
@@ -504,7 +503,7 @@ fn failure_outcome(plan: &Plan, started: time::OffsetDateTime, error: String) ->
 
 async fn acquire_upgrade_config_repo(
     plan: &Plan,
-    state: &State,
+    state: &HostState,
     runtime: &Runtime,
 ) -> Result<Option<std::path::PathBuf>, String> {
     let Some(config_tag) = plan.config_tag.as_ref() else {
@@ -517,7 +516,7 @@ async fn acquire_upgrade_config_repo(
         .ok_or_else(|| "config update: state.install.environment is missing".to_string())?;
     acquire_config_repo(
         &runtime.paths.binaries,
-        &runtime.loaded.config.network.github_org,
+        &runtime.loaded.file.network.github_org,
         environment,
         config_tag,
     )
@@ -568,7 +567,7 @@ async fn refresh_upgrade_utilities(
 
 struct UpgradeNodeContext<'a> {
     ctl: &'a Arc<dyn Ctl>,
-    state: &'a State,
+    state: &'a HostState,
     installed_binary: &'a Path,
     inflight_loc: &'a Path,
     is_squad: bool,
@@ -717,20 +716,20 @@ fn apply_upstream_config_update(
         edits,
         role: node.role,
         redundancy_level: None,
-        prefs_overrides: &runtime.loaded.config.overrides.prefs,
-        config_overrides: &runtime.loaded.config.overrides.config,
+        prefs_overrides: &runtime.loaded.file.overrides.prefs,
+        config_overrides: &runtime.loaded.file.overrides.config,
     })
     .map_err(|e| e.to_string())
 }
 
 /// Apply observer-squad-specific TOML edits to the node's config dir.
 /// Mirrors the bash `observers()` flow: enable `[DbLookupExtensions]` in
-/// `config.toml` and pin `DestinationShardAsObserver` in `prefs.toml`.
+/// `mxnode.toml` and pin `DestinationShardAsObserver` in `prefs.toml`.
 fn apply_squad_config_edits(node: &NodeState) -> Result<(), String> {
     use mxnode_systemd::{enable_db_lookup_extensions, set_destination_shard};
     use toml_edit::DocumentMut;
 
-    let config_path = node.workdir.join("config/config.toml");
+    let config_path = node.workdir.join("config/mxnode.toml");
     if config_path.exists() {
         let body = std::fs::read_to_string(&config_path)
             .map_err(|e| format!("read {}: {e}", config_path.display()))?;
@@ -765,7 +764,7 @@ const NONCE_LAG_TOLERANCE: u64 = 5;
 const NONCE_PROBE_TIMEOUT_SECS: u64 = 5 * 60;
 const NONCE_POLL_INTERVAL_SECS: u64 = 3;
 
-async fn wait_for_node_ready(state: &State, node: &NodeState) -> Result<(), String> {
+async fn wait_for_node_ready(state: &HostState, node: &NodeState) -> Result<(), String> {
     let deadline = std::time::Instant::now() + Duration::from_secs(NONCE_PROBE_TIMEOUT_SECS);
     let target =
         NodeClient::new("127.0.0.1", node.api_port).map_err(|e| format!("rpc client init: {e}"))?;
@@ -813,7 +812,7 @@ async fn wait_for_node_ready(state: &State, node: &NodeState) -> Result<(), Stri
 /// Highest `erd_probable_highest_nonce` reported by any sibling node
 /// (excluding `me`). Returns `None` when no sibling responds — the
 /// caller treats that as "no comparison available, accept current state".
-async fn highest_sibling_nonce(state: &State, me: &NodeState) -> Option<u64> {
+async fn highest_sibling_nonce(state: &HostState, me: &NodeState) -> Option<u64> {
     let mut highest: Option<u64> = None;
     for node in &state.nodes {
         if node.index == me.index {
@@ -861,16 +860,16 @@ fn persist_migration(
         Ok(None) => {
             drop(guard);
             return Err(CliError::new(
-                "state.toml went missing mid-upgrade",
+                "mxnode.toml went missing mid-upgrade",
                 "expected the file we loaded earlier",
-                "hand-edit state.toml or re-run `mxnode install` to refresh",
+                "hand-edit mxnode.toml or re-run `mxnode install` to refresh",
             )
             .json_if(global.json));
         }
         Err(e) => {
             drop(guard);
             return Err(CliError::new(
-                "failed to reload state.toml",
+                "failed to reload mxnode.toml",
                 e.to_string(),
                 "remove the file manually if it's corrupt",
             )
@@ -925,7 +924,7 @@ fn persist_migration(
     }
     store.save(&state, &guard).map_err(|e| {
         CliError::new(
-            "failed to write state.toml",
+            "failed to write mxnode.toml",
             e.to_string(),
             "ensure the state directory is writable",
         )
@@ -989,7 +988,7 @@ async fn upgrade_proxy(
         .load()
         .map_err(|e| {
             CliError::new(
-                "failed to read state.toml",
+                "failed to read mxnode.toml",
                 e.to_string(),
                 "run `mxnode install` first",
             )
@@ -997,7 +996,7 @@ async fn upgrade_proxy(
         })?
         .ok_or_else(|| {
             CliError::new(
-                "no state.toml on this host",
+                "no mxnode.toml on this host",
                 format!("expected {}", store.state_path().display()),
                 "run `mxnode install` first",
             )
@@ -1007,7 +1006,7 @@ async fn upgrade_proxy(
     let proxy = state.proxy.as_ref().cloned().ok_or_else(|| {
         CliError::new(
             "this host has no proxy installed",
-            "state.toml has no [proxy] section",
+            "mxnode.toml has no [proxy] section",
             "run `mxnode observers` or skip; standalone validators don't need a proxy",
         )
         .json_if(global.json)
@@ -1015,7 +1014,7 @@ async fn upgrade_proxy(
 
     // Resolve target proxy tag: CLI subcommand value > top-level
     // --proxy-tag > [overrides].proxyver > GitHub-latest. We deliberately
-    // skip the state.toml fallback for the *target* — staying on the
+    // skip the mxnode.toml fallback for the *target* — staying on the
     // currently-installed proxy isn't an upgrade.
     let cli_value = proxy_tag.as_deref().or(args.proxy_tag.as_deref());
     let resolved = crate::orchestrator::tag_resolver::resolve_proxy_tag(&runtime, cli_value)
@@ -1044,7 +1043,7 @@ async fn upgrade_proxy(
     let bin_store = BinStore::new(runtime.paths.binaries.clone());
     let build_workdir = runtime.paths.custom_home.join("mxnode/build");
     let acquirer: Arc<dyn BinaryAcquirer> = Arc::new(SourceBuildAcquirer::new(
-        runtime.loaded.config.network.github_org.clone(),
+        runtime.loaded.file.network.github_org.clone(),
         build_workdir,
     ));
     let acquired = acquirer
@@ -1158,7 +1157,7 @@ async fn upgrade_proxy(
     })?;
     store.save(&state, &guard).map_err(|e| {
         CliError::new(
-            "failed to write state.toml",
+            "failed to write mxnode.toml",
             e.to_string(),
             "ensure the state directory is writable",
         )
@@ -1187,14 +1186,14 @@ mod tests {
     use super::*;
     use crate::orchestrator::acquirer::MockAcquirer;
     use mxnode_config::{ConfigSource, Loaded};
-    use mxnode_core::{Config, Environment, Paths, Shard};
+    use mxnode_core::{MxnodeFile, Environment, Paths, Shard};
 
     fn runtime_for_tests(root: &Path) -> Runtime {
-        let mut config = Config::default();
-        config.network.environment = Some(Environment::Testnet);
+        let mut file = MxnodeFile::default();
+        file.network.environment = Some(Environment::Testnet);
         Runtime {
             loaded: Loaded {
-                config,
+                file,
                 source: ConfigSource::None,
                 origins: Default::default(),
             },
@@ -1231,7 +1230,7 @@ mod tests {
 
         let config_repo = tmp.path().join("config-repo");
         std::fs::create_dir_all(config_repo.join("seednode")).unwrap();
-        std::fs::write(config_repo.join("seednode/config.toml"), "port = 10000\n").unwrap();
+        std::fs::write(config_repo.join("seednode/mxnode.toml"), "port = 10000\n").unwrap();
         std::fs::write(config_repo.join("seednode/p2p.toml"), "seed = true\n").unwrap();
 
         refresh_upgrade_utilities(&acquirer, &bin_store, &runtime, &tag, Some(&config_repo))
@@ -1272,7 +1271,7 @@ mod tests {
         let repo = tmp.path().join("repo");
         std::fs::create_dir_all(&repo).unwrap();
         std::fs::write(
-            repo.join("config.toml"),
+            repo.join("mxnode.toml"),
             r#"
 [DbLookupExtensions]
 Enabled = false
@@ -1320,7 +1319,7 @@ RedundancyLevel = 2
         assert!(prefs.contains("RedundancyLevel = 2"));
         assert!(prefs.contains("DestinationShardAsObserver = \"0\""));
 
-        let config = std::fs::read_to_string(node.workdir.join("config/config.toml")).unwrap();
+        let config = std::fs::read_to_string(node.workdir.join("config/mxnode.toml")).unwrap();
         assert!(config.contains("Enabled = true"));
     }
 

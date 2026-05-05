@@ -24,7 +24,7 @@ pub struct Cli {
 #[derive(Debug, Args)]
 pub struct GlobalArgs {
     /// Override the config file path. By default, mxnode reads
-    /// `~/.config/mxnode/config.toml` then `/etc/mxnode/config.toml`.
+    /// `~/.config/mxnode/mxnode.toml` then `/etc/mxnode/mxnode.toml`.
     #[arg(long, global = true, value_name = "PATH")]
     pub config: Option<PathBuf>,
 
@@ -116,9 +116,9 @@ pub enum Command {
     /// touching binaries or restarting units.
     ReapplyConfig(ReapplyConfigArgs),
 
-    /// Rename a single node's `NodeDisplayName` in both `state.toml` and
+    /// Rename a single node's `NodeDisplayName` in both `mxnode.toml` and
     /// the on-disk `prefs.toml`. Unlike a hand-edit of `prefs.toml`, the
-    /// new name is persisted in `state.toml` so subsequent
+    /// new name is persisted in `mxnode.toml` so subsequent
     /// `reapply-config` / `upgrade` passes preserve it.
     Rename(RenameArgs),
 
@@ -129,7 +129,7 @@ pub enum Command {
     Cleanup(CleanupArgs),
 
     /// Import an existing `mx-chain-scripts` (bash) install into mxnode's
-    /// `state.toml`. Dry-run by default; pass `--execute` to write.
+    /// `mxnode.toml`. Dry-run by default; pass `--execute` to write.
     MigrateBash(crate::commands::migrate::MigrateBashArgs),
 
     /// Full host diagnostic; suggests fixes.
@@ -410,7 +410,7 @@ pub struct LogsArgs {
     /// logger profile.
     #[arg(long, conflicts_with = "save_archive")]
     pub ws: bool,
-    /// Host used for `--ws` connections. Ports still come from state.toml.
+    /// Host used for `--ws` connections. Ports still come from mxnode.toml.
     #[arg(long, default_value = "127.0.0.1")]
     pub host: String,
     /// Runtime logger pattern sent to the node's `/log` WebSocket.
@@ -622,7 +622,7 @@ pub struct CleanupArgs {
     /// immediately after cleanup to avoid re-downloading + re-building.
     #[arg(long)]
     pub keep_binaries: bool,
-    /// Keep the operator's `~/.config/mxnode/config.toml` so a
+    /// Keep the operator's `~/.config/mxnode/mxnode.toml` so a
     /// subsequent `mxnode install` does not have to re-prompt /
     /// re-auto-init. Default cleanup removes it along with the rest
     /// of the mxnode footprint.
@@ -649,7 +649,7 @@ impl CleanupArgs {
 #[derive(Debug, Args)]
 pub struct DashboardArgs {
     /// Limit the dashboard to a subset of nodes (default: every node in
-    /// state.toml). Repeat for multiple, e.g. `--node 0 --node 2`.
+    /// mxnode.toml). Repeat for multiple, e.g. `--node 0 --node 2`.
     #[arg(long)]
     pub node: Vec<u16>,
     /// REST poll cadence per node, in milliseconds.
@@ -696,7 +696,7 @@ pub struct SelfUpdateArgs {
 
 #[derive(Debug, Args)]
 pub struct RenameArgs {
-    /// Node index to rename. Must exist in `state.toml`.
+    /// Node index to rename. Must exist in `mxnode.toml`.
     #[arg(long)]
     pub node: u16,
     /// New `NodeDisplayName` value. Trimmed; rejected if empty.

@@ -1,6 +1,6 @@
 //! `mxnode cleanup`: full host cleanup — stop + disable units, remove unit
 //! files, remove `elrond-nodes/`/`elrond-proxy/`/`elrond-utils/`, drop
-//! state.toml. Defaults to dry-run for the first two minor releases per
+//! mxnode.toml. Defaults to dry-run for the first two minor releases per
 //! the plan.
 //!
 //! Dry-run mode is the safe default: pass `--execute` to actually delete.
@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use mxnode_config::user_config_path;
-use mxnode_core::{NodeState, Platform, State};
+use mxnode_core::{NodeState, Platform, HostState};
 use mxnode_state::StateStore;
 use mxnode_systemd::Ctl; // trait used by `Step::apply` parameter
 use serde::Serialize;
@@ -30,14 +30,14 @@ pub async fn run(args: CleanupArgs, global: &GlobalArgs) -> Result<(), CliError>
     let state = match store.load() {
         Ok(Some(s)) => s,
         Ok(None) => {
-            // No state.toml — nothing for cleanup to do unless the operator
+            // No mxnode.toml — nothing for cleanup to do unless the operator
             // also wants to wipe the proxy / utils directories. Print a
             // courtesy report and exit cleanly in dry-run.
             return cleanup_with_no_state(&args, global, &runtime);
         }
         Err(e) => {
             return Err(CliError::new(
-                "failed to read state.toml",
+                "failed to read mxnode.toml",
                 e.to_string(),
                 "remove the file manually if it's corrupt",
             )
@@ -106,7 +106,7 @@ fn cleanup_with_no_state(
     global: &GlobalArgs,
     runtime: &Runtime,
 ) -> Result<(), CliError> {
-    // Even without state.toml, an aborted/half-installed host can have
+    // Even without mxnode.toml, an aborted/half-installed host can have
     // any of these directories: the bash-era `elrond-*` trio plus
     // mxnode's own `~/mxnode/binaries`+`~/mxnode/build` and
     // `~/.local/state/mxnode`. Scan them all and let `--keep-binaries`
@@ -137,7 +137,7 @@ fn cleanup_with_no_state(
                 serde_json::json!({"ok": true, "removed": [], "note": "host appears clean"})
             );
         } else {
-            println!("nothing to clean: no state.toml and no managed directories present");
+            println!("nothing to clean: no mxnode.toml and no managed directories present");
         }
         return Ok(());
     }
@@ -145,7 +145,7 @@ fn cleanup_with_no_state(
     if !args.yes {
         return Err(CliError::new(
             "refusing without --yes",
-            "found managed directories without state.toml; cleanup is destructive",
+            "found managed directories without mxnode.toml; cleanup is destructive",
             "rerun with `mxnode cleanup --yes` to dry-run",
         )
         .json_if(global.json));
@@ -288,7 +288,7 @@ fn remove_file_idempotent(path: &Path) -> Result<(), String> {
     }
     // Best-effort: drop the parent directory if it's now empty so
     // `~/.config/mxnode/` doesn't linger as an empty husk after the
-    // config.toml leaf is removed. `remove_dir` (not `remove_dir_all`)
+    // mxnode.toml leaf is removed. `remove_dir` (not `remove_dir_all`)
     // is intentional: only removes empty directories, never recursive.
     if let Some(parent) = path.parent() {
         let _ = fs::remove_dir(parent);
@@ -296,7 +296,7 @@ fn remove_file_idempotent(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn build_plan(state: &State, paths: &mxnode_core::Paths, args: &CleanupArgs) -> Vec<Step> {
+fn build_plan(state: &HostState, paths: &mxnode_core::Paths, args: &CleanupArgs) -> Vec<Step> {
     let platform = Platform::current();
     // macOS LaunchAgents live in the operator's home, no sudo needed.
     // Linux systemd units live in /etc/systemd/system, removal needs sudo.
@@ -352,7 +352,7 @@ fn build_plan(state: &State, paths: &mxnode_core::Paths, args: &CleanupArgs) -> 
 
     // Remove mxnode's own footprint by default. Operators can opt out
     // per-category with `--keep-binaries` / `--keep-config`. Without
-    // these the host is left with stale `state.toml`, megabytes of
+    // these the host is left with stale `mxnode.toml`, megabytes of
     // built binaries, and an auto-init'd config that points at
     // already-deleted nodes — what the operator almost never wants.
     if !args.keep_binaries {
@@ -363,7 +363,7 @@ fn build_plan(state: &State, paths: &mxnode_core::Paths, args: &CleanupArgs) -> 
             path: paths.custom_home.join("mxnode"),
         });
     }
-    // state.toml lives under `paths.state` (state.toml itself + lock
+    // mxnode.toml lives under `paths.state` (mxnode.toml itself + lock
     // file + inflight). Always wipe the whole directory so we don't
     // leave a stale state behind that contradicts the deleted nodes.
     plan.push(Step::RemoveDir {

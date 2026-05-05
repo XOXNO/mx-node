@@ -43,7 +43,7 @@ pub async fn run(args: AddNodesArgs, global: &GlobalArgs) -> Result<(), CliError
         .load()
         .map_err(|e| {
             CliError::new(
-                "failed to read state.toml",
+                "failed to read mxnode.toml",
                 e.to_string(),
                 "run `mxnode install` first",
             )
@@ -51,7 +51,7 @@ pub async fn run(args: AddNodesArgs, global: &GlobalArgs) -> Result<(), CliError
         })?
         .ok_or_else(|| {
             CliError::new(
-                "no state.toml on this host",
+                "no mxnode.toml on this host",
                 format!("expected {}", store.state_path().display()),
                 "run `mxnode install` first",
             )
@@ -60,7 +60,7 @@ pub async fn run(args: AddNodesArgs, global: &GlobalArgs) -> Result<(), CliError
 
     let install = state.install.clone().ok_or_else(|| {
         CliError::new(
-            "state.toml has no [install] section",
+            "mxnode.toml has no [install] section",
             "expected an existing install",
             "run `mxnode install` first",
         )
@@ -92,10 +92,10 @@ pub async fn run(args: AddNodesArgs, global: &GlobalArgs) -> Result<(), CliError
     let operation_mode = args
         .operation_mode
         .map(|m| m.as_str().to_string())
-        .or_else(|| runtime.loaded.config.node.operation_mode.clone());
+        .or_else(|| runtime.loaded.file.node.operation_mode.clone());
     super::install::validate_operation_mode_extra_flags(
         operation_mode.as_deref(),
-        &runtime.loaded.config.node.extra_flags,
+        &runtime.loaded.file.node.extra_flags,
         global,
     )?;
 
@@ -113,7 +113,7 @@ pub async fn run(args: AddNodesArgs, global: &GlobalArgs) -> Result<(), CliError
     let resolved_template = args
         .name_template
         .as_deref()
-        .unwrap_or(&runtime.loaded.config.node.name_template);
+        .unwrap_or(&runtime.loaded.file.node.name_template);
     let interactive = !args.non_interactive && std::io::IsTerminal::is_terminal(&std::io::stdin());
     let display_names = if count == 0 {
         Vec::new()
@@ -166,7 +166,7 @@ pub async fn run(args: AddNodesArgs, global: &GlobalArgs) -> Result<(), CliError
             // reason (legacy installs imported via migrate-from-bash).
             runtime
                 .loaded
-                .config
+                .file
                 .overrides
                 .configver()
                 .and_then(|s| s.parse().ok())
@@ -183,24 +183,24 @@ pub async fn run(args: AddNodesArgs, global: &GlobalArgs) -> Result<(), CliError
     let plan = InstallPlan {
         paths: &runtime.paths,
         environment,
-        github_org: &runtime.loaded.config.network.github_org,
+        github_org: &runtime.loaded.file.network.github_org,
         binary_tag: binary_tag.clone(),
         config_tag: config_tag.clone(),
         proxy_tag: install.versions.proxy_tag.clone(),
         node_count: count,
         kind: install.kind,
         nodes,
-        api_port_base: runtime.loaded.config.node.api_port_base,
-        log_level: &runtime.loaded.config.node.log_level,
-        limit_nofile: runtime.loaded.config.node.limit_nofile,
-        restart_sec: runtime.loaded.config.node.restart_sec,
-        custom_user: &runtime.loaded.config.paths.custom_user,
-        extra_flags: &runtime.loaded.config.node.extra_flags,
+        api_port_base: runtime.loaded.file.node.api_port_base,
+        log_level: &runtime.loaded.file.node.log_level,
+        limit_nofile: runtime.loaded.file.node.limit_nofile,
+        restart_sec: runtime.loaded.file.node.restart_sec,
+        custom_user: &runtime.loaded.file.paths.custom_user,
+        extra_flags: &runtime.loaded.file.node.extra_flags,
         operation_mode,
         name_template: args
             .name_template
             .as_deref()
-            .unwrap_or(&runtime.loaded.config.node.name_template),
+            .unwrap_or(&runtime.loaded.file.node.name_template),
         config_edits: match install.kind {
             InstallKind::Validators | InstallKind::Mixed => ConfigEdits::Validator,
             _ => ConfigEdits::Observer,
@@ -213,8 +213,8 @@ pub async fn run(args: AddNodesArgs, global: &GlobalArgs) -> Result<(), CliError
         // be the right home for that.
         multikey_keys_file: existing_multikey_keys(&runtime),
         redundancy_level: 0,
-        prefs_overrides: &runtime.loaded.config.overrides.prefs,
-        config_overrides: &runtime.loaded.config.overrides.config,
+        prefs_overrides: &runtime.loaded.file.overrides.prefs,
+        config_overrides: &runtime.loaded.file.overrides.config,
     };
 
     // Eagerly clone (or hit the cache for) the config repo so we can
@@ -222,7 +222,7 @@ pub async fn run(args: AddNodesArgs, global: &GlobalArgs) -> Result<(), CliError
     // run_install hits the same cache and skips a second clone.
     let config_repo_path = acquire_config_repo(
         &runtime.paths.binaries,
-        &runtime.loaded.config.network.github_org,
+        &runtime.loaded.file.network.github_org,
         environment,
         &config_tag,
     )

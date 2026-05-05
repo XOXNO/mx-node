@@ -33,7 +33,7 @@ pub async fn run(mut args: InstallArgs, global: &GlobalArgs) -> Result<(), CliEr
     let store = StateStore::new(&runtime.paths.config_dir);
     if store.host_initialized() {
         return Err(CliError::new(
-            "state.toml already exists",
+            "mxnode.toml already exists",
             format!("found {}", store.state_path().display()),
             "use `mxnode add-nodes` to extend, or `mxnode cleanup --yes --execute` to start over",
         )
@@ -42,7 +42,7 @@ pub async fn run(mut args: InstallArgs, global: &GlobalArgs) -> Result<(), CliEr
 
     let environment = runtime
         .loaded
-        .config
+        .file
         .network
         .environment
         .ok_or_else(|| {
@@ -118,10 +118,10 @@ pub async fn run(mut args: InstallArgs, global: &GlobalArgs) -> Result<(), CliEr
     let operation_mode = args
         .operation_mode
         .map(|m| m.as_str().to_string())
-        .or_else(|| runtime.loaded.config.node.operation_mode.clone());
+        .or_else(|| runtime.loaded.file.node.operation_mode.clone());
     validate_operation_mode_extra_flags(
         operation_mode.as_deref(),
-        &runtime.loaded.config.node.extra_flags,
+        &runtime.loaded.file.node.extra_flags,
         global,
     )?;
 
@@ -178,7 +178,7 @@ pub async fn run(mut args: InstallArgs, global: &GlobalArgs) -> Result<(), CliEr
     let resolved_template = args
         .name_template
         .as_deref()
-        .unwrap_or(&runtime.loaded.config.node.name_template);
+        .unwrap_or(&runtime.loaded.file.node.name_template);
     let interactive = !args.non_interactive
         && std::io::IsTerminal::is_terminal(&std::io::stdin())
         && !args.dry_run;
@@ -227,30 +227,30 @@ pub async fn run(mut args: InstallArgs, global: &GlobalArgs) -> Result<(), CliEr
     let plan = InstallPlan {
         paths: &runtime.paths,
         environment,
-        github_org: &runtime.loaded.config.network.github_org,
+        github_org: &runtime.loaded.file.network.github_org,
         binary_tag: binary_tag.clone(),
         config_tag: config_tag.clone(),
         proxy_tag: proxy_tag.clone(),
         node_count: count,
         kind,
         nodes,
-        api_port_base: runtime.loaded.config.node.api_port_base,
-        log_level: &runtime.loaded.config.node.log_level,
-        limit_nofile: runtime.loaded.config.node.limit_nofile,
-        restart_sec: runtime.loaded.config.node.restart_sec,
-        custom_user: &runtime.loaded.config.paths.custom_user,
-        extra_flags: &runtime.loaded.config.node.extra_flags,
+        api_port_base: runtime.loaded.file.node.api_port_base,
+        log_level: &runtime.loaded.file.node.log_level,
+        limit_nofile: runtime.loaded.file.node.limit_nofile,
+        restart_sec: runtime.loaded.file.node.restart_sec,
+        custom_user: &runtime.loaded.file.paths.custom_user,
+        extra_flags: &runtime.loaded.file.node.extra_flags,
         operation_mode,
         name_template: args
             .name_template
             .as_deref()
-            .unwrap_or(&runtime.loaded.config.node.name_template),
+            .unwrap_or(&runtime.loaded.file.node.name_template),
         config_edits,
         install_proxy: args.with_proxy,
         multikey_keys_file,
         redundancy_level: backup_level,
-        prefs_overrides: &runtime.loaded.config.overrides.prefs,
-        config_overrides: &runtime.loaded.config.overrides.config,
+        prefs_overrides: &runtime.loaded.file.overrides.prefs,
+        config_overrides: &runtime.loaded.file.overrides.config,
     };
 
     // Eagerly clone (or hit the cache for) the config repo so we can
@@ -258,7 +258,7 @@ pub async fn run(mut args: InstallArgs, global: &GlobalArgs) -> Result<(), CliEr
     // run_install hits the same cache and skips a second clone.
     let config_repo_path = acquire_config_repo(
         &runtime.paths.binaries,
-        &runtime.loaded.config.network.github_org,
+        &runtime.loaded.file.network.github_org,
         environment,
         &config_tag,
     )
@@ -627,8 +627,8 @@ pub(super) fn install_err(
             "io error during install",
             "ensure the configured paths are writable by the current user",
         ),
-        E::State(_) => (
-            "could not persist state.toml",
+        E::HostState(_) => (
+            "could not persist mxnode.toml",
             "another mxnode op may be running; wait for it to finish",
         ),
         E::Zip(_) => (
@@ -637,7 +637,7 @@ pub(super) fn install_err(
         ),
         E::Toml(_) => (
             "config TOML edit failed",
-            "the upstream config repo's prefs.toml or config.toml may have a non-standard layout",
+            "the upstream config repo's prefs.toml or mxnode.toml may have a non-standard layout",
         ),
         E::Invalid(_) => (
             "install plan is invalid",
@@ -689,7 +689,7 @@ pub(super) fn emit_success(
         println!("{}", serde_json::to_string(&report).unwrap_or_default());
     } else {
         println!("✓ install: {}", install);
-        println!("  state.toml: {}", state_path.display());
+        println!("  mxnode.toml: {}", state_path.display());
         println!(
             "  units:      {}",
             outcome
@@ -749,7 +749,7 @@ mod tests {
     use crate::cli::GlobalArgs;
     use crate::orchestrator::runtime::Runtime;
     use mxnode_config::{ConfigSource, Loaded};
-    use mxnode_core::{Config, Environment, Paths, Role, Shard};
+    use mxnode_core::{MxnodeFile, Environment, Paths, Role, Shard};
 
     #[test]
     fn squad_mapping_pins_canonical_shards() {
@@ -811,11 +811,11 @@ mod tests {
     }
 
     fn runtime_for_tests(custom_home: &std::path::Path) -> Runtime {
-        let mut config = Config::default();
-        config.network.environment = Some(Environment::Mainnet);
+        let mut file = MxnodeFile::default();
+        file.network.environment = Some(Environment::Mainnet);
         Runtime {
             loaded: Loaded {
-                config,
+                file,
                 source: ConfigSource::None,
                 origins: Default::default(),
             },
