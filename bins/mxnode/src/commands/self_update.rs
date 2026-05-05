@@ -23,9 +23,16 @@ const REPO_NAME: &str = "mx-node";
 pub async fn run(args: SelfUpdateArgs, global: &GlobalArgs) -> Result<(), CliError> {
     let current = env!("CARGO_PKG_VERSION");
 
-    let token = std::env::var("MXNODE_GITHUB_TOKEN")
+    // Honour the env var first (allows ad-hoc override) then fall back
+    // to the persisted [secrets].github_token loaded by Runtime.
+    let token = crate::orchestrator::runtime::Runtime::from_global(global)
         .ok()
-        .filter(|s| !s.is_empty());
+        .and_then(|rt| rt.github_token())
+        .or_else(|| {
+            std::env::var("MXNODE_GITHUB_TOKEN")
+                .ok()
+                .filter(|s| !s.is_empty())
+        });
     let client = Client::new(ClientConfig {
         token,
         ..ClientConfig::default()

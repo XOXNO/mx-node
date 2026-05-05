@@ -27,9 +27,7 @@ pub fn build_acquirer(
 ) -> Arc<dyn BinaryAcquirer> {
     let github_org = runtime.loaded.config.network.github_org.clone();
     let workdir = runtime.paths.custom_home.join("mxnode/build");
-    let token = std::env::var("MXNODE_GITHUB_TOKEN")
-        .ok()
-        .filter(|s| !s.is_empty());
+    let token = runtime.github_token();
 
     // Precedence: CLI/config override > upstream goVersion file > DEFAULT_GO_VERSION.
     let go_pinned = runtime

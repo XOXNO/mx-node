@@ -1067,13 +1067,28 @@ GITHUB_ORG="myfork"
         "per-node override missing or wrong shard: {cfg}",
     );
 
-    // 7. Token plaintext is NEVER written to disk. The unified file's
-    //    `[secrets]` section may exist with an empty `github_token`,
-    //    but the actual secret value must not appear.
+    // 7. Token IS written to [secrets].github_token under the unified
+    //    file (held at mode 0600). Pre-unified contract (env-only) has
+    //    been replaced by the operator-friendly file persistence.
     assert!(
-        !cfg.contains("ghp_secret_xyz_12345"),
-        "config.toml leaked token plaintext: {cfg}"
+        cfg.contains("ghp_secret_xyz_12345"),
+        "expected token in [secrets].github_token: {cfg}"
     );
+    assert!(
+        cfg.contains("[secrets]") || cfg.contains("secrets.github_token"),
+        "expected [secrets] section: {cfg}"
+    );
+    // Mode 0600 enforced.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(sb.config_path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "expected mode 600 on mxnode.toml, got {mode:o}");
+    }
 
     // 8. state.toml exists and shows 4 observer nodes.
     let state = std::fs::read_to_string(sb.state_path()).unwrap();

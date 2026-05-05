@@ -25,6 +25,26 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    /// Resolve the active GitHub token.
+    ///
+    /// Precedence: `MXNODE_GITHUB_TOKEN` env var (allows ad-hoc override
+    /// without editing the file) → `[secrets].github_token` from the
+    /// loaded config → `None`. Empty strings count as unset on both
+    /// layers.
+    pub fn github_token(&self) -> Option<String> {
+        if let Ok(v) = std::env::var("MXNODE_GITHUB_TOKEN") {
+            if !v.is_empty() {
+                return Some(v);
+            }
+        }
+        let t = &self.loaded.config.secrets.github_token;
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.as_str().to_owned())
+        }
+    }
+
     /// Load config from the layered resolver and resolve the typed `Paths`.
     /// `--config <PATH>` overrides the default file lookup.
     ///
