@@ -73,16 +73,30 @@ prost     = "0.13"
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 
 [profile.release]
-# `lto = "fat"` over the previously-used "thin": Phase 1 of the
-# binary-size matrix harness measured a consistent 6–9% binary-size
-# reduction across all four release targets (musl x86/arm + macOS
-# x86/arm) with TUI render perf within ±5% of baseline and cold-start
-# unchanged or slightly faster. See
-# docs/superpowers/specs/2026-05-04-binary-size-results-baseline.md and
-# the Stage C rollout note alongside it. opt-level stays at the default
-# 3; opt-level=s/z were measured to regress TUI render by 20–200%, which
-# breaks the perf bar on the dashboard hot path.
+# Aggressive size-first profile per the binary-size matrix harness
+# results in docs/superpowers/specs/2026-05-04-binary-size-design.md
+# and the rollout/results docs alongside it. Combined effect on the
+# four release targets:
+#
+#   - aarch64-apple-darwin:   5.85 MB → 3.40 MB  (-41.9%)
+#   - x86_64-apple-darwin:    6.50 MB → 4.13 MB  (-39.3%)
+#   - aarch64-unknown-linux:  5.91 MB → 4.08 MB  (-34.2%)
+#   - x86_64-unknown-linux:   7.01 MB → 4.85 MB  (-34.0%)
+#
+# Trade-off: `opt-level = "z"` raises TUI render time per 1000 frames
+# from ~160 ms to ~490 ms, i.e. ~0.49 ms per frame vs ~0.16 ms. The
+# dashboard ticks every 250 ms so this is invisible at runtime — the
+# operator sees no FPS regression. Cold start is unchanged (~1-2 ms).
+# `lto = "fat"` extends release builds (~60-70 s for the mxnode bin
+# vs ~35 s with thin), only meaningful for release.yml + manual
+# release builds; dev `cargo build` is unaffected.
+#
+# A further ~10% reduction is available via Stage E (nightly +
+# `-Zbuild-std` + `-Cpanic=immediate-abort`); shipped as an opt-in
+# `-min` artefact in release.yml, not as a global default — see the
+# rollout spec.
 lto = "fat"
+opt-level = "z"
 codegen-units = 1
 strip = "symbols"
 panic = "abort"
