@@ -49,6 +49,12 @@ pub struct GlobalArgs {
 
     #[arg(long, global = true, conflicts_with = "verbose")]
     pub quiet: bool,
+
+    /// Skip the once-per-day "is a newer mxnode out?" check. Useful in
+    /// CI, scripts, or when the operator wants offline determinism.
+    /// Equivalent to setting `MXNODE_NO_UPDATE_CHECK=1`.
+    #[arg(long, global = true, env = "MXNODE_NO_UPDATE_CHECK")]
+    pub no_update_check: bool,
 }
 
 #[derive(Debug, Subcommand)]

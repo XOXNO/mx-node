@@ -21,6 +21,7 @@ mxnode-systemd   = { workspace = true }
 mxnode-toolchain = { workspace = true }
 mxnode-build     = { workspace = true }
 mxnode-tui       = { workspace = true }
+mxnode-update    = { workspace = true }
 
 clap        = { workspace = true }
 clap_complete = { workspace = true }

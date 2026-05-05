@@ -10,3 +10,4 @@ pub mod runtime;
 pub mod selector;
 pub mod supervisor;
 pub mod tag_resolver;
+pub mod update_gate;

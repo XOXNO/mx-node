@@ -10,12 +10,13 @@ members = [
     "crates/mxnode-toolchain",
     "crates/mxnode-build",
     "crates/mxnode-tui",
+    "crates/mxnode-update",
     "crates/xtask",
     "bins/mxnode",
 ]
 
 [workspace.package]
-version = "0.8.23"
+version = "0.8.24"
 edition = "2021"
 rust-version = "1.94"
 license = "MIT OR Apache-2.0"
@@ -33,6 +34,7 @@ mxnode-systemd   = { path = "crates/mxnode-systemd" }
 mxnode-toolchain = { path = "crates/mxnode-toolchain" }
 mxnode-build     = { path = "crates/mxnode-build" }
 mxnode-tui       = { path = "crates/mxnode-tui" }
+mxnode-update    = { path = "crates/mxnode-update" }
 
 # Foundational
 anyhow       = "1.0"

@@ -25,6 +25,19 @@ fn main() {
     let cli = Cli::parse();
     init_tracing(cli.global.verbose, cli.global.quiet);
 
+    // Pre-dispatch update check. Sub-ms on cache hit; bounded 2s on
+    // miss; never blocks non-interactive callers (CI, --json, piped
+    // stdin) and never propagates errors. If the operator answers Y
+    // we exec `self-update` then exit before running their original
+    // command — they re-run after the upgrade lands.
+    if matches!(
+        crate::orchestrator::update_gate::maybe_prompt(&cli),
+        crate::orchestrator::update_gate::GateOutcome::RanSelfUpdate
+    ) {
+        eprintln!("→ mxnode upgraded; re-run your original command on the new binary.");
+        std::process::exit(0);
+    }
+
     let exit = match commands::dispatch(cli) {
         Ok(()) => 0,
         Err(err) => {

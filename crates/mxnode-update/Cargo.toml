@@ -1,0 +1,23 @@
+[package]
+name = "mxnode-update"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints.clippy]
+# Domain-specific allow: we work with token strings.
+mod_module_files = "allow"
+
+[dependencies]
+mxnode-core   = { workspace = true }
+mxnode-state  = { workspace = true }
+mxnode-github = { workspace = true }
+semver        = { workspace = true }
+serde         = { workspace = true }
+thiserror     = { workspace = true }
+time          = { workspace = true }
+tokio         = { workspace = true }
+tracing       = { workspace = true }

@@ -35,6 +35,7 @@ mod tests {
             no_color: false,
             verbose: false,
             quiet: false,
+        no_update_check: true,
         }
     }
 
