@@ -42,3 +42,16 @@ fn profile_sweep_produces_twelve_combos() {
     // 2 lto × 3 opt × 2 strip = 12
     assert_eq!(combos.len(), 12);
 }
+
+#[test]
+fn nightly_build_std_host_yields_one_aggressive_combo() {
+    use xtask::matrix::Toolchain;
+    let combos: Vec<_> = Phase::NightlyBuildStdHost.combos().collect();
+    assert_eq!(combos.len(), 1);
+    let c = &combos[0];
+    assert_eq!(c.profile.lto, "fat");
+    assert_eq!(c.profile.opt_level, "z");
+    assert_eq!(c.profile.strip, "symbols");
+    assert_eq!(c.toolchain, Toolchain::NightlyBuildStd);
+    assert!(c.combo_label().contains("build-std"));
+}

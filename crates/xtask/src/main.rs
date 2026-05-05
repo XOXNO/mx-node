@@ -31,6 +31,8 @@ const HEADER: &[&str] = &[
     "cold_start_ms",
     "tui_render_ms",
     "tests_passed",
+    "upx_applied",
+    "nightly",
     "sha256",
     "tools_missing",
 ];
@@ -66,11 +68,17 @@ fn run_bench_size(opts: cli::BenchSizeOpts) -> Result<()> {
         None => default_targets(),
     };
 
-    let phases: Vec<Phase> = if opts.baseline_only || opts.shortlist {
+    let phases: Vec<Phase> = if opts.nightly {
+        vec![Phase::NightlyBuildStdHost]
+    } else if opts.baseline_only || opts.shortlist {
         vec![Phase::Baseline]
     } else {
         vec![Phase::Baseline, Phase::ProfileSweep]
     };
+
+    // For nightly combos we only build on the host triple — cargo +nightly
+    // build has no zig fallback wired up. Auto-restrict the target list.
+    let host_triple = host_target_triple();
 
     let run_id = run_id();
     let header_owned: Vec<String> = HEADER.iter().map(|s| s.to_string()).collect();
@@ -91,6 +99,16 @@ fn run_bench_size(opts: cli::BenchSizeOpts) -> Result<()> {
     for phase in phases {
         for combo in phase.combos() {
             for target in &targets {
+                if combo.toolchain == xtask::matrix::Toolchain::NightlyBuildStd
+                    && target != &host_triple
+                {
+                    eprintln!(
+                        "skipping {} for nightly combo (host-only): {}",
+                        target,
+                        combo.combo_label()
+                    );
+                    continue;
+                }
                 eprintln!("\n=== {} :: {} ===", target, combo.combo_label());
 
                 let patched = apply_combo(&original_manifest, &combo)?;
@@ -143,6 +161,9 @@ fn run_bench_size(opts: cli::BenchSizeOpts) -> Result<()> {
                     None
                 };
 
+                let is_nightly =
+                    combo.toolchain == xtask::matrix::Toolchain::NightlyBuildStd;
+
                 let mut row_csv = Row::new();
                 row_csv
                     .set("run_id", &run_id)
@@ -181,6 +202,8 @@ fn run_bench_size(opts: cli::BenchSizeOpts) -> Result<()> {
                         tui.map(|v| v.to_string()).unwrap_or_default(),
                     )
                     .set("tests_passed", "true")
+                    .set("upx_applied", "false")
+                    .set("nightly", if is_nightly { "true" } else { "false" })
                     .set("sha256", &sizes.sha256)
                     .set("tools_missing", sizes.tools_missing.join("|"));
                 writer.append(row_csv)?;
@@ -194,7 +217,7 @@ fn run_bench_size(opts: cli::BenchSizeOpts) -> Result<()> {
                     cargo_test_secs: None,
                     tests_passed: true,
                     upx_applied: false,
-                    nightly: false,
+                    nightly: is_nightly,
                 };
                 if combo == Combo::baseline() {
                     baseline_per_target.insert(target.clone(), measured.clone());
@@ -301,6 +324,27 @@ fn host_string() -> String {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn host_target_triple() -> String {
+    // Best-effort: derive from cfg!() macros, which Rust resolves at the
+    // xtask compile time. Good enough for the harness — operators on
+    // exotic hosts can pass --target explicitly.
+    let arch = if cfg!(target_arch = "aarch64") {
+        "aarch64"
+    } else if cfg!(target_arch = "x86_64") {
+        "x86_64"
+    } else {
+        "unknown"
+    };
+    let os_triple_suffix = if cfg!(target_os = "macos") {
+        "apple-darwin"
+    } else if cfg!(target_os = "linux") {
+        "unknown-linux-musl"
+    } else {
+        "unknown"
+    };
+    format!("{arch}-{os_triple_suffix}")
 }
 
 fn toolchain_string() -> String {

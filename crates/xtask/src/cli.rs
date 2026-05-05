@@ -33,6 +33,13 @@ pub struct BenchSizeOpts {
     #[arg(long)]
     pub shortlist: bool,
 
+    /// Run only the nightly + `-Zbuild-std` host-target combo (Stage E).
+    /// Requires `rustup toolchain install nightly --component rust-src`.
+    /// Non-host targets are skipped automatically — `cargo +nightly build`
+    /// has no zig fallback in this harness.
+    #[arg(long)]
+    pub nightly: bool,
+
     /// Where to write `results.csv` and `REPORT.md`.
     #[arg(long, default_value = "dist/bench-size", value_name = "DIR")]
     pub out_dir: PathBuf,

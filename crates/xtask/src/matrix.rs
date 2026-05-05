@@ -136,8 +136,13 @@ fn short_strip(s: &str) -> &'static str {
 pub enum Phase {
     Baseline,
     ProfileSweep,
-    // DepSurgery, PostProcess, NightlyBuildStd intentionally omitted
-    // until later tasks land — they require winners from prior phases.
+    /// Nightly + `-Zbuild-std=std,panic_abort` +
+    /// `-Zbuild-std-features=panic_immediate_abort`. Single combo per
+    /// host-runnable target — only the host target is exercised because
+    /// nightly cross-compile via zigbuild isn't wired up.
+    NightlyBuildStdHost,
+    // DepSurgery, PostProcess intentionally omitted until later tasks
+    // land — they require winners from prior phases.
 }
 
 impl Phase {
@@ -145,8 +150,22 @@ impl Phase {
         match self {
             Phase::Baseline => Box::new(std::iter::once(Combo::baseline())),
             Phase::ProfileSweep => Box::new(profile_sweep()),
+            Phase::NightlyBuildStdHost => Box::new(nightly_build_std_host()),
         }
     }
+}
+
+/// One nightly combo with the *most aggressive* size profile we know
+/// of: `lto=fat`, `opt=z`, `strip=symbols`, then layered with
+/// `panic_immediate_abort` via build-std. Targets the host triple only
+/// — caller is expected to already have nightly + rust-src installed.
+fn nightly_build_std_host() -> impl Iterator<Item = Combo> {
+    let mut c = Combo::baseline();
+    c.profile.lto = "fat".to_string();
+    c.profile.opt_level = "z".to_string();
+    c.profile.strip = "symbols".to_string();
+    c.toolchain = Toolchain::NightlyBuildStd;
+    std::iter::once(c)
 }
 
 fn profile_sweep() -> impl Iterator<Item = Combo> {
