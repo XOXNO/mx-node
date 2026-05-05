@@ -8,12 +8,19 @@
 #     --version <TAG>   Install a specific release (default: latest)
 #     --dir <PATH>      Install dir (default: /usr/local/bin)
 #     --force           Reinstall even if the requested version is already present
+#     --min             Install the bandwidth-optimised `-min` variant
+#                       (~10-18% smaller, built with nightly Rust + `-Zbuild-std`
+#                       + `-Cpanic=immediate-abort`; same functionality, shorter
+#                       panic messages). Fails if the tag has no `-min` artefact —
+#                       not all releases ship one because the nightly build job
+#                       is `continue-on-error: true` upstream and may have skipped.
 #     --help            Show this message
 #
 # Environment overrides (handy for CI / unattended installs):
 #     MXNODE_INSTALL_DIR     same as --dir
 #     MXNODE_VERSION         same as --version (overridden by --version flag)
 #     MXNODE_FORCE=1         same as --force
+#     MXNODE_VARIANT=min     same as --min
 #     MXNODE_REPO            override GitHub repo (default: XOXNO/mx-node)
 #     MXNODE_GITHUB_TOKEN    GitHub token used for the `latest` API lookup,
 #                            dodges the unauthenticated 60 req/h rate limit
@@ -53,6 +60,11 @@ __mxnode_install_main() {
     VERSION="${MXNODE_VERSION:-latest}"
     FORCE="${MXNODE_FORCE:-0}"
     REQUIRE_COSIGN="${MXNODE_REQUIRE_COSIGN:-0}"
+    # Variant suffix appended to the archive name. `min` selects the
+    # nightly + build-std artefact; empty string selects the canonical
+    # stable artefact. Anything else is rejected to avoid silent typos
+    # picking the wrong file.
+    VARIANT="${MXNODE_VARIANT:-}"
 
     # ── argument parse ────────────────────────────────────────────
     while [ $# -gt 0 ]; do
@@ -69,6 +81,10 @@ __mxnode_install_main() {
                 ;;
             --force)
                 FORCE=1
+                shift
+                ;;
+            --min)
+                VARIANT=min
                 shift
                 ;;
             --help|-h)
@@ -197,14 +213,26 @@ EOF
         fi
     fi
 
-    archive="mxnode-${VERSION}-${target}.tar.gz"
+    # ── pick artefact variant ──────────────────────────────────────
+    case "$VARIANT" in
+        ""|min) ;;
+        *)
+            echo "unknown MXNODE_VARIANT='$VARIANT' (valid: empty, min)" >&2
+            exit 1
+            ;;
+    esac
+    if [ -n "$VARIANT" ]; then
+        archive="mxnode-${VERSION}-${target}-${VARIANT}.tar.gz"
+    else
+        archive="mxnode-${VERSION}-${target}.tar.gz"
+    fi
     archive_url="https://github.com/${REPO}/releases/download/${VERSION}/${archive}"
     sums_url="https://github.com/${REPO}/releases/download/${VERSION}/SHA256SUMS"
     sig_url="${archive_url}.sig"
     cert_url="${archive_url}.pem"
     release_url="https://github.com/${REPO}/releases/tag/${VERSION}"
 
-    echo "→ installing mxnode ${VERSION} for ${target}"
+    echo "→ installing mxnode ${VERSION} for ${target}${VARIANT:+ (${VARIANT} variant)}"
     echo "  source:  ${release_url}"
     echo "  archive: ${archive_url}"
 

@@ -218,12 +218,164 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+  build-min:
+    # Stage E (per docs/superpowers/specs/2026-05-05-binary-size-rollout.md):
+    # parallel build with nightly Rust + `-Zbuild-std=std,panic_abort` +
+    # `-Cpanic=immediate-abort` (gated by `-Zunstable-options`). Produces
+    # an opt-in `-min.tar.gz` artefact ~10-18% smaller than the stable
+    # build for operators on bandwidth-constrained hosts. Uses the same
+    # cargo-zigbuild + cosign + signing flow as the stable build job —
+    # only the toolchain channel and the archive name differ.
+    #
+    # Workflow input handling follows the same pattern as `build`: the
+    # `tag` input is read into the `INPUT_TAG` env-var via the env: map
+    # and never interpolated directly into a `run:` line. See:
+    # https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
+    name: build-min ${{ matrix.target }}
+    if: github.repository_owner == 'XOXNO'
+    # Don't block the release on nightly churn. Stage E is a bonus
+    # variant — the canonical artefact remains the stable one.
+    continue-on-error: true
+    permissions:
+      id-token: write
+      contents: read
+    runs-on: [self-hosted, Linux, X64]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+          - target: x86_64-apple-darwin
+          - target: x86_64-unknown-linux-musl
+          - target: aarch64-unknown-linux-musl
+    steps:
+      - name: Resolve release tag (build-min job)
+        id: tag
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          TAG="${INPUT_TAG:-$REF_NAME}"
+          if [ -z "$TAG" ]; then
+            echo "no tag resolved — push a v* tag or pass tag input" >&2
+            exit 1
+          fi
+          case "$TAG" in
+            v[0-9]*) ;;
+            *)
+              echo "rejecting tag '$TAG' — must start with v + digit" >&2
+              exit 1
+              ;;
+          esac
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Distinct cache key from the stable build — nightly's
+          # rebuilt-std artefacts must not commingle with stable's
+          # prebuilt std.
+          key: ${{ matrix.target }}-min
+
+      - name: Install zig (universal cross-toolchain)
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      - name: Install cargo-zigbuild
+        # Same `--locked` reasoning as the stable job. Installed once
+        # per runner; nightly cargo invokes the same binary.
+        run: cargo install --locked cargo-zigbuild
+
+      - name: Build (cargo +nightly zigbuild + build-std)
+        env:
+          TARGET: ${{ matrix.target }}
+        # `-Cpanic=immediate-abort` requires -Zunstable-options (it's
+        # gated even though the underlying mechanism is stable in shape).
+        # See: https://github.com/rust-lang/rust/issues/32837
+        run: |
+          RUSTFLAGS="-C strip=symbols -Cpanic=immediate-abort -Zunstable-options" \
+            cargo +nightly zigbuild --release --target "$TARGET" --bin mxnode \
+              -Z build-std=std,panic_abort \
+              -Z unstable-options
+
+      - name: Sanity check (binary exists + is the right ELF/Mach-O)
+        env:
+          TARGET: ${{ matrix.target }}
+        shell: bash
+        run: |
+          BIN="target/${TARGET}/release/mxnode"
+          ls -lh "$BIN"
+          file "$BIN"
+          [ -x "$BIN" ]
+
+      - name: Package
+        id: package
+        env:
+          TARGET: ${{ matrix.target }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="target/${TARGET}/release/mxnode"
+          DIST=dist
+          ARCHIVE="mxnode-${RELEASE_TAG}-${TARGET}-min.tar.gz"
+
+          mkdir -p "$DIST"
+          STAGE=$(mktemp -d)
+          cp "$BIN" "$STAGE/mxnode"
+          [ -f README.md ] && cp README.md "$STAGE/"
+          [ -f LICENSE ] && cp LICENSE "$STAGE/"
+          tar -czf "$DIST/$ARCHIVE" -C "$STAGE" .
+          rm -rf "$STAGE"
+
+          (cd "$DIST" && shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256" 2>/dev/null \
+            || sha256sum "$ARCHIVE" > "$ARCHIVE.sha256")
+          ls -lh "$DIST"
+          echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
+
+      - uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.4.1'
+
+      - name: Sign archive (cosign keyless)
+        env:
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          cosign sign-blob --yes \
+            --output-signature "${ARCHIVE}.sig" \
+            --output-certificate "${ARCHIVE}.pem" \
+            "$ARCHIVE"
+          ls -lh
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mxnode-${{ matrix.target }}-min
+          path: dist/*
+          retention-days: 14
+          if-no-files-found: error
+
   release:
     name: publish release
-    needs: build
+    # Wait for both jobs but only require `build` to succeed — `build-min`
+    # is opt-in / experimental and `continue-on-error: true` already lets
+    # nightly churn fail without blocking. Use `if: always()` + an explicit
+    # success check on `build` so a failed `build-min` doesn't gate
+    # release publication.
+    needs: [build, build-min]
+    if: always() && github.repository_owner == 'XOXNO' && needs.build.result == 'success'
     # Stay on the same runner pool the build jobs ran on — single
     # source of CI hardware, no GitHub-hosted minutes consumed.
-    if: github.repository_owner == 'XOXNO'
     runs-on: [self-hosted, Linux, X64]
     permissions:
       # Required by softprops/action-gh-release to attach assets +

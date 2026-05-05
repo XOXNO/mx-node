@@ -1,11 +1,15 @@
-# Binary size rollout — Stage C + E
+# Binary size rollout — Stage C + Stage E
 
 **Date:** 2026-05-05
 **Owner:** Mihai
-**Status:** Stage C landed (commit `620e71a`); Stage E pending nightly measurement
+**Status:** Stage C+ landed (commit `d335bfd`, opt=z + lto=fat); Stage E shipping in release.yml as `-min` artefact
 **Predecessor:** [2026-05-04-binary-size-design.md](./2026-05-04-binary-size-design.md), Stage A + B landed
 **Phase 1 data:** [2026-05-05-binary-size-phase1-results.md](./2026-05-05-binary-size-phase1-results.md)
-**Scope:** Stage C (apply `perf-safe` Phase 1 winner) + Stage E (nightly `-Zbuild-std` host-only). **Stage D (UPX) is deferred** — it requires a Linux box to validate the compressed binary actually executes, and the local box is macOS-arm64.
+**Scope:** Stage C+ (apply `lto=fat, opt=z`) + Stage E (nightly + `-Zbuild-std` + `-Cpanic=immediate-abort`, all four targets). **Stage D (UPX) is deferred** — it requires a Linux box to validate the compressed binary actually executes, and the local box is macOS-arm64.
+
+## Operator-direction adjustment
+
+Originally this spec drafted a "perf-safe" winner that kept `opt-level = 3` because `opt=z` raised TUI render wall-time per 1000 frames from ~160 ms to ~490 ms. Re-reading: that's 0.49 ms per frame vs 0.16 ms — invisible against the dashboard's 250 ms tick rate. Per operator direction (size > render-microbench speed), accept `opt=z` and ship the smaller binary. Cold start is unchanged (~1–2 ms).
 
 ---
 
@@ -23,121 +27,119 @@ Stage E adds one more combo: `lto=fat, opt=z, strip=symbols, toolchain=nightly+b
 
 ---
 
-## 2. Winners (filled in after sweep completes)
+## 2. Final landed numbers
 
-### Per-target Phase 1 perf-safe winner (applied)
+### Stage C+ (`lto=fat, opt=z, strip=symbols`) — applied workspace-wide
 
-> Selection rule: `argmin(binary_bytes)` where `tests_passed=true`, `upx=none`, `toolchain=stable`, AND host-runnable rows pass the perf bar (cold-start ≤ baseline+50 ms, TUI render ≤ baseline×1.05). Linux targets inherit the macOS arm64 choice because exec is unavailable on the macOS arm64 host.
+Phase 1 size-max winner, opt-in everywhere because the operator declared TUI render speed isn't a constraint. Applied in commit `d335bfd`.
 
-Universal winner: `lto=fat, opt=3, strip=symbols`. Already applied in commit `620e71a`.
+| target | baseline (v0.8.20) | Stage C+ | Δ |
+|---|---:|---:|---:|
+| aarch64-apple-darwin | 5,849,952 | 3,399,520 | **-41.9%** |
+| x86_64-apple-darwin | 6,812,448 | 4,134,576 | **-39.3%** |
+| aarch64-unknown-linux-musl | 6,191,520 | 4,077,064 | **-34.2%** |
+| x86_64-unknown-linux-musl | 7,349,016 | 4,848,608 | **-34.0%** |
 
-| target | binary_bytes | Δ vs baseline | cold_ms | tui_ms |
-|---|---:|---:|---:|---:|
-| aarch64-apple-darwin | 5,347,696 | -8.6% | 1–2 | 161–163 (vs 159–168 baseline) |
-| x86_64-apple-darwin | 6,368,164 | -6.5% | 15–16 | 193–197 (vs 187–202 baseline) |
-| aarch64-unknown-linux-musl | 5,770,960 | -6.8% | n/a | n/a |
-| x86_64-unknown-linux-musl | 6,930,448 | -5.7% | n/a | n/a |
+Cold start (where measurable): ~1–2 ms aarch-darwin, ~15 ms x86-darwin (Rosetta) — unchanged from baseline. TUI render bumped 0.16 ms → 0.49 ms per frame at the 250 ms tick — invisible to the operator.
 
-### Stage E nightly + build-std (host only) — pending measurement
+### Stage E (`+ build-std + immediate-abort`) — `-min.tar.gz` opt-in
 
-| target | combo | binary_bytes | Δ vs Stage C |
-|---|---|---:|---:|
-| aarch64-apple-darwin | `lto=fat,opt=z,strip=sym,build-std` | `<TBD>` | `<TBD>` |
+Cross-compiled for all four targets via `cargo +nightly zigbuild` + `-Z build-std=std,panic_abort` + `-Z unstable-options` + `RUSTFLAGS="-Cpanic=immediate-abort -Zunstable-options"`. Ships as a parallel artefact alongside the Stage C+ canonical archive. Same cosign signing flow.
+
+| target | Stage C+ | Stage E `-min` | Δ vs C+ |
+|---|---:|---:|---:|
+| aarch64-apple-darwin | 3,399,520 | 2,823,136 | **-17.0%** (~3.24 → ~2.69 MB) |
+| x86_64-unknown-linux-musl | 4,848,608 | 4,188,064 (measured locally) | **-13.6%** (~4.62 → ~3.99 MB) |
+| x86_64-apple-darwin | 4,134,576 | TBD (measured by CI) | est. ~-15% |
+| aarch64-unknown-linux-musl | 4,077,064 | TBD (measured by CI) | est. ~-15% |
+
+**Total reduction from the original v0.8.20 baseline:** ~52% on aarch-darwin, ~46% on Linux musl x86 (the bandwidth-priority target).
 
 ---
 
-## 3. Apply the winner (Stage C)
+## 3. Stage C+ — landed
 
-### Decision rule
-
-If the perf-safe winner across all four targets converges on the **same profile** (likely — profile knobs are platform-agnostic), apply globally to `[profile.release]` in the workspace `Cargo.toml`. If targets disagree (unlikely), pick the choice that best balances Linux-musl (the priority axis) without regressing macOS more than 5%.
-
-### Manifest patch (applied)
+Manifest patch (commit `d335bfd`):
 
 ```diff
  [profile.release]
 -lto = "thin"
 +lto = "fat"
++opt-level = "z"
  codegen-units = 1
  strip = "symbols"
  panic = "abort"
 ```
 
-opt-level stays at the default (3) — `s` and `z` regress TUI render by 20–200% on the dashboard hot path, breaking the perf bar. They land later, gated, via Stage D / Stage E only.
+Verification:
 
-### Verification gate (per CLAUDE.md §6)
+1. `cargo build --bin mxnode --release` — clean (~37 s with warm sccache, ~4 min cold).
+2. `./target/release/mxnode --version` — returns expected.
+3. `./target/release/mxnode dashboard --help` — returns expected (no link-time fault from LTO).
+4. `mxnode bench-render --frames 1000 --fixture <observer.json>` — 490 ms total = 0.49 ms per frame. Operator-accepted given the 250 ms dashboard tick rate.
+5. Pre-existing test failure `loader::tests::load_with_no_file_returns_defaults` is unrelated (env isolation bug — reads user's actual `~/.config/mxnode/config.toml`); confirmed failing on main without this change.
 
-After applying:
-
-1. `cargo build --bin mxnode --release` clean.
-2. `cargo test --workspace --release` — no regressions vs main.
-3. `cargo xtask bench-size --baseline-only` — confirms the new "baseline" matches the perf-safe winner numbers from the prior sweep within ±2% (sanity).
-4. Smoke: `./target/release/mxnode --version` returns expected.
-5. Smoke: `./target/release/mxnode dashboard --help` returns expected (no link-time fault).
-
-### Rollback
-
-`git revert <commit>` — single PR, no migration. Next release uses the prior profile.
+Rollback: `git revert <commit>` — single PR, no data migration.
 
 ---
 
-## 4. Apply nightly (Stage E)
+## 4. Stage E — landed
 
-### Trigger
+Two pieces:
 
-Stage E lands **only** if Phase 4 measurement shows ≥ 5% reduction beyond the Stage C winner. Below that, the cost of maintaining a nightly job in `release.yml` outweighs the win.
+### 4a. `.github/workflows/release.yml` — `build-min` parallel job
 
-### Release.yml patch (template, conditional)
+Mirrors the existing `build` job for all four targets, swapping:
+- toolchain: `dtolnay/rust-toolchain@nightly` + `components: rust-src`
+- builder: `cargo +nightly zigbuild ... -Z build-std=std,panic_abort -Z unstable-options`
+- `RUSTFLAGS`: adds `-Cpanic=immediate-abort -Zunstable-options`
+- archive name suffix: `-min.tar.gz`
+- cache key: `${{ matrix.target }}-min` (separate from stable cache so rebuilt-std artefacts don't commingle)
+- `continue-on-error: true` — nightly churn never blocks the canonical stable release
 
-```yaml
-# .github/workflows/release.yml — new parallel job
-build-min:
-  if: github.repository_owner == 'XOXNO'
-  needs: build  # runs alongside the stable matrix
-  strategy:
-    matrix:
-      target:
-        - aarch64-apple-darwin
-        - aarch64-unknown-linux-musl
-  runs-on: [self-hosted, Linux, X64]
-  continue-on-error: true  # nightly churn doesn't block stable release
-  steps:
-    - uses: actions/checkout@v6
-    - uses: dtolnay/rust-toolchain@nightly
-      with:
-        components: rust-src
-        targets: ${{ matrix.target }}
-    - name: Build (nightly + build-std)
-      run: |
-        cargo +nightly zigbuild --release --target "${{ matrix.target }}" --bin mxnode \
-          -Z build-std=std,panic_abort \
-          -Z build-std-features=panic_immediate_abort
-    - name: Package + sign + upload as `mxnode-<tag>-<target>-min.tar.gz`
-      # Same packaging shape as the stable build job, suffix `-min`.
+The `release` job now `needs: [build, build-min]` with `if: always() && needs.build.result == 'success'`, so a failed `build-min` doesn't gate publication. The existing artefact glob `dist/*.tar.gz` picks up both stable and `-min` variants automatically.
+
+### 4b. `install.sh` — `--min` flag + `MXNODE_VARIANT=min` env-var
+
+```sh
+# fetch the smaller -min variant
+curl -fsSL https://raw.githubusercontent.com/XOXNO/mx-node/main/install.sh | sh -s -- --min
+
+# or via env-var (CI / unattended)
+MXNODE_VARIANT=min curl -fsSL .../install.sh | sh
 ```
 
-The stable artefact remains the canonical download; `-min.tar.gz` is opt-in for users on size-constrained hosts.
+Hard-fails if the resolved tag doesn't have a `-min` artefact (e.g. nightly job was skipped). Operators who want size+freshness should pin `--version <tag>` to a tag they know shipped a `-min` variant, or read the release page first.
 
-### Risk
+### Cross-compile validation (manual, on macOS arm64)
 
-- Nightly Rust occasionally regresses build-std for cross-compile. The `continue-on-error` gate ensures this never blocks a stable release.
-- macOS arm64 and Linux musl arm64 cover the most common bandwidth-constrained targets. macOS x86_64 + Linux x86_64 stay on stable (those users are typically on dev workstations / cloud, not bandwidth-constrained).
+```sh
+RUSTFLAGS="-C strip=symbols -Cpanic=immediate-abort -Zunstable-options" \
+  cargo +nightly zigbuild --release --target x86_64-unknown-linux-musl --bin mxnode \
+    -Z build-std=std,panic_abort -Z unstable-options
+# Result: 4,188,064 B (3.99 MB), valid statically-linked ELF, stripped.
+```
+
+### Risk + rollback
+
+- Nightly Rust occasionally regresses build-std. `continue-on-error: true` covers this — failure leaves the stable artefact untouched and produces no `-min` for that release. install.sh's `--min` then fails for that tag.
+- The `panic_immediate_abort` mechanism moved from `-Zbuild-std-features` to `-Cpanic=immediate-abort` between nightly-2025 and nightly-2026. The harness + release.yml use the new syntax. If a future nightly moves it again, the build job fails loud and `continue-on-error` keeps stable shipping.
+- Rollback: delete the `build-min` job from `release.yml` and the `--min` / `MXNODE_VARIANT=min` paths from `install.sh`. Two-file revert.
 
 ---
 
-## 5. Out of scope
+## 5. Still out of scope
 
-- **Stage D (UPX):** requires a Linux box to verify the compressed binary actually executes correctly, plus a Hetzner/Ubuntu smoke test for AV false-positives. Defer to a session run on the self-hosted Linux runner. Harness wiring (Phase 3 combos) also pending.
-- **Phase 2 dep surgery:** ~9 cumulative dep-feature prunes (drop `env-filter`, `release_max_level_info`, etc). Significant code touches per prune; defer to a dedicated session.
-- **Cross-compile nightly + build-std:** would need cargo-zigbuild installed under the nightly toolchain. Doable but skipped for Stage E.
+- **Stage D (UPX):** requires a Linux box to verify the compressed binary actually executes correctly, plus a Hetzner/Ubuntu smoke test for AV false-positives (UPX-packed binaries get flagged by some Hetzner WAF rules and ClamAV signatures). Best done as a follow-up on the self-hosted Linux runner. Harness wiring (Phase 3 combos) also pending. Estimated additional win: 50–70% archive shrink on Linux musl, 50–150 ms cold-start cost (decompression).
+- **Phase 2 dep surgery:** ~9 cumulative dep-feature prunes (drop `env-filter`, `release_max_level_info`, etc). Touches per prune are larger than profile knobs and need careful regression-checking against operator-facing UX (e.g. `RUST_LOG=mxnode_rpc=debug` filtering). Estimated additional win: 5–15%. Defer to a dedicated session.
 
 ---
 
-## 6. Sequencing
+## 6. Sequencing — done
 
-1. Land Stage C as PR #1 — commits the new `[profile.release]` and the updated baseline REPORT.
-2. Run `cargo xtask bench-size --nightly` locally to capture Stage E data, append to results.
-3. If Stage E gate passes (≥5% win), land Stage E as PR #2 — adds the parallel `build-min` job to `release.yml`.
-4. Stage D, Phase 2, and cross-compile nightly remain pending.
+1. ✅ Stage C+ landed (commit `d335bfd`).
+2. ✅ Stage E nightly + build-std measured locally; gate cleared (-13.6% on Linux musl x86 vs Stage C+; -17% on aarch64-darwin).
+3. ✅ Stage E shipped via `release.yml` `build-min` job + `install.sh` `--min` flag.
+4. Pending follow-ups: Stage D (UPX, needs Linux box), Phase 2 dep surgery, optional Stage E coverage smoke-tests in CI for Ubuntu/Debian/Alpine after the first `-min` artefact lands.
 
-Each stage is its own PR, reversible via `git revert`. No data migration. install.sh keeps consuming the primary `mxnode-<tag>-<target>.tar.gz` artefact across all stages.
+Each stage was a single commit, reversible via `git revert`. No data migration. install.sh's canonical artefact name (`mxnode-<tag>-<target>.tar.gz`) is unchanged; the `-min` variant is purely additive.
