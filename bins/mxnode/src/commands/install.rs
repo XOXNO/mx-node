@@ -30,8 +30,8 @@ use crate::orchestrator::tag_resolver::{
 #[tokio::main(flavor = "current_thread")]
 pub async fn run(mut args: InstallArgs, global: &GlobalArgs) -> Result<(), CliError> {
     let runtime = Runtime::from_global(global)?;
-    let store = StateStore::new(&runtime.paths.state);
-    if store.exists() {
+    let store = StateStore::new(&runtime.paths.config_dir);
+    if store.host_initialized() {
         return Err(CliError::new(
             "state.toml already exists",
             format!("found {}", store.state_path().display()),

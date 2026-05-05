@@ -132,8 +132,11 @@ fn read_file_layer(opts: &LoadOptions) -> Result<(Option<toml::Value>, ConfigSou
         return Ok((Some(value), ConfigSource::Explicit(explicit.clone())));
     }
 
-    // user scope: fall through to system if either the HOME lookup fails
-    // (so the operator can still rely on /etc) or the file simply isn't there.
+    // user scope: prefer the unified `mxnode.toml`. Fall back to the
+    // legacy `config.toml` if it's the only thing present so operators
+    // upgrading from pre-unified versions don't lose their config —
+    // Runtime::from_global runs the actual migration (rename to
+    // .legacy) after a successful load.
     if let Ok(path) = user_config_path() {
         if path.exists() {
             return Ok((
@@ -141,6 +144,17 @@ fn read_file_layer(opts: &LoadOptions) -> Result<(Option<toml::Value>, ConfigSou
                 ConfigSource::File {
                     scope: Scope::User,
                     path,
+                },
+            ));
+        }
+    }
+    if let Ok(legacy) = legacy_user_config_path() {
+        if legacy.exists() {
+            return Ok((
+                Some(parse_file(&legacy)?),
+                ConfigSource::File {
+                    scope: Scope::User,
+                    path: legacy,
                 },
             ));
         }
@@ -153,6 +167,16 @@ fn read_file_layer(opts: &LoadOptions) -> Result<(Option<toml::Value>, ConfigSou
             ConfigSource::File {
                 scope: Scope::System,
                 path: system,
+            },
+        ));
+    }
+    let legacy_system = legacy_system_config_path();
+    if legacy_system.exists() {
+        return Ok((
+            Some(parse_file(&legacy_system)?),
+            ConfigSource::File {
+                scope: Scope::System,
+                path: legacy_system,
             },
         ));
     }
@@ -179,13 +203,14 @@ fn serialize(cfg: &Config) -> Result<toml::Value, ConfigError> {
     })
 }
 
-/// `~/.config/mxnode/config.toml` honoring `XDG_CONFIG_HOME`. Returns the
-/// resolution error if neither HOME nor `XDG_CONFIG_HOME` is set — callers
-/// must surface this to the operator instead of silently using a default.
+/// `~/.config/mxnode/mxnode.toml` honoring `XDG_CONFIG_HOME`. Returns
+/// the resolution error if neither HOME nor `XDG_CONFIG_HOME` is set —
+/// callers must surface this to the operator instead of silently using
+/// a default.
 pub fn user_config_path() -> Result<PathBuf, ConfigError> {
     Ok(crate::xdg::xdg_config_home()?
         .join("mxnode")
-        .join("config.toml"))
+        .join("mxnode.toml"))
 }
 
 /// Convenience alias used by commands that just want a writable path
@@ -195,6 +220,19 @@ pub fn user_config_path_or_default() -> Result<PathBuf, ConfigError> {
 }
 
 pub fn system_config_path() -> PathBuf {
+    PathBuf::from("/etc/mxnode/mxnode.toml")
+}
+
+/// Legacy `config.toml` path. Used only during first-run migration:
+/// the loader picks up its content if `mxnode.toml` is absent, then
+/// renames the legacy file to `config.toml.legacy`.
+pub fn legacy_user_config_path() -> Result<PathBuf, ConfigError> {
+    Ok(crate::xdg::xdg_config_home()?
+        .join("mxnode")
+        .join("config.toml"))
+}
+
+pub fn legacy_system_config_path() -> PathBuf {
     PathBuf::from("/etc/mxnode/config.toml")
 }
 

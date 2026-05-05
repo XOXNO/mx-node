@@ -64,7 +64,7 @@ async fn drive(
     global: &GlobalArgs,
 ) -> Result<(), CliError> {
     let runtime = Runtime::from_global(global)?;
-    let store = StateStore::new(&runtime.paths.state);
+    let store = StateStore::new(&runtime.paths.config_dir);
     let state = load_state_or_err(&store, global)?;
 
     // No selector → every node, matching what an operator means by

@@ -15,8 +15,8 @@ mod validate;
 mod xdg;
 
 pub use loader::{
-    load, system_config_path, user_config_path, user_config_path_or_default, ConfigSource,
-    LoadOptions, Loaded, Scope,
+    legacy_system_config_path, legacy_user_config_path, load, system_config_path, user_config_path,
+    user_config_path_or_default, ConfigSource, LoadOptions, Loaded, Scope,
 };
 pub use origin::Origin;
 pub use resolve::resolve_paths;

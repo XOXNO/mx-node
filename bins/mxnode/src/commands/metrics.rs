@@ -33,7 +33,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(2_000);
 #[tokio::main(flavor = "current_thread")]
 pub async fn run(args: MetricsArgs, global: &GlobalArgs) -> Result<(), CliError> {
     let runtime = Runtime::from_global(global)?;
-    let store = Arc::new(StateStore::new(&runtime.paths.state));
+    let store = Arc::new(StateStore::new(&runtime.paths.config_dir));
     if !store.exists() {
         return Err(CliError::new(
             "no state.toml on this host",

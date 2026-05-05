@@ -110,7 +110,7 @@ pub async fn run(mut args: UpgradeArgs, global: &GlobalArgs) -> Result<(), CliEr
         InflightCheck::Clear => {}
     }
 
-    let store = StateStore::new(&runtime.paths.state);
+    let store = StateStore::new(&runtime.paths.config_dir);
     let state = store
         .load()
         .map_err(|e| {
@@ -984,7 +984,7 @@ async fn upgrade_proxy(
     global: &GlobalArgs,
 ) -> Result<(), CliError> {
     let runtime = Runtime::from_global(global)?;
-    let store = StateStore::new(&runtime.paths.state);
+    let store = StateStore::new(&runtime.paths.config_dir);
     let mut state = store
         .load()
         .map_err(|e| {
@@ -1203,6 +1203,7 @@ mod tests {
                 custom_user: "validator".to_string(),
                 node_keys: root.join("keys"),
                 binaries: root.join("binaries"),
+                config_dir: root.join("config"),
                 state: root.join("state"),
                 runtime: root.join("run"),
             },

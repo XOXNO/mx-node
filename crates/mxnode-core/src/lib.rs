@@ -27,11 +27,18 @@ pub mod state {
 
 pub use error::Error;
 pub use file::{
-    BrandingSection, HostInstall, HostState, InstallBinaries, InstallSection, InstallVersions,
-    MetricsSection, MigrationEntry, MigrationLog, MigrationResult, MxnodeFile, NetworkSection,
-    NodeOverride, NodeSection, NodeState, OverridesSection, PathsSection, ProxySection,
-    ProxyState, SecretToken, SecretsSection, UpdateCacheSection,
+    BrandingSection, HostInstall, HostState, InstallBinaries, InstallVersions, MetricsSection,
+    MigrationEntry, MigrationLog, MigrationResult, MxnodeFile, NetworkSection, NodeOverride,
+    NodeSection, NodeState, OverridesSection, PathsSection, ProxySection, ProxyState,
+    SecretToken, SecretsSection, UpdateCacheSection,
 };
+
+/// At the top level, `InstallSection` is the **state-side** observed
+/// install record (renamed `HostInstall` in [`file`]). This matches
+/// the historical export from `mxnode_core::state::InstallSection`,
+/// keeping `state.install.as_ref().map(|i| i.kind)` patterns working.
+/// The operator-side install policy lives at [`config::InstallSection`].
+pub use file::HostInstall as InstallSection;
 pub use paths::Paths;
 pub use platform::Platform;
 pub use types::{ArtifactSource, Environment, InstallKind, NodeIndex, Role, Shard, Tag};

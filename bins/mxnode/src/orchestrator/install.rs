@@ -805,7 +805,7 @@ pub async fn install_units(units: &[UnitFile], enable: bool) -> Result<(), Insta
 /// Persist the `State` produced by [`run_install`] under the lock + atomic
 /// write contract enforced by [`StateStore`].
 pub fn persist_state(paths: &Paths, state: &State) -> Result<PathBuf, InstallError> {
-    let store = StateStore::new(&paths.state);
+    let store = StateStore::new(&paths.config_dir);
     let guard = store
         .lock()
         .map_err(|e| InstallError::State(e.to_string()))?;

@@ -35,7 +35,7 @@ pub async fn run(args: RenameArgs, global: &GlobalArgs) -> Result<(), CliError> 
     }
 
     let runtime = Runtime::from_global(global)?;
-    let store = StateStore::new(&runtime.paths.state);
+    let store = StateStore::new(&runtime.paths.config_dir);
     let mut state = store
         .load()
         .map_err(|e| {

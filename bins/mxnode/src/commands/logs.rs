@@ -118,7 +118,7 @@ fn pick_units(
     requested_indices: &[u16],
     global: &GlobalArgs,
 ) -> Result<Vec<String>, CliError> {
-    let store = StateStore::new(&runtime.paths.state);
+    let store = StateStore::new(&runtime.paths.config_dir);
 
     // Source 1: state.toml (preferred — exact unit names).
     if let Ok(Some(state)) = store.load() {
@@ -202,7 +202,7 @@ fn tail_node_log_files(
     args: &LogsArgs,
     global: &GlobalArgs,
 ) -> Result<(), CliError> {
-    let store = StateStore::new(&runtime.paths.state);
+    let store = StateStore::new(&runtime.paths.config_dir);
     let state = store
         .load()
         .map_err(|e| {
@@ -305,7 +305,7 @@ async fn run_ws_logs(args: LogsArgs, global: &GlobalArgs) -> Result<(), CliError
         .json());
     }
     let runtime = Runtime::from_global(global)?;
-    let store = StateStore::new(&runtime.paths.state);
+    let store = StateStore::new(&runtime.paths.config_dir);
     let state = store
         .load()
         .map_err(|e| {
@@ -461,7 +461,7 @@ fn open_ws_log_file(
 #[tokio::main(flavor = "current_thread")]
 async fn run_save_archive(args: LogsArgs, global: &GlobalArgs) -> Result<(), CliError> {
     let runtime = Runtime::from_global(global)?;
-    let store = StateStore::new(&runtime.paths.state);
+    let store = StateStore::new(&runtime.paths.config_dir);
     let state = store
         .load()
         .map_err(|e| {

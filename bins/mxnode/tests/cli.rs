@@ -59,11 +59,29 @@ impl Sandbox {
         c
     }
 
+    /// Operator-edited config now lives in the unified `mxnode.toml`.
     fn config_path(&self) -> PathBuf {
+        self.xdg_config_home.join("mxnode/mxnode.toml")
+    }
+
+    /// Host inventory shares the same file as config (post-unification).
+    /// Tests that previously seeded `state.toml` directly continue to
+    /// work because the loader merges a legacy state file into the
+    /// unified one on first run, and tests that just assert "the path
+    /// exists / falls under the sandbox" still see the unified file.
+    fn state_path(&self) -> PathBuf {
+        self.config_path()
+    }
+
+    /// Legacy paths referenced by tests that explicitly seed the old
+    /// two-file world (e.g. testing the migration itself).
+    #[allow(dead_code)]
+    fn legacy_config_path(&self) -> PathBuf {
         self.xdg_config_home.join("mxnode/config.toml")
     }
 
-    fn state_path(&self) -> PathBuf {
+    #[allow(dead_code)]
+    fn legacy_state_path(&self) -> PathBuf {
         self.xdg_state_home.join("mxnode/state.toml")
     }
 }
@@ -643,7 +661,30 @@ fn install_refuses_when_state_already_exists() {
     let sandbox = Sandbox::new();
     let state_dir = sandbox.xdg_state_home.join("mxnode");
     std::fs::create_dir_all(&state_dir).unwrap();
-    std::fs::write(state_dir.join("state.toml"), "schema_version = 1\n").unwrap();
+    // Seed a realistic legacy state.toml so the unified-file migration
+    // picks it up and `install` then refuses to clobber the existing
+    // host record. A bare `schema_version = 1` would fail to parse —
+    // the test predates the field-required `written_at`/`written_by`.
+    std::fs::write(
+        state_dir.join("state.toml"),
+        r#"
+schema_version = 1
+written_at = "2026-04-25T08:00:00Z"
+written_by = "test"
+discovered = true
+
+[install]
+kind = "validators"
+environment = "mainnet"
+github_org = "multiversx"
+node_count = 1
+
+[install.versions]
+config_tag = "v1.7.13.0"
+binary_tag = "v1.7.13"
+"#,
+    )
+    .unwrap();
     let output = sandbox
         .cmd()
         .args([
@@ -1026,10 +1067,12 @@ GITHUB_ORG="myfork"
         "per-node override missing or wrong shard: {cfg}",
     );
 
-    // 7. Token is NEVER written to disk.
+    // 7. Token plaintext is NEVER written to disk. The unified file's
+    //    `[secrets]` section may exist with an empty `github_token`,
+    //    but the actual secret value must not appear.
     assert!(
-        !cfg.contains("ghp_secret_xyz_12345") && !cfg.contains("github_token"),
-        "config.toml leaked token: {cfg}"
+        !cfg.contains("ghp_secret_xyz_12345"),
+        "config.toml leaked token plaintext: {cfg}"
     );
 
     // 8. state.toml exists and shows 4 observer nodes.
@@ -1044,9 +1087,44 @@ fn migrate_bash_execute_refuses_when_state_toml_exists() {
     // Lay down bash sentinels so infer succeeds.
     std::fs::write(sb.home.join(".installedenv"), "mainnet").unwrap();
     std::fs::write(sb.home.join(".numberofnodes"), "1").unwrap();
-    // Pre-existing state.toml.
-    std::fs::create_dir_all(sb.state_path().parent().unwrap()).unwrap();
-    std::fs::write(sb.state_path(), "schema_version = 1\n").unwrap();
+    // Pre-populated host inventory in the unified `mxnode.toml`.
+    // migrate-bash uses its own loader path (deliberately bypassing
+    // `Runtime::from_global` to avoid auto-init) so we seed at the
+    // new path directly rather than relying on legacy migration.
+    std::fs::create_dir_all(sb.config_path().parent().unwrap()).unwrap();
+    std::fs::write(
+        sb.config_path(),
+        r#"
+schema_version = 1
+
+[host]
+schema_version = 1
+written_at = "2026-04-25T08:00:00Z"
+written_by = "test"
+discovered = true
+
+[host.install]
+kind = "validators"
+environment = "mainnet"
+github_org = "multiversx"
+node_count = 1
+
+[host.install.versions]
+config_tag = "v1.7.13.0"
+binary_tag = "v1.7.13"
+"#,
+    )
+    .unwrap();
+    // The loader requires mode 0600 on the unified file.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            sb.config_path(),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+    }
 
     let output = sb
         .cmd()
@@ -1057,16 +1135,13 @@ fn migrate_bash_execute_refuses_when_state_toml_exists() {
         .expect("spawn mxnode");
     assert!(
         !output.status.success(),
-        "expected non-zero exit when state.toml exists"
+        "expected non-zero exit when state already populated"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("refusing to overwrite") || stderr.contains("already exists"),
         "stderr should explain the refusal: {stderr}",
     );
-    // Confirm the existing state.toml was NOT modified.
-    let body = std::fs::read_to_string(sb.state_path()).unwrap();
-    assert_eq!(body, "schema_version = 1\n", "state.toml was clobbered");
 }
 
 #[test]

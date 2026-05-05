@@ -275,7 +275,7 @@ pub(crate) struct SystemRequirementsContext {
 }
 
 fn system_requirements_context(runtime: &Runtime) -> SystemRequirementsContext {
-    let store = StateStore::new(&runtime.paths.state);
+    let store = StateStore::new(&runtime.paths.config_dir);
     if let Ok(Some(state)) = store.load() {
         let node_count = state.nodes.len().max(1);
         let has_validator_role = state
@@ -720,7 +720,7 @@ fn check_command(bin: &'static str, args: &[&str]) -> Finding {
 
 fn check_state(runtime: &Runtime) -> Vec<Finding> {
     let mut out = Vec::new();
-    let store = StateStore::new(&runtime.paths.state);
+    let store = StateStore::new(&runtime.paths.config_dir);
     match store.load() {
         Ok(Some(state)) => {
             out.push(Finding::ok(

@@ -23,7 +23,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(2_000);
 #[tokio::main(flavor = "current_thread")]
 pub async fn run(args: StatusArgs, global: &GlobalArgs) -> Result<(), CliError> {
     let runtime = Runtime::from_global(global)?;
-    let store = StateStore::new(&runtime.paths.state);
+    let store = StateStore::new(&runtime.paths.config_dir);
 
     if args.watch {
         // Repaint indefinitely; ctrl-c breaks out of the read loop.

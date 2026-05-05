@@ -1131,8 +1131,8 @@ pub fn run(args: MigrateBashArgs, global: &GlobalArgs) -> Result<(), CliError> {
     }
 
     // ── apply state.toml ──
-    let store = mxnode_state::StateStore::new(&paths.state);
-    if store.exists() {
+    let store = mxnode_state::StateStore::new(&paths.config_dir);
+    if store.host_initialized() {
         return Err(CliError::new(
             "refusing to overwrite existing state.toml",
             format!("{} already exists", store.state_path().display()),

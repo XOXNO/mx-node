@@ -83,7 +83,7 @@ pub fn validate(cfg: &Config) -> ValidationReport {
             );
         }
     }
-    for node in &cfg.node_overrides {
+    for node in &cfg.nodes {
         if let Some(reason) = invalid_extra_flags(&node.extra_flags) {
             report.errors.push(format!(
                 "nodes[index={}].extra_flags is invalid: {reason}",
@@ -244,7 +244,7 @@ mod tests {
         use mxnode_core::{NodeIndex, Role, Shard};
         let mut cfg = Config::default();
         cfg.network.environment = Some(mxnode_core::Environment::Mainnet);
-        cfg.node_overrides.push(NodeOverride {
+        cfg.nodes.push(NodeOverride {
             index: NodeIndex::new(2),
             role: Role::Validator,
             shard: Shard::Auto,
@@ -252,7 +252,7 @@ mod tests {
             extra_flags: "valid -flag".to_string(),
             operation_mode: None,
         });
-        cfg.node_overrides.push(NodeOverride {
+        cfg.nodes.push(NodeOverride {
             index: NodeIndex::new(3),
             role: Role::Validator,
             shard: Shard::Auto,

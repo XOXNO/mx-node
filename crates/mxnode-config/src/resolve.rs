@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use mxnode_core::{Config, Paths};
 
-use crate::xdg::{home_dir, xdg_runtime_dir, xdg_state_home};
+use crate::xdg::{home_dir, xdg_config_home, xdg_runtime_dir, xdg_state_home};
 use crate::ConfigError;
 
 /// Resolve the path-shaped strings in `Config::paths` into a typed
@@ -21,6 +21,7 @@ pub fn resolve_paths(cfg: &Config) -> Result<Paths, ConfigError> {
     let home = home_dir().unwrap_or_else(|_| custom_home.clone());
     let xdg_state = xdg_state_home().unwrap_or_else(|_| custom_home.join(".local/state"));
     let xdg_runtime = xdg_runtime_dir().unwrap_or_else(|_| xdg_state.join("run"));
+    let xdg_config = xdg_config_home().unwrap_or_else(|_| custom_home.join(".config"));
 
     let interp = |raw: &str| -> PathBuf {
         let mut s = raw.to_string();
@@ -36,6 +37,10 @@ pub fn resolve_paths(cfg: &Config) -> Result<Paths, ConfigError> {
         custom_user: cfg.paths.custom_user.clone(),
         node_keys: interp(&cfg.paths.node_keys),
         binaries: interp(&cfg.paths.binaries),
+        // The unified file lives under XDG_CONFIG_HOME — never under
+        // `paths.custom_home` so multi-host setups sharing one HOME can
+        // each have their own mxnode.toml under their own XDG dir.
+        config_dir: xdg_config.join("mxnode"),
         state: interp(&cfg.paths.state),
         runtime: interp(&cfg.paths.runtime),
     })

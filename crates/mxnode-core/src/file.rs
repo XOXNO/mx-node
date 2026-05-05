@@ -67,13 +67,10 @@ pub struct MxnodeFile {
     pub overrides: OverridesSection,
     pub metrics: MetricsSection,
     pub branding: BrandingSection,
-    /// Per-node operator overrides matched by index. Rust field is
-    /// renamed for clarity (was `nodes`) but the TOML key stays
-    /// `[[nodes]]` so existing config.toml files round-trip unchanged.
-    /// No collision with the host inventory's `[host.nodes]` because
-    /// that array lives nested under `[host]`.
-    #[serde(rename = "nodes")]
-    pub node_overrides: Vec<NodeOverride>,
+    /// Per-node operator overrides matched by index. Sparse: missing
+    /// nodes inherit `[node]` defaults. No collision with the host
+    /// inventory's `[host.nodes]` because that array lives nested.
+    pub nodes: Vec<NodeOverride>,
 
     // ── machine-derived ──────────────────────────────────────────────
     pub host: HostState,
@@ -95,7 +92,7 @@ impl Default for MxnodeFile {
             overrides: OverridesSection::default(),
             metrics: MetricsSection::default(),
             branding: BrandingSection::default(),
-            node_overrides: Vec::new(),
+            nodes: Vec::new(),
             host: HostState::default(),
             secrets: SecretsSection::default(),
             update_cache: UpdateCacheSection::default(),
@@ -356,13 +353,19 @@ impl HostState {
 /// Observed install metadata — kind / environment / org / version
 /// pinning. Renamed from the old `state::InstallSection` to disambiguate
 /// from the operator-side [`InstallSection`] (artifact-source policy).
+///
+/// `#[serde(default)]` lets tag/binary lists fall back to empty when a
+/// migrated legacy `state.toml` omits them — only `kind`, `environment`,
+/// `github_org` and `node_count` are required.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostInstall {
     pub kind: InstallKind,
     pub environment: Environment,
     pub github_org: String,
     pub node_count: u16,
+    #[serde(default)]
     pub versions: InstallVersions,
+    #[serde(default)]
     pub binaries: InstallBinaries,
 }
 
@@ -613,7 +616,7 @@ mod tests {
     #[test]
     fn serialized_layout_uses_renamed_top_level_keys() {
         let mut f = MxnodeFile::default();
-        f.node_overrides.push(NodeOverride {
+        f.nodes.push(NodeOverride {
             index: NodeIndex::new(0),
             role: Role::Validator,
             shard: Shard::Auto,
@@ -622,9 +625,6 @@ mod tests {
             operation_mode: None,
         });
         let body = toml::to_string(&f).unwrap();
-        // Operator-side per-node key stays `[[nodes]]` so existing
-        // config.toml files round-trip cleanly. The Rust field is
-        // `node_overrides` for clarity at the call site.
         assert!(body.contains("[[nodes]]"), "body:\n{body}");
         // [host] subtree is nested under one root.
         assert!(body.contains("[host]"), "body:\n{body}");

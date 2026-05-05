@@ -22,7 +22,14 @@ pub struct Paths {
     pub node_keys: PathBuf,
     /// Versioned binary store; replaces today's "cp into the node dir" flow.
     pub binaries: PathBuf,
-    /// `state.toml`, `state.toml.lock`, `inflight.toml` live here.
+    /// Where the unified `mxnode.toml` lives. Resolved from
+    /// `XDG_CONFIG_HOME` (defaults to `~/.config/mxnode`). Also holds
+    /// `mxnode.toml.lock`, `inflight.toml`, and any future per-host
+    /// state files.
+    pub config_dir: PathBuf,
+    /// Legacy directory that historically held `state.toml`. Kept for
+    /// compatibility during the single-file rollout — the loader picks
+    /// up content here on first run, then never writes here again.
     pub state: PathBuf,
     /// `upgrade.lock` PID-file, future IPC sockets.
     pub runtime: PathBuf,
@@ -55,12 +62,30 @@ impl Paths {
         self.binaries.join(artifact).join(tag).join(artifact)
     }
 
-    pub fn state_file(&self) -> PathBuf {
+    /// Single source-of-truth file path. Operator-edited sections,
+    /// host inventory, secrets, and update cache all live here.
+    pub fn mxnode_file(&self) -> PathBuf {
+        self.config_dir.join("mxnode.toml")
+    }
+
+    pub fn mxnode_lock_file(&self) -> PathBuf {
+        self.config_dir.join("mxnode.toml.lock")
+    }
+
+    /// Legacy `state.toml` location. Read once on first run for
+    /// migration into [`Self::mxnode_file`]; never written after.
+    pub fn legacy_state_file(&self) -> PathBuf {
         self.state.join("state.toml")
     }
 
-    pub fn state_lock_file(&self) -> PathBuf {
+    pub fn legacy_state_lock_file(&self) -> PathBuf {
         self.state.join("state.toml.lock")
+    }
+
+    /// Legacy `config.toml` location. Read once on first run for
+    /// migration; never written after.
+    pub fn legacy_config_file(&self) -> PathBuf {
+        self.config_dir.join("config.toml")
     }
 
     pub fn inflight_file(&self) -> PathBuf {
@@ -111,6 +136,7 @@ impl Default for Paths {
             custom_user: "ubuntu".to_string(),
             node_keys: home.join("VALIDATOR_KEYS"),
             binaries: home.join("mxnode/binaries"),
+            config_dir: home.join(".config/mxnode"),
             state: state.clone(),
             runtime: state.join("run"),
         }

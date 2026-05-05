@@ -134,7 +134,7 @@ async fn run_op(
     }
 
     let runtime = Runtime::from_global(global)?;
-    let store = StateStore::new(&runtime.paths.state);
+    let store = StateStore::new(&runtime.paths.config_dir);
     let state = load_state_or_err(&store, global)?;
 
     let targets = pick_targets(&state, requested, global)?;
@@ -263,7 +263,7 @@ async fn run_import(req: ImportRequest, global: &GlobalArgs) -> Result<(), CliEr
     }
 
     let runtime = Runtime::from_global(global)?;
-    let store = StateStore::new(&runtime.paths.state);
+    let store = StateStore::new(&runtime.paths.config_dir);
     let state = load_state_or_err(&store, global)?;
     let node = state
         .nodes
@@ -364,7 +364,7 @@ async fn run_import_plan(req: ImportPlanRequest, global: &GlobalArgs) -> Result<
     }
 
     let runtime = Runtime::from_global(global)?;
-    let store = StateStore::new(&runtime.paths.state);
+    let store = StateStore::new(&runtime.paths.config_dir);
     let state = load_state_or_err(&store, global)?;
     let sources = discover_import_sources(&req.source_root, global)?;
     let ctl = crate::orchestrator::supervisor::build_supervisor();

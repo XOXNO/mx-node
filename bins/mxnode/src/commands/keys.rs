@@ -90,7 +90,7 @@ pub fn run_keygen(args: KeygenArgs, global: &GlobalArgs) -> Result<(), CliError>
 
 fn check(global: &GlobalArgs) -> Result<(), CliError> {
     let runtime = Runtime::from_global(global)?;
-    let store = StateStore::new(&runtime.paths.state);
+    let store = StateStore::new(&runtime.paths.config_dir);
     let state = store
         .load()
         .map_err(|e| {

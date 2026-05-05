@@ -26,7 +26,7 @@ use crate::orchestrator::supervisor::{unit_dir_for_platform, unit_filename};
 #[tokio::main(flavor = "current_thread")]
 pub async fn run(args: CleanupArgs, global: &GlobalArgs) -> Result<(), CliError> {
     let runtime = Runtime::from_global(global)?;
-    let store = StateStore::new(&runtime.paths.state);
+    let store = StateStore::new(&runtime.paths.config_dir);
     let state = match store.load() {
         Ok(Some(s)) => s,
         Ok(None) => {
