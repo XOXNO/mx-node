@@ -44,14 +44,22 @@ fn profile_sweep_produces_twelve_combos() {
 }
 
 #[test]
-fn nightly_build_std_host_yields_one_aggressive_combo() {
+fn nightly_build_std_host_yields_two_combos_perf_safe_then_size_max() {
     use xtask::matrix::Toolchain;
     let combos: Vec<_> = Phase::NightlyBuildStdHost.combos().collect();
-    assert_eq!(combos.len(), 1);
-    let c = &combos[0];
-    assert_eq!(c.profile.lto, "fat");
-    assert_eq!(c.profile.opt_level, "z");
-    assert_eq!(c.profile.strip, "symbols");
-    assert_eq!(c.toolchain, Toolchain::NightlyBuildStd);
-    assert!(c.combo_label().contains("build-std"));
+    assert_eq!(combos.len(), 2);
+
+    // Perf-safe variant first — `opt=3` keeps the TUI render hot path
+    // inside the +5% bar, gates Stage E's default `-min` artefact.
+    let perf_safe = &combos[0];
+    assert_eq!(perf_safe.profile.lto, "fat");
+    assert_eq!(perf_safe.profile.opt_level, "3");
+    assert_eq!(perf_safe.profile.strip, "symbols");
+    assert_eq!(perf_safe.toolchain, Toolchain::NightlyBuildStd);
+    assert!(perf_safe.combo_label().contains("build-std"));
+
+    // Size-max variant second — `opt=z` regresses TUI render 2-3×; opt-in only.
+    let size_max = &combos[1];
+    assert_eq!(size_max.profile.opt_level, "z");
+    assert_eq!(size_max.toolchain, Toolchain::NightlyBuildStd);
 }

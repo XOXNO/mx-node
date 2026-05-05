@@ -155,17 +155,28 @@ impl Phase {
     }
 }
 
-/// One nightly combo with the *most aggressive* size profile we know
-/// of: `lto=fat`, `opt=z`, `strip=symbols`, then layered with
-/// `panic_immediate_abort` via build-std. Targets the host triple only
-/// — caller is expected to already have nightly + rust-src installed.
+/// Two nightly combos, both layered with `panic_immediate_abort` via
+/// build-std and targeting the host triple only:
+///
+/// 1. **perf-safe**: `lto=fat, opt=3, strip=symbols` — keeps the
+///    dashboard hot path within the +5% TUI render bar; ships as the
+///    default Stage E `-min` artefact for size-conscious operators on
+///    bandwidth-constrained hosts.
+/// 2. **size-max**: `lto=fat, opt=z, strip=symbols` — smallest
+///    achievable binary, but TUI render regresses 2-3×; opt-in only.
+///
+/// Caller is expected to already have nightly + rust-src installed.
 fn nightly_build_std_host() -> impl Iterator<Item = Combo> {
-    let mut c = Combo::baseline();
-    c.profile.lto = "fat".to_string();
-    c.profile.opt_level = "z".to_string();
-    c.profile.strip = "symbols".to_string();
-    c.toolchain = Toolchain::NightlyBuildStd;
-    std::iter::once(c)
+    let mut perf_safe = Combo::baseline();
+    perf_safe.profile.lto = "fat".to_string();
+    perf_safe.profile.opt_level = "3".to_string();
+    perf_safe.profile.strip = "symbols".to_string();
+    perf_safe.toolchain = Toolchain::NightlyBuildStd;
+
+    let mut size_max = perf_safe.clone();
+    size_max.profile.opt_level = "z".to_string();
+
+    [perf_safe, size_max].into_iter()
 }
 
 fn profile_sweep() -> impl Iterator<Item = Combo> {

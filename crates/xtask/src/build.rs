@@ -34,27 +34,32 @@ pub fn build(
     // Stable: `cargo zigbuild` works for cross-compile to musl/macOS via
     //         zig as the C linker. This is the path matching release.yml.
     //
-    // Nightly + build-std: rebuilds std with the workspace's profile
-    //         flags + `panic_immediate_abort` (no panic unwind tables in
-    //         std). Enables Stage E's last-mile size win. We don't use
-    //         zigbuild here because cargo-zigbuild is installed under the
-    //         stable toolchain only on most setups; vanilla
-    //         `cargo +nightly build` is enough for host-only experiments
-    //         (the spec scopes Stage E to host targets — cross-compile
-    //         with nightly+build-std would need a dedicated CI runner
-    //         and is deferred).
-    if combo.toolchain == Toolchain::NightlyBuildStd {
+    // Nightly + build-std + immediate-abort: rebuilds std with the
+    //         workspace's profile flags AND swaps the panic strategy to
+    //         `immediate-abort` so std doesn't carry any panic-unwind
+    //         tables. Combined effect on the dashboard binary: ~10%
+    //         additional shrink on top of stable Stage C with no perf
+    //         regression. Host-only because cargo-zigbuild is installed
+    //         under the stable toolchain on most setups, and nightly
+    //         cross-compile would need its own CI runner.
+    //
+    // Note: `panic_immediate_abort` was a `-Zbuild-std-features` value
+    // in older nightlies. As of nightly-2026-04+, it became a real panic
+    // strategy: pass `-Cpanic=immediate-abort` (gated by
+    // `-Zunstable-options`) via RUSTFLAGS. The harness uses the new
+    // syntax — old syntax now hard-errors at the compile_error! in
+    // `library/core/src/panicking.rs`.
+    let mut rustflags = String::from("-C strip=symbols");
+    let toolchain_label = if combo.toolchain == Toolchain::NightlyBuildStd {
         cmd.arg("+nightly");
         cmd.arg("build");
-        cmd.args([
-            "-Z",
-            "build-std=std,panic_abort",
-            "-Z",
-            "build-std-features=panic_immediate_abort",
-        ]);
+        cmd.args(["-Z", "build-std=std,panic_abort", "-Z", "unstable-options"]);
+        rustflags.push_str(" -Cpanic=immediate-abort -Zunstable-options");
+        "cargo +nightly build"
     } else {
         cmd.arg("zigbuild");
-    }
+        "cargo zigbuild"
+    };
 
     cmd.args([
         "--release",
@@ -70,18 +75,17 @@ pub fn build(
         cmd.arg("--features").arg(extra_features.join(","));
     }
 
-    // RUSTFLAGS — strip is also set in the profile but mirroring it in
-    // the env matches release.yml exactly. opt-level is set via the
-    // patched Cargo.toml, NOT via -C, to keep responsibility in one
+    // strip=symbols mirrors the env in release.yml. opt-level is set via
+    // the patched Cargo.toml, NOT via -C, to keep responsibility in one
     // place (the patcher).
-    cmd.env("RUSTFLAGS", "-C strip=symbols");
+    cmd.env("RUSTFLAGS", rustflags);
 
     let status = cmd
         .status()
-        .with_context(|| format!("spawn cargo build for {target}"))?;
+        .with_context(|| format!("spawn {toolchain_label} for {target}"))?;
     if !status.success() {
         return Err(anyhow!(
-            "cargo zigbuild failed for target={target} ({status})"
+            "{toolchain_label} failed for target={target} ({status})"
         ));
     }
 
