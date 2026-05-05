@@ -433,12 +433,18 @@ pub struct PerNodePatch {
     pub role: String,
     pub shard: String,
     pub extra_flags: String,
+    pub operation_mode: Option<String>,
 }
 
 /// Aggregated migration intent. The dry-run renderer reads this; the
 /// `--execute` path applies it.
 #[derive(Debug, Clone)]
 pub struct MigrationPlan {
+    /// Resolved bash `$CUSTOM_HOME` the plan was built from. Echoed in
+    /// the dry-run header so the operator sees which path was scanned
+    /// (especially useful when auto-detection picks a non-default
+    /// home on hosts without a config.toml).
+    pub custom_home: PathBuf,
     pub state: State,
     pub config_patches: Vec<ConfigPatch>,
     pub per_node_patches: Vec<PerNodePatch>,
@@ -489,7 +495,13 @@ pub fn build_migration_plan(
     let defaults = Config::default();
     if let Some(ref vars) = bash_vars {
         github_token = vars.github_token.clone();
-        plan_variables_cfg_patches(vars, existing_config, &defaults, &mut config_patches);
+        plan_variables_cfg_patches(
+            vars,
+            existing_config,
+            &defaults,
+            &mut config_patches,
+            &mut warnings,
+        );
     }
 
     // 2. service files → per-node extra_flags overrides + cross-source
@@ -516,7 +528,19 @@ pub fn build_migration_plan(
     // NODE_EXTRA_FLAGS (which is the user's intended default) over
     // mxnode's existing value, when the latter is at the schema
     // default. Otherwise mxnode wins (operator already customised).
-    let global_extra_flags = effective_global_extra_flags(&bash_vars, existing_config, &defaults);
+    let mut global_runtime = effective_global_runtime(&bash_vars, existing_config, &defaults);
+    if global_runtime.operation_mode.is_none()
+        && existing_config.node.operation_mode == defaults.node.operation_mode
+    {
+        if let Some(mode) = common_service_operation_mode(&state, &services, &mut warnings) {
+            config_patches.push(ConfigPatch {
+                key: "node.operation_mode".to_string(),
+                value: mode.clone(),
+                source: PatchSource::ServiceFile,
+            });
+            global_runtime.operation_mode = Some(mode);
+        }
+    }
     let mut per_node_patches = Vec::new();
     for (idx, facts) in &services {
         let Some(unit_extras) = facts.extra_flags.as_deref() else {
@@ -525,13 +549,11 @@ pub fn build_migration_plan(
             ));
             continue;
         };
-        let trimmed = unit_extras.trim();
-        if trimmed.is_empty() {
-            continue;
+        let normalized = normalize_operation_mode_flags(unit_extras);
+        for warning in normalized.warnings {
+            warnings.push(format!("elrond-node-{idx}.service: {warning}"));
         }
-        if trimmed == global_extra_flags.trim() {
-            continue;
-        }
+        let trimmed = normalized.extra_flags.trim();
         // Mirror the inferred state's role/shard for this index so the
         // [[nodes]] override doesn't contradict state.toml. If the
         // service file exists for an index outside state.toml's range
@@ -543,15 +565,26 @@ pub fn build_migration_plan(
             ));
             continue;
         };
+        let operation_mode = normalized.operation_mode;
+        if trimmed.is_empty() && operation_mode == global_runtime.operation_mode {
+            continue;
+        }
+        if trimmed == global_runtime.extra_flags.trim()
+            && operation_mode == global_runtime.operation_mode
+        {
+            continue;
+        }
         per_node_patches.push(PerNodePatch {
             index: *idx,
             role: node_state.role.as_str().to_string(),
             shard: shard_serde_name(node_state.shard).to_string(),
             extra_flags: trimmed.to_string(),
+            operation_mode,
         });
     }
 
     Ok(MigrationPlan {
+        custom_home: custom_home.to_path_buf(),
         state,
         config_patches,
         per_node_patches,
@@ -586,16 +619,44 @@ fn read_node_display_name_from_prefs(path: &Path) -> Result<Option<String>, Stri
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(format!("could not read prefs.toml: {e}")),
     };
-    let parsed: toml::Value = body
-        .parse()
-        .map_err(|e| format!("could not parse prefs.toml: {e}"))?;
-    Ok(parsed
-        .get("Preferences")
-        .and_then(|prefs| prefs.get("NodeDisplayName"))
-        .and_then(|name| name.as_str())
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .map(ToOwned::to_owned))
+    extract_node_display_name_from_prefs(&body)
+}
+
+fn extract_node_display_name_from_prefs(body: &str) -> Result<Option<String>, String> {
+    let mut in_preferences = false;
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if trimmed.starts_with('[') {
+            let header = trimmed.split('#').next().unwrap_or(trimmed).trim();
+            in_preferences = header == "[Preferences]";
+            continue;
+        }
+        if !in_preferences {
+            continue;
+        }
+
+        let Some((key, raw_value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        if key.trim() != "NodeDisplayName" {
+            continue;
+        }
+
+        let value_doc = format!("value = {}", raw_value.trim());
+        let parsed: toml::Value = value_doc
+            .parse()
+            .map_err(|e| format!("could not parse Preferences.NodeDisplayName: {e}"))?;
+        return Ok(parsed
+            .get("value")
+            .and_then(|name| name.as_str())
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(ToOwned::to_owned));
+    }
+    Ok(None)
 }
 
 /// Compute config patches from variables.cfg, only filling fields that
@@ -605,6 +666,7 @@ fn plan_variables_cfg_patches(
     existing: &Config,
     defaults: &Config,
     patches: &mut Vec<ConfigPatch>,
+    warnings: &mut Vec<String>,
 ) {
     if let Some(ref env) = vars.environment {
         // Only propagate when mxnode hasn't been told about a network
@@ -661,12 +723,27 @@ fn plan_variables_cfg_patches(
         }
     }
     if let Some(ref flags) = vars.node_extra_flags {
-        if existing.node.extra_flags == defaults.node.extra_flags {
+        let normalized = normalize_operation_mode_flags(flags);
+        for warning in normalized.warnings {
+            warnings.push(format!("variables.cfg NODE_EXTRA_FLAGS: {warning}"));
+        }
+        if existing.node.extra_flags == defaults.node.extra_flags
+            && !normalized.extra_flags.trim().is_empty()
+        {
             patches.push(ConfigPatch {
                 key: "node.extra_flags".to_string(),
-                value: flags.clone(),
+                value: normalized.extra_flags,
                 source: PatchSource::VariablesCfg,
             });
+        }
+        if existing.node.operation_mode == defaults.node.operation_mode {
+            if let Some(mode) = normalized.operation_mode {
+                patches.push(ConfigPatch {
+                    key: "node.operation_mode".to_string(),
+                    value: mode,
+                    source: PatchSource::VariablesCfg,
+                });
+            }
         }
     }
     if let Some(ref ver) = vars.override_proxyver {
@@ -743,21 +820,185 @@ fn plan_service_file_patches(
     });
 }
 
-/// What the global `node.extra_flags` will be after the merge — used
-/// when deciding whether a per-node service-file value diverges enough
-/// to need a `[[nodes]]` override.
-fn effective_global_extra_flags(
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct RuntimeFlags {
+    extra_flags: String,
+    operation_mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct NormalizedOperationFlags {
+    extra_flags: String,
+    operation_mode: Option<String>,
+    warnings: Vec<String>,
+}
+
+/// What global runtime flags will be after the merge — used when
+/// deciding whether service-file values diverge enough to need a
+/// `[[nodes]]` override.
+fn effective_global_runtime(
     bash_vars: &Option<BashVariables>,
     existing: &Config,
     defaults: &Config,
-) -> String {
-    if existing.node.extra_flags != defaults.node.extra_flags {
-        return existing.node.extra_flags.clone();
-    }
-    bash_vars
+) -> RuntimeFlags {
+    let from_bash = bash_vars
         .as_ref()
-        .and_then(|v| v.node_extra_flags.clone())
-        .unwrap_or_default()
+        .and_then(|v| v.node_extra_flags.as_deref())
+        .map(normalize_operation_mode_flags)
+        .unwrap_or_default();
+    let extra_flags = if existing.node.extra_flags != defaults.node.extra_flags {
+        existing.node.extra_flags.clone()
+    } else {
+        from_bash.extra_flags
+    };
+    let operation_mode = if existing.node.operation_mode != defaults.node.operation_mode {
+        existing.node.operation_mode.clone()
+    } else {
+        from_bash.operation_mode
+    };
+    RuntimeFlags {
+        extra_flags,
+        operation_mode,
+    }
+}
+
+fn common_service_operation_mode(
+    state: &State,
+    services: &BTreeMap<u16, ServiceFacts>,
+    warnings: &mut Vec<String>,
+) -> Option<String> {
+    let mut common: Option<String> = None;
+    for node in &state.nodes {
+        let facts = services.get(&node.index.get())?;
+        let extras = facts.extra_flags.as_deref()?;
+        let normalized = normalize_operation_mode_flags(extras);
+        for warning in normalized.warnings {
+            warnings.push(format!(
+                "elrond-node-{}.service: {warning}",
+                node.index.get()
+            ));
+        }
+        let mode = normalized.operation_mode?;
+        match common.as_deref() {
+            None => common = Some(mode),
+            Some(existing) if existing == mode => {}
+            Some(_) => return None,
+        }
+    }
+    common
+}
+
+const VALID_OPERATION_MODES: &[&str] = &[
+    "full-archive",
+    "db-lookup-extension",
+    "historical-balances",
+    "snapshotless-observer",
+];
+
+fn normalize_operation_mode_flags(flags: &str) -> NormalizedOperationFlags {
+    let mut out = Vec::new();
+    let mut operation_mode: Option<String> = None;
+    let mut warnings = Vec::new();
+    let tokens: Vec<&str> = flags.split_whitespace().collect();
+    let mut i = 0;
+    while i < tokens.len() {
+        let token = tokens[i];
+        if matches!(token, "-operation-mode" | "--operation-mode") {
+            let Some(value) = tokens.get(i + 1).copied() else {
+                warnings.push(
+                    "operation-mode flag has no value; leaving it in extra_flags".to_string(),
+                );
+                out.push(token);
+                i += 1;
+                continue;
+            };
+            if record_operation_mode(token, value, &mut operation_mode, &mut warnings) {
+                i += 2;
+                continue;
+            }
+            out.push(token);
+            out.push(value);
+            i += 2;
+            continue;
+        }
+        if let Some(value) = token
+            .strip_prefix("-operation-mode=")
+            .or_else(|| token.strip_prefix("--operation-mode="))
+        {
+            if record_operation_mode(token, value, &mut operation_mode, &mut warnings) {
+                i += 1;
+                continue;
+            }
+        }
+        out.push(token);
+        i += 1;
+    }
+    NormalizedOperationFlags {
+        extra_flags: out.join(" "),
+        operation_mode,
+        warnings,
+    }
+}
+
+fn record_operation_mode(
+    raw: &str,
+    value: &str,
+    operation_mode: &mut Option<String>,
+    warnings: &mut Vec<String>,
+) -> bool {
+    if !VALID_OPERATION_MODES.contains(&value) {
+        warnings.push(format!(
+            "unknown operation mode {value:?}; leaving {raw:?} in extra_flags"
+        ));
+        return false;
+    }
+    match operation_mode.as_deref() {
+        None => {
+            *operation_mode = Some(value.to_string());
+            true
+        }
+        Some(existing) if existing == value => true,
+        Some(existing) => {
+            warnings.push(format!(
+                "multiple operation modes ({existing:?}, {value:?}); leaving {raw:?} in extra_flags"
+            ));
+            false
+        }
+    }
+}
+
+/// Best-effort discovery of the bash `$CUSTOM_HOME` when no
+/// `config.toml` exists and the operator hasn't passed `--from`. Tried
+/// in order:
+///
+///   1. `home` itself if it carries the bash sentinel `.installedenv`.
+///   2. `CUSTOM_HOME` declared in `<home>/mx-chain-scripts/config/variables.cfg`
+///      (handles the case where bash was installed under a different
+///      account than the one running mxnode).
+///   3. `home` as a final fallback so the downstream "missing
+///      `.installedenv`" error points at a path the operator can
+///      reason about, not the schema default `/home/ubuntu`.
+fn detect_custom_home_in(home: &Path) -> PathBuf {
+    if home.join(".installedenv").is_file() {
+        return home.to_path_buf();
+    }
+    let cfg = home.join("mx-chain-scripts/config/variables.cfg");
+    if cfg.is_file() {
+        if let Ok(vars) = parse_variables_cfg(&cfg) {
+            if let Some(custom) = vars.custom_home {
+                return custom;
+            }
+        }
+    }
+    home.to_path_buf()
+}
+
+/// Convenience wrapper that resolves `$HOME` at the env boundary.
+/// Returns `None` only when `$HOME` is unset (rare on the systems the
+/// migrate command targets).
+fn auto_detect_custom_home() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    Some(detect_custom_home_in(&home))
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -840,10 +1081,24 @@ pub fn run(args: MigrateBashArgs, global: &GlobalArgs) -> Result<(), CliError> {
         _ => loaded.config.clone(),
     };
 
-    let custom_home = args
-        .from
-        .clone()
-        .unwrap_or_else(|| paths.custom_home.clone());
+    // Resolution order for the bash $CUSTOM_HOME:
+    //
+    //   1. `--from` if the operator passed it (always wins).
+    //   2. On a fresh host (no config.toml yet) the schema default
+    //      `/home/ubuntu` rarely matches reality — operators on hosts
+    //      with a different service account (e.g. `truststaking`) had
+    //      to pass `--from` every time. Try `$HOME` directly, then
+    //      parse `$HOME/mx-chain-scripts/config/variables.cfg` for an
+    //      explicit `CUSTOM_HOME` (the bash installer always clones
+    //      its scripts repo into the user's home).
+    //   3. Otherwise honour `paths.custom_home` from the loaded config.
+    let custom_home = args.from.clone().unwrap_or_else(|| {
+        if matches!(loaded.source, ConfigSource::None) {
+            auto_detect_custom_home().unwrap_or_else(|| paths.custom_home.clone())
+        } else {
+            paths.custom_home.clone()
+        }
+    });
 
     let scripts_dir = if args.no_scripts {
         None
@@ -976,6 +1231,9 @@ fn merge_node_overrides(doc: &mut DocumentMut, per_node: &[PerNodePatch]) {
                 == Some(patch.index);
             if same_index {
                 entry.insert("extra_flags", value(patch.extra_flags.clone()));
+                if let Some(mode) = &patch.operation_mode {
+                    entry.insert("operation_mode", value(mode.clone()));
+                }
                 found = true;
                 break;
             }
@@ -991,6 +1249,9 @@ fn merge_node_overrides(doc: &mut DocumentMut, per_node: &[PerNodePatch]) {
             t.insert("shard", value(patch.shard.clone()));
             t.insert("display_name", value(""));
             t.insert("extra_flags", value(patch.extra_flags.clone()));
+            if let Some(mode) = &patch.operation_mode {
+                t.insert("operation_mode", value(mode.clone()));
+            }
             arr.push(t);
         }
     }
@@ -1042,6 +1303,7 @@ fn print_dry_run(plan: &MigrationPlan, global: &GlobalArgs) {
     if global.json {
         let body = serde_json::json!({
             "mode": "dry-run",
+            "custom_home": plan.custom_home.display().to_string(),
             "node_count": plan.state.nodes.len(),
             "kind": plan.state.install.as_ref().map(|i| i.kind.as_str()),
             "environment": plan.state.install.as_ref().map(|i| i.environment.as_str()),
@@ -1062,6 +1324,7 @@ fn print_dry_run(plan: &MigrationPlan, global: &GlobalArgs) {
             "per_node_patches": plan.per_node_patches.iter().map(|p| serde_json::json!({
                 "index": p.index,
                 "extra_flags": p.extra_flags,
+                "operation_mode": p.operation_mode.as_deref(),
             })).collect::<Vec<_>>(),
             "github_token_present": plan.github_token.is_some(),
             "warnings": plan.warnings,
@@ -1070,6 +1333,10 @@ fn print_dry_run(plan: &MigrationPlan, global: &GlobalArgs) {
         return;
     }
     println!("dry-run — pass --execute to apply");
+    println!(
+        "  source: {} (use --from to override)",
+        plan.custom_home.display()
+    );
     if let Some(install) = plan.state.install.as_ref() {
         println!(
             "  inferred {} nodes, kind={}, env={}",
@@ -1103,9 +1370,12 @@ fn print_dry_run(plan: &MigrationPlan, global: &GlobalArgs) {
     }
     if !plan.per_node_patches.is_empty() {
         println!();
-        println!("per-node extra_flags overrides (from .service files):");
+        println!("per-node runtime overrides (from .service files):");
         for p in &plan.per_node_patches {
-            println!("  node-{}: extra_flags = {:?}", p.index, p.extra_flags);
+            println!(
+                "  node-{}: extra_flags = {:?}, operation_mode = {:?}",
+                p.index, p.extra_flags, p.operation_mode,
+            );
         }
     }
     if let Some(token) = &plan.github_token {
@@ -1253,6 +1523,48 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let err = infer_state_from_bash(dir.path()).unwrap_err();
         assert!(matches!(err, MigrateError::NotBash(".installedenv")));
+    }
+
+    #[test]
+    fn detect_custom_home_returns_home_when_sentinels_live_directly_in_it() {
+        // bash installer puts .installedenv straight under $HOME →
+        // detect should pick $HOME without consulting variables.cfg.
+        let home = bash_fixture("Multikey Squad", 4, "mainnet");
+        assert_eq!(
+            detect_custom_home_in(home.path()),
+            home.path().to_path_buf()
+        );
+    }
+
+    #[test]
+    fn detect_custom_home_reads_variables_cfg_when_home_is_not_the_install_path() {
+        // bash was installed under a different account but the
+        // variables.cfg lives under $HOME (operator cloned the scripts
+        // into their own home). Pick CUSTOM_HOME from there.
+        let home = tempfile::tempdir().unwrap();
+        let scripts = home.path().join("mx-chain-scripts/config");
+        fs::create_dir_all(&scripts).unwrap();
+        fs::write(
+            scripts.join("variables.cfg"),
+            r#"CUSTOM_HOME="/srv/mxnode""#,
+        )
+        .unwrap();
+        assert_eq!(
+            detect_custom_home_in(home.path()),
+            PathBuf::from("/srv/mxnode")
+        );
+    }
+
+    #[test]
+    fn detect_custom_home_falls_back_to_home_when_no_signals_present() {
+        // No .installedenv, no variables.cfg. Returning $HOME makes the
+        // downstream "missing .installedenv" error point at a path the
+        // operator can recognise (vs. the schema default /home/ubuntu).
+        let home = tempfile::tempdir().unwrap();
+        assert_eq!(
+            detect_custom_home_in(home.path()),
+            home.path().to_path_buf()
+        );
     }
 
     #[test]
@@ -1519,6 +1831,85 @@ NODE_EXTRA_FLAGS="-profile-mode true"
         assert_eq!(patch.role, "observer");
         assert_eq!(patch.shard, "one");
         assert!(patch.extra_flags.contains("-display-name special"));
+        assert_eq!(patch.operation_mode, None);
+    }
+
+    #[test]
+    fn plan_normalizes_common_operation_mode_from_service_files() {
+        let custom_home = bash_fixture("Observers Squad", 2, "mainnet");
+        let scripts_dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(scripts_dir.path().join("config")).unwrap();
+        fs::write(
+            scripts_dir.path().join("config/variables.cfg"),
+            r#"NODE_EXTRA_FLAGS="-profile-mode true""#,
+        )
+        .unwrap();
+        let systemd_dir = tempfile::tempdir().unwrap();
+        write_service(
+            systemd_dir.path(),
+            0,
+            "/wd/node -use-log-view -log-logger-name -log-correlation -log-level *:DEBUG -rest-api-interface localhost:8080 -operation-mode full-archive -profile-mode true",
+        );
+        write_service(
+            systemd_dir.path(),
+            1,
+            "/wd/node -use-log-view -log-logger-name -log-correlation -log-level *:DEBUG -rest-api-interface localhost:8081 -operation-mode full-archive -profile-mode true",
+        );
+
+        let plan = build_migration_plan(
+            custom_home.path(),
+            Some(scripts_dir.path()),
+            systemd_dir.path(),
+            &Config::default(),
+        )
+        .unwrap();
+
+        let op_patch = plan
+            .config_patches
+            .iter()
+            .find(|p| p.key == "node.operation_mode")
+            .expect("global operation_mode patch");
+        assert_eq!(op_patch.value, "full-archive");
+        assert!(plan.per_node_patches.is_empty());
+    }
+
+    #[test]
+    fn plan_normalizes_per_node_operation_mode_from_service_files() {
+        let custom_home = bash_fixture("Observers Squad", 2, "mainnet");
+        let systemd_dir = tempfile::tempdir().unwrap();
+        write_service(
+            systemd_dir.path(),
+            0,
+            "/wd/node -use-log-view -log-logger-name -log-correlation -log-level *:DEBUG -rest-api-interface localhost:8080 --operation-mode=db-lookup-extension -profile-mode true",
+        );
+        write_service(
+            systemd_dir.path(),
+            1,
+            "/wd/node -use-log-view -log-logger-name -log-correlation -log-level *:DEBUG -rest-api-interface localhost:8081 --operation-mode=snapshotless-observer -profile-mode true",
+        );
+
+        let plan = build_migration_plan(
+            custom_home.path(),
+            None,
+            systemd_dir.path(),
+            &Config::default(),
+        )
+        .unwrap();
+
+        assert!(!plan
+            .config_patches
+            .iter()
+            .any(|p| p.key == "node.operation_mode"));
+        assert_eq!(plan.per_node_patches.len(), 2);
+        assert_eq!(
+            plan.per_node_patches[0].operation_mode.as_deref(),
+            Some("db-lookup-extension")
+        );
+        assert_eq!(plan.per_node_patches[0].extra_flags, "-profile-mode true");
+        assert_eq!(
+            plan.per_node_patches[1].operation_mode.as_deref(),
+            Some("snapshotless-observer")
+        );
     }
 
     #[test]
@@ -1538,6 +1929,34 @@ NODE_EXTRA_FLAGS="-profile-mode true"
 
         assert_eq!(plan.state.nodes[0].display_name, "Backup");
         assert_eq!(plan.state.nodes[1].display_name, "Primary");
+    }
+
+    #[test]
+    fn display_name_extraction_tolerates_invalid_later_prefs_toml() {
+        let body = r#"
+[Preferences]
+   DestinationShardAsObserver = "2"
+   NodeDisplayName = "Backup"
+
+   OverridableConfigTomlValues = [
+    { File = "external.toml", Path = "HostDriversConfig", Value = [
+         {
+        URL = "ws://notifier.xoxno.com",
+        Enabled = true,
+     }
+    ] },
+    ]
+
+[BlockProcessingCutoff]
+   Enabled = false
+"#;
+        assert!(body.parse::<toml::Value>().is_err());
+        assert_eq!(
+            extract_node_display_name_from_prefs(body)
+                .unwrap()
+                .as_deref(),
+            Some("Backup")
+        );
     }
 
     #[test]

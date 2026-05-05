@@ -14,7 +14,7 @@ use mxnode_core::{Environment, InstallKind, NodeIndex, Role, Shard, Tag};
 use mxnode_state::StateStore;
 use serde::Serialize;
 
-use crate::cli::{GlobalArgs, InstallArgs, OperationModeArg, RoleArg};
+use crate::cli::{GlobalArgs, InstallArgs, RoleArg};
 use crate::errors::CliError;
 use crate::events::global_op;
 use crate::orchestrator::acquirer_factory::build_acquirer;
@@ -115,12 +115,15 @@ pub async fn run(mut args: InstallArgs, global: &GlobalArgs) -> Result<(), CliEr
     require_multikey_role("--keys-file", args.keys_file.is_some(), role, global)?;
     let multikey_keys_file = resolve_multikey_keys(&args, role, &runtime, global)?;
     let backup_level = args.backup.unwrap_or(0);
+    let operation_mode = args
+        .operation_mode
+        .map(|m| m.as_str().to_string())
+        .or_else(|| runtime.loaded.config.node.operation_mode.clone());
     validate_operation_mode_extra_flags(
-        args.operation_mode,
+        operation_mode.as_deref(),
         &runtime.loaded.config.node.extra_flags,
         global,
     )?;
-    let operation_mode = args.operation_mode.map(|m| m.as_str().to_string());
 
     let is_squad = args.squad || matches!(role, Role::Multikey);
     let count = if is_squad {
@@ -316,7 +319,7 @@ fn enforce_install_requirements(
 }
 
 pub(super) fn validate_operation_mode_extra_flags(
-    operation_mode: Option<OperationModeArg>,
+    operation_mode: Option<&str>,
     extra_flags: &str,
     global: &GlobalArgs,
 ) -> Result<(), CliError> {

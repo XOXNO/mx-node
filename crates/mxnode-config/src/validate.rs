@@ -69,6 +69,20 @@ pub fn validate(cfg: &Config) -> ValidationReport {
             .errors
             .push(format!("node.extra_flags is invalid: {reason}"));
     }
+    if let Some(mode) = cfg.node.operation_mode.as_deref() {
+        if !is_valid_operation_mode(mode) {
+            report.errors.push(format!(
+                "node.operation_mode must be one of {}; got {mode:?}",
+                VALID_OPERATION_MODES.join("|")
+            ));
+        }
+        if extra_flags_contain_operation_mode(&cfg.node.extra_flags) {
+            report.errors.push(
+                "node.operation_mode conflicts with raw operation-mode in node.extra_flags"
+                    .to_string(),
+            );
+        }
+    }
     for node in &cfg.nodes {
         if let Some(reason) = invalid_extra_flags(&node.extra_flags) {
             report.errors.push(format!(
@@ -76,9 +90,43 @@ pub fn validate(cfg: &Config) -> ValidationReport {
                 node.index.get(),
             ));
         }
+        if let Some(mode) = node.operation_mode.as_deref() {
+            if !is_valid_operation_mode(mode) {
+                report.errors.push(format!(
+                    "nodes[index={}].operation_mode must be one of {}; got {mode:?}",
+                    node.index.get(),
+                    VALID_OPERATION_MODES.join("|"),
+                ));
+            }
+            if extra_flags_contain_operation_mode(&node.extra_flags) {
+                report.errors.push(format!(
+                    "nodes[index={}].operation_mode conflicts with raw operation-mode in extra_flags",
+                    node.index.get(),
+                ));
+            }
+        }
     }
 
     report
+}
+
+const VALID_OPERATION_MODES: &[&str] = &[
+    "full-archive",
+    "db-lookup-extension",
+    "historical-balances",
+    "snapshotless-observer",
+];
+
+fn is_valid_operation_mode(mode: &str) -> bool {
+    VALID_OPERATION_MODES.contains(&mode)
+}
+
+fn extra_flags_contain_operation_mode(extra_flags: &str) -> bool {
+    extra_flags.split_whitespace().any(|flag| {
+        matches!(flag, "-operation-mode" | "--operation-mode")
+            || flag.starts_with("-operation-mode=")
+            || flag.starts_with("--operation-mode=")
+    })
 }
 
 /// Returns `Some(reason)` if the supplied flags string would break the
@@ -202,6 +250,7 @@ mod tests {
             shard: Shard::Auto,
             display_name: String::new(),
             extra_flags: "valid -flag".to_string(),
+            operation_mode: None,
         });
         cfg.nodes.push(NodeOverride {
             index: NodeIndex::new(3),
@@ -209,6 +258,7 @@ mod tests {
             shard: Shard::Auto,
             display_name: String::new(),
             extra_flags: "broken\nnewline".to_string(),
+            operation_mode: None,
         });
         let r = validate(&cfg);
         assert!(!r.ok());
@@ -217,5 +267,24 @@ mod tests {
             "errors should call out node index 3 specifically: {:?}",
             r.errors,
         );
+    }
+
+    #[test]
+    fn operation_mode_rejects_unknown_values_and_raw_duplicates() {
+        let mut cfg = Config::default();
+        cfg.network.environment = Some(mxnode_core::Environment::Mainnet);
+        cfg.node.operation_mode = Some("full-archive".to_string());
+        assert!(validate(&cfg).ok());
+
+        cfg.node.extra_flags = "-operation-mode full-archive".to_string();
+        let r = validate(&cfg);
+        assert!(!r.ok());
+        assert!(r.errors.iter().any(|e| e.contains("conflicts")));
+
+        cfg.node.extra_flags.clear();
+        cfg.node.operation_mode = Some("archive-ish".to_string());
+        let r = validate(&cfg);
+        assert!(!r.ok());
+        assert!(r.errors.iter().any(|e| e.contains("operation_mode")));
     }
 }

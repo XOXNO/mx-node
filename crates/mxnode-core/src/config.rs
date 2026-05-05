@@ -119,6 +119,7 @@ impl Default for PathsSection {
 #[serde(default)]
 pub struct NodeSection {
     pub extra_flags: String,
+    pub operation_mode: Option<String>,
     pub api_port_base: u16,
     pub log_level: String,
     pub limit_nofile: u32,
@@ -130,6 +131,7 @@ impl Default for NodeSection {
     fn default() -> Self {
         Self {
             extra_flags: String::new(),
+            operation_mode: None,
             api_port_base: DEFAULT_API_PORT_BASE,
             log_level: "*:DEBUG".to_string(),
             limit_nofile: 4096,
@@ -247,6 +249,8 @@ pub struct NodeOverride {
     pub display_name: String,
     #[serde(default)]
     pub extra_flags: String,
+    #[serde(default)]
+    pub operation_mode: Option<String>,
 }
 
 fn non_empty(s: &str) -> Option<&str> {
