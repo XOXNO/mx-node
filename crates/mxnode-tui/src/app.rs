@@ -58,6 +58,12 @@ pub struct App {
     pub environment: Option<String>,
     /// Brand string shown in the header. Defaults to `"mxnode"`.
     pub title: String,
+    /// True when every node in the fleet loads the same
+    /// `allValidatorsKeys.pem` (multikey squad). The header collapses
+    /// the per-node managed-key counts to a single value instead of
+    /// summing them — four observers each reporting 50 keys is a 50-key
+    /// squad, not 200.
+    pub shares_keys: bool,
 }
 
 impl App {
@@ -80,6 +86,7 @@ impl App {
             // `App` (e.g. in tests) renders the same banner as a real
             // production launch.
             title: "By XOXNO ✦ TrustStaking".to_string(),
+            shares_keys: false,
         }
     }
 

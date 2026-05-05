@@ -81,6 +81,10 @@ pub struct DashboardOpts {
     /// `"mxnode"` upstream; operators running under their own banner
     /// pass something like `"By XOXNO ✦ TrustStaking"`.
     pub title: String,
+    /// True when the fleet is a multikey squad, i.e. every node loads
+    /// the same `allValidatorsKeys.pem`. The header collapses the
+    /// managed-key counts instead of summing them across observers.
+    pub shares_keys: bool,
 }
 
 #[derive(Clone)]
@@ -99,6 +103,7 @@ pub struct NodeSpec {
 pub async fn run(opts: DashboardOpts) -> Result<(), DashboardError> {
     let environment = opts.environment.clone();
     let title = opts.title.clone();
+    let shares_keys = opts.shares_keys;
     let mut handles = Vec::with_capacity(opts.nodes.len());
     let mut poll_tasks = Vec::with_capacity(opts.nodes.len() * 2);
     for spec in &opts.nodes {
@@ -157,6 +162,7 @@ pub async fn run(opts: DashboardOpts) -> Result<(), DashboardError> {
     let mut app = App::new(handles);
     app.environment = environment;
     app.title = title;
+    app.shares_keys = shares_keys;
     let mut ctx = DrawContext {
         tab_columns: Vec::new(),
     };

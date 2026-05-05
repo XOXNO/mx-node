@@ -6,6 +6,7 @@
 use std::io::IsTerminal;
 use std::time::Duration;
 
+use mxnode_core::InstallKind;
 use mxnode_state::StateStore;
 use mxnode_tui::{DashboardOpts, NodeSpec};
 
@@ -127,6 +128,16 @@ pub async fn run(args: DashboardArgs, global: &GlobalArgs) -> Result<(), CliErro
                 .map(|e| e.to_string())
         });
 
+    // Multikey squads share `allValidatorsKeys.pem` across every
+    // observer, so the header should not multiply the per-node count
+    // by the squad size. Validator and observer-squad installs each
+    // own their own keys; sum is correct there.
+    let shares_keys = state
+        .install
+        .as_ref()
+        .map(|i| matches!(i.kind, InstallKind::MultikeySquad))
+        .unwrap_or(false);
+
     let opts = DashboardOpts {
         nodes,
         interval: Duration::from_millis(args.interval.max(100)),
@@ -134,6 +145,7 @@ pub async fn run(args: DashboardArgs, global: &GlobalArgs) -> Result<(), CliErro
         ws_logs: args.ws_logs,
         environment,
         title: runtime.loaded.config.branding.title.clone(),
+        shares_keys,
     };
 
     mxnode_tui::run(opts).await.map_err(|e| {

@@ -313,20 +313,25 @@ fn env_palette(env: &str) -> (Color, Color) {
     }
 }
 
-/// Sum managed-keys across every node in the fleet. Used by the
-/// header to show the squad's headline `N keys` total. Reads via
-/// `try_lock` so the poller mid-write doesn't stall the header.
+/// Headline managed-key total for the fleet header. In a multikey
+/// squad every observer loads the same `allValidatorsKeys.pem`, so each
+/// reports the squad-wide count and a naive sum multiplies by node
+/// count (four observers × 50 keys → 200). When `app.shares_keys` is
+/// set we collapse to the max instead. Reads via `try_lock` so a poller
+/// mid-write doesn't stall the header.
 fn fleet_managed_keys(app: &App) -> u64 {
-    app.nodes
-        .iter()
-        .map(|h| {
-            h.snapshot
-                .try_lock()
-                .ok()
-                .and_then(|s| s.managed_keys_count)
-                .unwrap_or(0)
-        })
-        .sum()
+    let counts = app.nodes.iter().map(|h| {
+        h.snapshot
+            .try_lock()
+            .ok()
+            .and_then(|s| s.managed_keys_count)
+            .unwrap_or(0)
+    });
+    if app.shares_keys {
+        counts.max().unwrap_or(0)
+    } else {
+        counts.sum()
+    }
 }
 
 /// Walk the fleet and count nodes per health state for the header
@@ -932,6 +937,74 @@ mod ts_tests {
         // Just above → milliseconds (year 1970-01-12).
         let ms = format_unix_ts(10_000_000_000);
         assert!(ms.starts_with("1970-"), "got {ms}");
+    }
+}
+
+#[cfg(test)]
+mod fleet_managed_keys_tests {
+    use super::fleet_managed_keys;
+    use crate::app::{App, NodeHandle};
+    use crate::metrics::NodeSnapshot;
+    use mxnode_core::NodeIndex;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    fn handle(idx: u16, count: Option<u64>) -> NodeHandle {
+        let snap = NodeSnapshot {
+            managed_keys_count: count,
+            ..NodeSnapshot::default()
+        };
+        NodeHandle {
+            index: NodeIndex::new(idx),
+            label: format!("node-{idx}"),
+            unit: format!("elrond-node-{idx}.service"),
+            api_port: 8080 + idx,
+            workdir: PathBuf::from(format!("/tmp/node-{idx}")),
+            snapshot: Arc::new(Mutex::new(snap)),
+        }
+    }
+
+    #[test]
+    fn sums_managed_keys_across_distinct_validator_nodes() {
+        // Four single-key validators each owning their own .pem —
+        // distinct keys, sum is correct.
+        let mut app = App::new(vec![
+            handle(0, Some(1)),
+            handle(1, Some(1)),
+            handle(2, Some(1)),
+            handle(3, Some(1)),
+        ]);
+        app.shares_keys = false;
+        assert_eq!(fleet_managed_keys(&app), 4);
+    }
+
+    #[test]
+    fn collapses_managed_keys_when_squad_shares_keys() {
+        // Multikey squad: four observers loading the same
+        // allValidatorsKeys.pem (50 keys). Header should read 50, not 200.
+        let mut app = App::new(vec![
+            handle(0, Some(50)),
+            handle(1, Some(50)),
+            handle(2, Some(50)),
+            handle(3, Some(50)),
+        ]);
+        app.shares_keys = true;
+        assert_eq!(fleet_managed_keys(&app), 50);
+    }
+
+    #[test]
+    fn collapses_to_max_when_some_observers_have_not_loaded_yet() {
+        // Mid-rollout: one observer hasn't reported yet (None → 0). Max
+        // captures the squad's intended count, sum would understate it.
+        let mut app = App::new(vec![
+            handle(0, Some(50)),
+            handle(1, Some(50)),
+            handle(2, None),
+            handle(3, Some(50)),
+        ]);
+        app.shares_keys = true;
+        assert_eq!(fleet_managed_keys(&app), 50);
     }
 }
 
