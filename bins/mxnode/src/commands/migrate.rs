@@ -1087,20 +1087,28 @@ pub fn run(args: MigrateBashArgs, global: &GlobalArgs) -> Result<(), CliError> {
     // Resolution order for the bash $CUSTOM_HOME:
     //
     //   1. `--from` if the operator passed it (always wins).
-    //   2. On a fresh host (no mxnode.toml yet) the schema default
-    //      `/home/ubuntu` rarely matches reality — operators on hosts
-    //      with a different service account (e.g. `truststaking`) had
-    //      to pass `--from` every time. Try `$HOME` directly, then
-    //      parse `$HOME/mx-chain-scripts/config/variables.cfg` for an
+    //   2. `paths.custom_home` from the loaded config — but **only**
+    //      if it actually hosts a bash install (`.installedenv`
+    //      present). The schema default `/home/ubuntu` never matches
+    //      reality on hosts with a different service account, and any
+    //      previous `mxnode <cmd>` will have auto-init'd a config
+    //      with that default in place — so blindly trusting
+    //      `paths.custom_home` here defeats the auto-detect path.
+    //   3. Auto-detect: `$HOME` directly, then parse
+    //      `$HOME/mx-chain-scripts/config/variables.cfg` for an
     //      explicit `CUSTOM_HOME` (the bash installer always clones
     //      its scripts repo into the user's home).
-    //   3. Otherwise honour `paths.custom_home` from the loaded config.
+    //   4. Last resort: `paths.custom_home` even without sentinels —
+    //      `infer_state_from_bash` will surface a clear "missing
+    //      .installedenv" error pointing at it.
     let custom_home = args.from.clone().unwrap_or_else(|| {
-        if matches!(loaded.source, ConfigSource::None) {
-            auto_detect_custom_home().unwrap_or_else(|| paths.custom_home.clone())
-        } else {
-            paths.custom_home.clone()
+        if paths.custom_home.join(".installedenv").is_file() {
+            return paths.custom_home.clone();
         }
+        if let Some(detected) = auto_detect_custom_home() {
+            return detected;
+        }
+        paths.custom_home.clone()
     });
 
     let scripts_dir = if args.no_scripts {
