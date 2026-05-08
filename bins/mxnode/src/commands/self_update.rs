@@ -23,16 +23,18 @@ const REPO_NAME: &str = "mx-node";
 pub async fn run(args: SelfUpdateArgs, global: &GlobalArgs) -> Result<(), CliError> {
     let current = env!("CARGO_PKG_VERSION");
 
-    // Honour the env var first (allows ad-hoc override) then fall back
-    // to the persisted [secrets].github_token loaded by Runtime.
-    let token = crate::orchestrator::runtime::Runtime::from_global(global)
+    // Resolve the token without going through `Runtime::from_global`
+    // — that path auto-init's a fresh `mxnode.toml` (with the network
+    // prompt!) when one doesn't exist, which is wildly wrong for
+    // self-update: the operator just wants a new binary, not to be
+    // dropped into a config wizard. Read the file directly if it
+    // exists; otherwise fall back to `$MXNODE_GITHUB_TOKEN`. Either
+    // is fine; both being absent is fine too (60 req/h unauth is
+    // plenty for a single release fetch).
+    let token = std::env::var("MXNODE_GITHUB_TOKEN")
         .ok()
-        .and_then(|rt| rt.github_token())
-        .or_else(|| {
-            std::env::var("MXNODE_GITHUB_TOKEN")
-                .ok()
-                .filter(|s| !s.is_empty())
-        });
+        .filter(|s| !s.is_empty())
+        .or_else(read_token_from_unified_file);
     let client = Client::new(ClientConfig {
         token,
         ..ClientConfig::default()
@@ -369,6 +371,23 @@ fn install_replacement(src: &Path, target: &Path, global: &GlobalArgs) -> Result
 
 fn dir_is_writable(dir: &Path) -> bool {
     tempfile::NamedTempFile::new_in(dir).is_ok()
+}
+
+/// Best-effort read of `[secrets].github_token` from the unified
+/// `mxnode.toml`. Returns `None` if the file is missing, unreadable,
+/// unparseable, or has no token set — never errors. Crucially it
+/// does **not** trigger auto-init: self-update should never drop the
+/// operator into a network-prompt wizard.
+fn read_token_from_unified_file() -> Option<String> {
+    let path = mxnode_config::user_config_path().ok()?;
+    let body = std::fs::read_to_string(&path).ok()?;
+    let file: mxnode_core::MxnodeFile = toml::from_str(&body).ok()?;
+    let token = file.secrets.github_token;
+    if token.is_empty() {
+        None
+    } else {
+        Some(token.as_str().to_owned())
+    }
 }
 
 #[cfg(test)]
