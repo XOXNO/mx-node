@@ -18,11 +18,22 @@ PROXY_TAG="${PROXY_TAG:-v1.3.4}"
 
 set -u  # strict-undefined; we DO want to handle command failures per-phase
 
-MXNODE="${1:-${MXNODE_BIN:-$(pwd)/target/release/mxnode}}"
-if [ ! -x "$MXNODE" ]; then
-    echo "FATAL: mxnode binary not executable at $MXNODE" >&2
+MXNODE_BIN_PATH="${1:-${MXNODE_BIN:-$(pwd)/target/release/mxnode}}"
+if [ ! -x "$MXNODE_BIN_PATH" ]; then
+    echo "FATAL: mxnode binary not executable at $MXNODE_BIN_PATH" >&2
     exit 2
 fi
+# `--skip-safety-checks` is a global flag that bypasses
+# `mxnode doctor`'s system-requirements gate. GitHub-hosted runners
+# only ship ~86 GB free disk vs. the documented MultiversX 200 GB
+# minimum, and have no business running a real mainnet validator
+# anyway — the sweep just exercises the CLI surface, not the chain.
+# Always pre-stamp the flag onto $MXNODE so every assert that calls
+# install/upgrade/etc. picks it up; commands that don't gate on
+# safety checks (config show, version, ...) ignore it harmlessly.
+# `--no-update-check` keeps the gate from prompting in CI (also
+# defended by `CI=true`, but belt-and-braces).
+MXNODE="$MXNODE_BIN_PATH --skip-safety-checks --no-update-check"
 
 # Per-phase counters. Aggregated and printed in the trailing summary.
 PASS=0
