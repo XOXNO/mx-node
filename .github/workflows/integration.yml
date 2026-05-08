@@ -26,12 +26,12 @@ jobs:
   # ── Job 1: full integration sweep on a real Linux runner ────────
   sweep:
     name: sweep (every command, every flag combination)
-    # Self-hosted XOXNO runner only — building mx-chain-go from
-    # source needs Go + ~3 GB scratch + several minutes per fresh
-    # tag. The hosted ubuntu-latest runner doesn't have the disk
-    # budget for repeated builds.
+    # GitHub-hosted Ubuntu — pristine FS each run, so the
+    # "no mxnode footprint" assertion at the top of the sweep
+    # always passes (the previous self-hosted box accumulated state
+    # across runs and broke the sweep on the leftover footprint).
     if: github.repository_owner == 'XOXNO'
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     timeout-minutes: 45
 
     steps:

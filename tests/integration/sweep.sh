@@ -170,7 +170,7 @@ assert "config edit (EDITOR=true)" "EDITOR=true $MXNODE config edit"
 # P6  doctor (table + json)
 # ============================================================
 phase "P6  doctor"
-assert "doctor exits 0 (env is fine; state.toml warning is allowed)" "$MXNODE doctor"
+assert "doctor exits 0 (env is fine; mxnode.toml warning is allowed)" "$MXNODE doctor"
 assert_contains "doctor prints platform check" "$MXNODE doctor" "[platform]"
 assert_contains "doctor --json shape"           "$MXNODE --json doctor" '"findings"'
 
@@ -222,7 +222,7 @@ assert "--json install dry-run"               "$MXNODE --json install --role mul
 phase "P9  real install: observer single"
 assert "install --role observer --count 1 (compiles binary)" \
     "$MXNODE install --role observer --count 1 --binary-tag $NODE_TAG --config-tag $CONFIG_TAG"
-assert "state.toml exists"           "[ -f $HOME/.local/state/mxnode/state.toml ]"
+assert "mxnode.toml exists"          "[ -f $HOME/.config/mxnode/mxnode.toml ]"
 assert "node-0 workdir exists"       "[ -d $HOME/elrond-nodes/node-0/config ]"
 assert "elrond-node-0.service exists" "[ -f /etc/systemd/system/elrond-node-0.service ]"
 assert "binary symlinked"            "[ -L $HOME/elrond-nodes/node-0/node ]"

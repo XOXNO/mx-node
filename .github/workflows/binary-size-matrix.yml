@@ -26,7 +26,7 @@ permissions:
 jobs:
   matrix:
     if: github.repository_owner == 'XOXNO'
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 

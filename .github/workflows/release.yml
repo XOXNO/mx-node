@@ -48,18 +48,12 @@ jobs:
       # See https://docs.sigstore.dev/cosign/keyless.
       id-token: write
       contents: read
-    # Single runner for every target. The self-hosted XOXNO Hetzner
-    # box (Ubuntu x86_64) acts as the universal build host:
-    #
-    #   - Linux x86_64 musl   — native, via zig as a hermetic linker
-    #   - macOS arm64         — cross-compile via zig (Mach-O 64)
-    #   - macOS x86_64        — cross-compile via zig (Mach-O 64)
-    #
-    # `cargo-zigbuild` invokes a single `zig` binary as the C linker
-    # for every target, which means we don't need the macOS SDK,
-    # osxcross, Docker, musl-tools, or any per-target toolchain.
-    # zig itself ships every libc shim it needs.
-    runs-on: [self-hosted, Linux, X64]
+    # GitHub-hosted Ubuntu — universal build host. zig + cargo-zigbuild
+    # cross-compile every target from the same x86_64 Linux box; no
+    # macOS SDK / osxcross / musl-tools needed. mlugg/setup-zig
+    # materialises zig itself in-job. Free for public repos, runner
+    # is fresh each run (no leftover footprint to fight).
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
@@ -239,7 +233,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
@@ -374,9 +368,8 @@ jobs:
     # release publication.
     needs: [build, build-min]
     if: always() && github.repository_owner == 'XOXNO' && needs.build.result == 'success'
-    # Stay on the same runner pool the build jobs ran on — single
-    # source of CI hardware, no GitHub-hosted minutes consumed.
-    runs-on: [self-hosted, Linux, X64]
+    # Same runner pool as the build jobs.
+    runs-on: ubuntu-latest
     permissions:
       # Required by softprops/action-gh-release to attach assets +
       # write release notes.
