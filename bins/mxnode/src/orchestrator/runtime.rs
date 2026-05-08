@@ -83,8 +83,75 @@ impl Runtime {
             .json_if(global.json)
         })?;
 
+        // One-shot self-heal: if the file persisted a `paths.custom_home`
+        // that doesn't exist on this host, the resolver fell back to
+        // `$HOME` for the in-memory `Paths`. Without rewriting the
+        // file, every subsequent invocation re-fires the banner.
+        // Drop the stale field from disk now so the next run is silent.
+        // Only fires when the operator didn't pass `--config <PATH>`
+        // (we don't touch their explicit file).
+        if global.config.is_none() {
+            heal_stale_custom_home(&loaded, &paths, global.json);
+            heal_stale_custom_user(&loaded, &paths, global.json);
+        }
+
         Ok(Runtime { loaded, paths })
     }
+}
+
+/// If `paths.custom_home` in the loaded file points at a non-existent
+/// directory and the resolver swapped in `$HOME`, drop the field from
+/// the file. Best effort — failures are not fatal (we already have a
+/// usable in-memory `Paths`).
+fn heal_stale_custom_home(loaded: &Loaded, paths: &Paths, json: bool) {
+    let Some(stored) = loaded.file.paths.custom_home.as_ref() else {
+        return;
+    };
+    if stored == &paths.custom_home {
+        return; // resolver kept the explicit value; nothing to heal
+    }
+    if let Err(e) = remove_path_field("custom_home") {
+        if !json {
+            eprintln!("warn: could not heal stale paths.custom_home: {e}");
+        }
+    }
+}
+
+fn heal_stale_custom_user(loaded: &Loaded, paths: &Paths, json: bool) {
+    let Some(stored) = loaded.file.paths.custom_user.as_ref() else {
+        return;
+    };
+    if stored == &paths.custom_user {
+        return;
+    }
+    if let Err(e) = remove_path_field("custom_user") {
+        if !json {
+            eprintln!("warn: could not heal stale paths.custom_user: {e}");
+        }
+    }
+}
+
+/// Drop a single key from `[paths]` in the unified `mxnode.toml`,
+/// preserving operator comments and section ordering. Routes through
+/// `toml_edit::DocumentMut` (same path `mxnode config set` uses) so
+/// hand-edited files round-trip cleanly.
+fn remove_path_field(key: &str) -> Result<(), String> {
+    use toml_edit::DocumentMut;
+    let target = mxnode_config::user_config_path().map_err(|e| e.to_string())?;
+    let body = std::fs::read_to_string(&target).map_err(|e| format!("read {}: {e}", target.display()))?;
+    let mut doc: DocumentMut = body
+        .parse()
+        .map_err(|e: toml_edit::TomlError| format!("parse {}: {e}", target.display()))?;
+    if let Some(paths) = doc.get_mut("paths").and_then(|p| p.as_table_mut()) {
+        paths.remove(key);
+        // Drop the [paths] table entirely if it's now empty so we
+        // don't leave an empty header behind.
+        if paths.is_empty() {
+            doc.remove("paths");
+        }
+    }
+    std::fs::write(&target, doc.to_string()).map_err(|e| format!("write {}: {e}", target.display()))?;
+    Ok(())
 }
 
 /// Stamp out a fresh `mxnode.toml` from the detected environment.
