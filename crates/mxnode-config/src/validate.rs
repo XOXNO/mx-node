@@ -29,8 +29,16 @@ pub fn validate(cfg: &MxnodeFile) -> ValidationReport {
             .push("network.environment is unset; choose one of mainnet|testnet|devnet".to_string());
     }
 
-    if cfg.paths.custom_user.trim().is_empty() {
-        report.errors.push("paths.custom_user is empty".to_string());
+    // `paths.custom_user` is now `Option<String>`; absence means
+    // "resolve from $USER at runtime", which is always non-empty on a
+    // real host (the resolver's last fallback is "ubuntu"). An
+    // explicit empty string is still operator error — flag it.
+    if let Some(user) = cfg.paths.custom_user.as_deref() {
+        if user.trim().is_empty() {
+            report
+                .errors
+                .push("paths.custom_user is set but empty".to_string());
+        }
     }
 
     if cfg.node.api_port_base < 1024 {

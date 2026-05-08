@@ -5,7 +5,7 @@
 //! "run any command, the config gets created on the fly with
 //! sensible defaults; switch network later via `mxnode config set`".
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use mxnode_config::user_config_path;
 use mxnode_core::{ArtifactSource, Environment};
@@ -59,22 +59,14 @@ pub fn auto_init(global: &GlobalArgs) -> Result<Option<Environment>, CliError> {
 #[derive(Debug)]
 struct Answers {
     network: Environment,
-    custom_user: String,
-    custom_home: PathBuf,
-    key_dir: PathBuf,
     github_org: String,
     name_template: String,
     artifact_source: ArtifactSource,
 }
 
 fn build_answers(network: Environment) -> Answers {
-    let (custom_home, custom_user) = platform_defaults();
-    let key_dir = custom_home.join("VALIDATOR_KEYS");
     Answers {
         network,
-        custom_user,
-        custom_home,
-        key_dir,
         github_org: "multiversx".to_string(),
         name_template: "mx-chain-{env}-validator-{index}".to_string(),
         artifact_source: ArtifactSource::Source,
@@ -106,28 +98,14 @@ fn render_sparse_config(answers: &Answers) -> String {
     }
     root.insert("network".to_string(), Value::Table(network));
 
-    // Always emit `custom_home` + `custom_user` — the schema default
-    // is `/home/ubuntu` + `ubuntu`, but auto-init detects the actual
-    // login. Writing both keeps the file unambiguous: `mxnode config
-    // show` reflects the host this config was generated on.
-    let mut paths: Map<String, Value> = Map::new();
-    paths.insert(
-        "custom_home".to_string(),
-        Value::String(answers.custom_home.display().to_string()),
-    );
-    paths.insert(
-        "custom_user".to_string(),
-        Value::String(answers.custom_user.clone()),
-    );
-    let custom_home_str = answers.custom_home.display().to_string();
-    let key_dir_str =
-        answers
-            .key_dir
-            .display()
-            .to_string()
-            .replacen(&custom_home_str, "{custom_home}", 1);
-    paths.insert("node_keys".to_string(), Value::String(key_dir_str));
-    root.insert("paths".to_string(), Value::Table(paths));
+    // Don't bake `custom_home` / `custom_user` / `node_keys` into the
+    // file — they resolve from the runtime `$HOME` / `$USER` of
+    // whoever runs `mxnode` (see `mxnode_config::resolve_paths`).
+    // Writing them at init time risks pinning a stale value (e.g.
+    // the schema default `/home/ubuntu` on a host where the operator
+    // user is `truststaking`); operators on shared-deploy layouts
+    // opt in by setting them explicitly later via `mxnode config set
+    // paths.custom_home <path>`.
 
     if answers.name_template != "mx-chain-{env}-validator-{index}" {
         let mut node: Map<String, Value> = Map::new();
@@ -182,43 +160,13 @@ fn write_config(target: &Path, body: &str, global: &GlobalArgs) -> Result<(), Cl
     Ok(())
 }
 
-/// Per-host defaults for `(custom_home, custom_user)`. Detect the
-/// operator's actual `$USER`/`$HOME` so the generated config maps to
-/// the box mxnode is running on instead of the bash mainnet AMI's
-/// hardcoded `/home/ubuntu`. `$USER` falls back through `$LOGNAME` →
-/// the basename of `$HOME` → `"ubuntu"` so we always produce a
-/// non-empty user even when env_clear() was used.
-fn platform_defaults() -> (PathBuf, String) {
-    let user = std::env::var("USER")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .or_else(|| std::env::var("LOGNAME").ok().filter(|s| !s.is_empty()))
-        .or_else(|| {
-            std::env::var("HOME").ok().and_then(|h| {
-                Path::new(&h)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .filter(|s| !s.is_empty())
-            })
-        })
-        .unwrap_or_else(|| "ubuntu".to_string());
-    let home = dirs::home_dir().unwrap_or_else(|| match mxnode_core::Platform::current() {
-        mxnode_core::Platform::Macos => PathBuf::from(format!("/Users/{user}")),
-        _ => PathBuf::from(format!("/home/{user}")),
-    });
-    (home, user)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn answers_with(custom_user: &str, name_template: &str) -> Answers {
+    fn answers_with(name_template: &str) -> Answers {
         Answers {
             network: Environment::Mainnet,
-            custom_user: custom_user.to_string(),
-            custom_home: std::path::PathBuf::from("/home/ubuntu"),
-            key_dir: std::path::PathBuf::from("/home/ubuntu/VALIDATOR_KEYS"),
             github_org: "multiversx".to_string(),
             name_template: name_template.to_string(),
             artifact_source: ArtifactSource::Source,
@@ -226,55 +174,37 @@ mod tests {
     }
 
     #[test]
-    fn render_handles_values_with_double_quotes() {
-        // Unlikely in auto-init (we don't read operator input), but
-        // future-proofs against a config-set path that might write
-        // values containing `"`. Round-trip parse — invalid TOML
-        // would fail here.
-        let answers = answers_with("validator-with\"quote", "mx-chain-{env}-validator-{index}");
+    fn render_round_trips_through_toml() {
+        // Renderer escaping must produce valid TOML even when answers
+        // carry `"` / `\` / newlines (future-proof against a wizard
+        // that might let operators type values containing these).
+        let answers = answers_with("mx-chain-{env}\nwith-newline");
         let rendered = render_sparse_config(&answers);
-        let parsed: toml::Value = toml::from_str(&rendered).expect("must parse back");
-        assert_eq!(
-            parsed["paths"]["custom_user"].as_str(),
-            Some("validator-with\"quote"),
-        );
+        // The only assertion that matters: it parses back.
+        let _: toml::Value = toml::from_str(&rendered).expect("must parse back");
     }
 
     #[test]
-    fn render_handles_values_with_newlines() {
-        let answers = answers_with("ubuntu", "mx\nchain-{env}");
+    fn render_omits_custom_user_and_home() {
+        // Post-v0.8.33: auto-init does NOT bake `custom_user` /
+        // `custom_home` into the file. They resolve from the runtime
+        // `$USER` / `$HOME` of whoever runs `mxnode`, so the same
+        // file works on every host without re-init. Operators on
+        // shared-deploy layouts opt in by setting them explicitly.
+        let answers = answers_with("mx-chain-{env}-validator-{index}");
         let rendered = render_sparse_config(&answers);
         let parsed: toml::Value = toml::from_str(&rendered).expect("must parse back");
-        assert_eq!(
-            parsed["node"]["name_template"].as_str(),
-            Some("mx\nchain-{env}")
-        );
-    }
-
-    #[test]
-    fn render_handles_values_with_backslash() {
-        let answers = answers_with(r"ubuntu\windows", "mx-chain-{env}-validator-{index}");
-        let rendered = render_sparse_config(&answers);
-        let parsed: toml::Value = toml::from_str(&rendered).expect("must parse back");
-        assert_eq!(
-            parsed["paths"]["custom_user"].as_str(),
-            Some(r"ubuntu\windows"),
-        );
-    }
-
-    #[test]
-    fn render_always_emits_custom_user_and_home() {
-        // Auto-detect produces the host's actual login; the schema
-        // default (`ubuntu`/`/home/ubuntu`) is rarely correct. Both
-        // fields land in the file unconditionally so `config show`
-        // reflects this host.
-        let answers = answers_with("ubuntu", "mx-chain-{env}-validator-{index}");
-        let rendered = render_sparse_config(&answers);
-        let parsed: toml::Value = toml::from_str(&rendered).expect("must parse back");
-        assert_eq!(parsed["paths"]["custom_user"].as_str(), Some("ubuntu"));
-        assert_eq!(
-            parsed["paths"]["custom_home"].as_str(),
-            Some("/home/ubuntu")
-        );
+        // `[paths]` may exist (other fields), but custom_home/user
+        // must be absent so the resolver picks them up from env.
+        if let Some(paths) = parsed.get("paths") {
+            assert!(
+                paths.get("custom_home").is_none(),
+                "custom_home must not be persisted: {paths:?}",
+            );
+            assert!(
+                paths.get("custom_user").is_none(),
+                "custom_user must not be persisted: {paths:?}",
+            );
+        }
     }
 }

@@ -229,7 +229,7 @@ pub async fn run(mut args: InstallArgs, global: &GlobalArgs) -> Result<(), CliEr
         log_level: &runtime.loaded.file.node.log_level,
         limit_nofile: runtime.loaded.file.node.limit_nofile,
         restart_sec: runtime.loaded.file.node.restart_sec,
-        custom_user: &runtime.loaded.file.paths.custom_user,
+        custom_user: &runtime.paths.custom_user,
         extra_flags: &runtime.loaded.file.node.extra_flags,
         operation_mode,
         name_template: args

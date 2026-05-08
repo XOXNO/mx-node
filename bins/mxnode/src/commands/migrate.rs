@@ -1816,7 +1816,7 @@ GITHUB_ORG="bash-org"
         let systemd_dir = tempfile::tempdir().unwrap();
 
         let mut existing = MxnodeFile::default();
-        existing.paths.custom_home = PathBuf::from("/srv/already-set");
+        existing.paths.custom_home = Some(PathBuf::from("/srv/already-set"));
         existing.network.github_org = "operator-set".to_string();
 
         let plan = build_migration_plan(

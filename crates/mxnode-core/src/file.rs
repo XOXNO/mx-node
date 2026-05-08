@@ -143,11 +143,19 @@ impl Default for NetworkSection {
 
 /// String fields here may contain `{custom_home}` and `{home}`
 /// placeholders; `mxnode-config::resolve_paths` resolves them.
+///
+/// `custom_home` and `custom_user` are intentionally `Option<...>`:
+/// when absent, the resolver falls back to the runtime `$HOME` /
+/// `$USER` so the config never carries a stale snapshot. Operators
+/// running multi-user / shared-deploy layouts set them explicitly to
+/// override.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PathsSection {
-    pub custom_home: PathBuf,
-    pub custom_user: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub custom_home: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub custom_user: Option<String>,
     pub node_keys: String,
     pub binaries: String,
     pub state: String,
@@ -157,8 +165,8 @@ pub struct PathsSection {
 impl Default for PathsSection {
     fn default() -> Self {
         Self {
-            custom_home: PathBuf::from("/home/ubuntu"),
-            custom_user: "ubuntu".to_string(),
+            custom_home: None,
+            custom_user: None,
             node_keys: "{custom_home}/VALIDATOR_KEYS".to_string(),
             binaries: "{custom_home}/mxnode/binaries".to_string(),
             state: "{XDG_STATE_HOME}/mxnode".to_string(),

@@ -166,8 +166,21 @@ fn first_use_auto_inits_config() {
         .expect("auto-init must produce a config file");
     let parsed: toml::Value = toml::from_str(&body).expect("auto-init must write valid TOML");
     assert_eq!(parsed["network"]["environment"].as_str(), Some("mainnet"));
-    assert!(parsed["paths"]["custom_home"].as_str().is_some());
-    assert!(parsed["paths"]["custom_user"].as_str().is_some());
+    // Post-v0.8.33: `paths.custom_home` / `paths.custom_user` are NOT
+    // persisted on auto-init — they resolve from the runtime `$HOME`
+    // / `$USER` of whoever runs mxnode. This keeps the file portable
+    // across hosts and stops a stale `/home/ubuntu` from poisoning
+    // installs on hosts where the operator user is something else.
+    if let Some(paths) = parsed.get("paths") {
+        assert!(
+            paths.get("custom_home").is_none(),
+            "custom_home must not be persisted on auto-init: {paths:?}",
+        );
+        assert!(
+            paths.get("custom_user").is_none(),
+            "custom_user must not be persisted on auto-init: {paths:?}",
+        );
+    }
 }
 
 #[test]
