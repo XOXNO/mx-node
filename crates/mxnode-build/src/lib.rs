@@ -23,6 +23,13 @@ pub enum BuildError {
         source: std::io::Error,
     },
 
+    #[error("could not create directory {path}: {source}")]
+    MkdirP {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("`{cmd}` exited {status}: {stderr}")]
     NonZero {
         cmd: String,
@@ -50,8 +57,8 @@ pub async fn clone_shallow(repo: &str, tag: &Tag, dest: &Path) -> Result<(), Bui
         });
     }
     if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| BuildError::Spawn {
-            cmd: "git clone".to_string(),
+        std::fs::create_dir_all(parent).map_err(|e| BuildError::MkdirP {
+            path: parent.display().to_string(),
             source: e,
         })?;
     }

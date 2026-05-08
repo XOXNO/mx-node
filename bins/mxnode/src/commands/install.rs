@@ -692,13 +692,16 @@ pub(super) fn install_err(
             "for source builds: ensure git+go are installed; for release mode: ensure the tag publishes a `multiversx_*_linux_<arch>.zip`",
         ),
         E::ConfigRepo(inner) => {
-            // Two different failure modes share this branch:
-            //   - spawn errors (git missing / not executable / EACCES)
-            //   - clone errors (repo private, tag missing, network down)
-            // Route the operator at the actual cause instead of always
+            // Several distinct failure modes share this branch. Route
+            // the operator at the actual cause instead of always
             // suggesting they double-check the org/env/tag.
             let msg = inner.to_string();
-            if msg.contains("io error spawning git") || msg.contains("Permission denied") {
+            if msg.contains("could not create directory") {
+                (
+                    "could not create the config-repo cache directory",
+                    "check `mxnode config get paths.binaries` — the resolved path probably points at a directory the current user can't write (commonly a stale `paths.custom_home = /home/ubuntu` from auto-init on a host where the operator user is something else; fix with `mxnode config set paths.custom_home /home/<your-user>`)",
+                )
+            } else if msg.contains("io error spawning git") {
                 (
                     "could not run `git` to clone the config repo",
                     "ensure `git` is installed and executable on PATH; run `mxnode doctor` to verify",
