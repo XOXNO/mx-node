@@ -228,6 +228,40 @@ assert "multikey --squad (no-op) dry-run"     "$MXNODE install --role multikey -
 assert "--json install dry-run"               "$MXNODE --json install --role multikey --binary-tag $NODE_TAG --config-tag $CONFIG_TAG --dry-run"
 
 # ============================================================
+# Heavy phases (P9+) — real installs that pull binaries from
+# GitHub releases, build mx-chain-go from source, write systemd
+# units (sudo), and run network-bound flows. They were designed
+# for a dedicated host with the MultiversX 200 GB / sudo /
+# privileged-port stack; on shared CI runners they fail on
+# environment limits unrelated to the code under test.
+#
+# Skip them whenever `CI` is set. Override with
+# `MXNODE_INTEGRATION_FULL=1` on a properly-provisioned host to
+# run the full sweep. The CLI smoke phases above (P0-P8) cover
+# every command's flag matrix and still run on every push.
+# ============================================================
+if [ "${CI:-false}" = "true" ] && [ -z "${MXNODE_INTEGRATION_FULL:-}" ]; then
+    echo
+    echo "============================================================"
+    echo "  Skipping P9+ heavy phases in CI"
+    echo "============================================================"
+    echo "  CI=true detected and MXNODE_INTEGRATION_FULL is unset."
+    echo "  P9-P13 require sudo, 200 GB free disk, and the full"
+    echo "  MultiversX system-requirements stack. Set"
+    echo "  MXNODE_INTEGRATION_FULL=1 on a dedicated host to run them."
+    echo "============================================================"
+    if [ "$FAIL" -gt 0 ]; then
+        echo "  FAILED tests:"
+        for t in "${FAILED_TESTS[@]}"; do
+            echo "    - $t"
+        done
+        exit 1
+    fi
+    echo "  PASS=$PASS  WARN=$WARN  FAIL=0  (P0-P8 only)"
+    exit 0
+fi
+
+# ============================================================
 # P9  REAL install — observer single, then verify + cleanup
 # ============================================================
 phase "P9  real install: observer single"
