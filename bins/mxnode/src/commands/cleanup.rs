@@ -11,7 +11,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use mxnode_config::user_config_path;
 use mxnode_core::{NodeState, Platform, HostState};
 use mxnode_state::StateStore;
 use mxnode_systemd::Ctl; // trait used by `Step::apply` parameter
@@ -120,17 +119,16 @@ fn cleanup_with_no_state(
     if !args.keep_binaries {
         candidates.push(runtime.paths.custom_home.join("mxnode"));
     }
-    let mut dirs_present: Vec<PathBuf> = candidates.into_iter().filter(|p| p.exists()).collect();
-    let mut config_to_remove: Option<PathBuf> = None;
     if !args.keep_config {
-        if let Ok(target) = user_config_path() {
-            if target.exists() {
-                config_to_remove = Some(target);
-            }
-        }
+        // Wipe the entire `~/.config/mxnode/` directory (mxnode.toml +
+        // lock file + anything sibling). Removing only the file would
+        // leave an empty dir behind, which the integration sweep
+        // surfaces as "leftover state" on the next run.
+        candidates.push(runtime.paths.config_dir.clone());
     }
+    let mut dirs_present: Vec<PathBuf> = candidates.into_iter().filter(|p| p.exists()).collect();
 
-    if dirs_present.is_empty() && config_to_remove.is_none() {
+    if dirs_present.is_empty() {
         if global.json {
             println!(
                 "{}",
@@ -151,13 +149,10 @@ fn cleanup_with_no_state(
         .json_if(global.json));
     }
 
-    let mut summary: Vec<String> = dirs_present
+    let summary: Vec<String> = dirs_present
         .iter()
         .map(|p| p.display().to_string())
         .collect();
-    if let Some(p) = &config_to_remove {
-        summary.push(p.display().to_string());
-    }
 
     if !args.should_execute() {
         if global.json {
@@ -183,11 +178,6 @@ fn cleanup_with_no_state(
             eprintln!("warn: failed to remove {}: {e}", p.display());
         }
     }
-    if let Some(p) = config_to_remove {
-        if let Err(e) = remove_file_idempotent(&p) {
-            eprintln!("warn: failed to remove {}: {e}", p.display());
-        }
-    }
     Ok(())
 }
 
@@ -202,7 +192,6 @@ enum Step {
     DisableUnit { unit: String },
     RemoveUnitFile { path: PathBuf, sudo: bool },
     RemoveDir { path: PathBuf },
-    RemoveFile { path: PathBuf },
 }
 
 impl Step {
@@ -218,7 +207,6 @@ impl Step {
                 }
             }
             Step::RemoveDir { path } => format!("rm -rf {}", path.display()),
-            Step::RemoveFile { path } => format!("rm {}", path.display()),
         }
     }
 
@@ -263,7 +251,6 @@ impl Step {
                 Ok(())
             }
             Step::RemoveDir { path } => remove_dir_idempotent(path),
-            Step::RemoveFile { path } => remove_file_idempotent(path),
         }
     }
 }
@@ -276,22 +263,6 @@ fn remove_dir_idempotent(path: &Path) -> Result<(), String> {
         if e.kind() != std::io::ErrorKind::NotFound {
             return Err(e.to_string());
         }
-    }
-    Ok(())
-}
-
-fn remove_file_idempotent(path: &Path) -> Result<(), String> {
-    if let Err(e) = fs::remove_file(path) {
-        if e.kind() != std::io::ErrorKind::NotFound {
-            return Err(e.to_string());
-        }
-    }
-    // Best-effort: drop the parent directory if it's now empty so
-    // `~/.config/mxnode/` doesn't linger as an empty husk after the
-    // mxnode.toml leaf is removed. `remove_dir` (not `remove_dir_all`)
-    // is intentional: only removes empty directories, never recursive.
-    if let Some(parent) = path.parent() {
-        let _ = fs::remove_dir(parent);
     }
     Ok(())
 }
@@ -363,16 +334,19 @@ fn build_plan(state: &HostState, paths: &mxnode_core::Paths, args: &CleanupArgs)
             path: paths.custom_home.join("mxnode"),
         });
     }
-    // mxnode.toml lives under `paths.state` (mxnode.toml itself + lock
-    // file + inflight). Always wipe the whole directory so we don't
-    // leave a stale state behind that contradicts the deleted nodes.
+    // `paths.state` holds `inflight.toml` (in-flight upgrade journal)
+    // and any future per-host run-data. Wipe so we don't leave a
+    // stale upgrade lock behind that contradicts the deleted nodes.
     plan.push(Step::RemoveDir {
         path: paths.state.clone(),
     });
     if !args.keep_config {
-        if let Ok(target) = user_config_path() {
-            plan.push(Step::RemoveFile { path: target });
-        }
+        // Wipe the entire config dir (mxnode.toml + lock file +
+        // anything sibling). Leaving the directory empty would
+        // surface as "leftover state" on the next sweep / install.
+        plan.push(Step::RemoveDir {
+            path: paths.config_dir.clone(),
+        });
     }
     plan
 }

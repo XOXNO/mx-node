@@ -143,7 +143,7 @@ assert_contains "benchmark --json shape"  "$MXNODE --json benchmark"  '"checks"'
 # P4  auto-init triggered on first state-changing command
 # ============================================================
 phase "P4  auto-init on first use"
-assert "status auto-inits config" "$MXNODE status >/dev/null 2>&1; [ -f $HOME/.config/mxnode/config.toml ]"
+assert "status auto-inits config" "$MXNODE status >/dev/null 2>&1; [ -f $HOME/.config/mxnode/mxnode.toml ]"
 assert_contains "default network is mainnet" "$MXNODE config get network.environment" "mainnet"
 assert_contains "custom_user detected" "$MXNODE config get paths.custom_user" "$USER"
 
@@ -291,7 +291,7 @@ $MXNODE config set overrides.prefs."Preferences.Identity" "mxnode-ci" >/dev/null
 # The above might fail if the dotted-path with quoted segment isn't supported;
 # fall back to manual edit.
 python3 -c "
-p='$HOME/.config/mxnode/config.toml'
+p='$HOME/.config/mxnode/mxnode.toml'
 b=open(p).read()
 if 'overrides.prefs' not in b:
     b += '\n[overrides.prefs]\n\"Preferences.Identity\" = \"mxnode-ci\"\n'
@@ -379,12 +379,12 @@ assert "install (cached binary)"     "$MXNODE install --role observer --count 1 
 assert "cleanup --keep-binaries"     "$MXNODE cleanup --yes --execute --keep-binaries >/dev/null"
 assert "binstore preserved"          "[ -d $HOME/mxnode/binaries ]"
 assert "state removed"               "[ ! -d $HOME/.local/state/mxnode ]"
-assert "config removed"              "[ ! -f $HOME/.config/mxnode/config.toml ]"
+assert "config removed"              "[ ! -f $HOME/.config/mxnode/mxnode.toml ]"
 
 assert "install (re-uses cached binary, fast)" \
     "$MXNODE install --role observer --count 1 --binary-tag $NODE_TAG --config-tag $CONFIG_TAG"
 assert "cleanup --keep-config"       "$MXNODE cleanup --yes --execute --keep-config >/dev/null"
-assert "config preserved"            "[ -f $HOME/.config/mxnode/config.toml ]"
+assert "config preserved"            "[ -f $HOME/.config/mxnode/mxnode.toml ]"
 assert "binstore removed"            "[ ! -d $HOME/mxnode/binaries ]"
 
 # Final pristine
