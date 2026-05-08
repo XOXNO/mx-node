@@ -40,19 +40,10 @@ pub async fn run(mut args: InstallArgs, global: &GlobalArgs) -> Result<(), CliEr
         .json_if(global.json));
     }
 
-    let environment = runtime
-        .loaded
-        .file
-        .network
-        .environment
-        .ok_or_else(|| {
-            CliError::new(
-                "network.environment is not set",
-                "install needs the operator's chosen network",
-                "run any state-changing command (auto-init), or `mxnode config set network.environment <env>`",
-            )
-            .json_if(global.json)
-        })?;
+    let environment = match runtime.loaded.file.network.environment {
+        Some(e) => e,
+        None => prompt_for_missing_network(global)?,
+    };
 
     // Run the install wizard for `mxnode install` typed bare on a TTY.
     // Power users who pass any explicit selector (`--role`, `--count`,
@@ -283,6 +274,87 @@ pub async fn run(mut args: InstallArgs, global: &GlobalArgs) -> Result<(), CliEr
         persist_state(&runtime.paths, &outcome.state).map_err(|e| install_err(e, global))?;
 
     emit_success(global, &outcome, &state_path, &runtime.paths.node_keys)
+}
+
+/// Resolve `network.environment` when the loaded config doesn't have
+/// it set. On a TTY, prompt the operator (mainnet / testnet / devnet)
+/// and persist the answer into `mxnode.toml` so subsequent runs skip
+/// the prompt. Off a TTY (CI / `--json` / piped stdin), preserve the
+/// historical hard error so automation isn't blocked waiting for
+/// stdin — operators can pass the environment via `--config <PATH>`
+/// pointing at a pre-baked file or run `mxnode config set
+/// network.environment <env>` first.
+fn prompt_for_missing_network(global: &GlobalArgs) -> Result<Environment, CliError> {
+    use std::io::IsTerminal;
+    let interactive = !global.json && std::io::stdin().is_terminal();
+    if !interactive {
+        return Err(CliError::new(
+            "network.environment is not set",
+            "install needs the operator's chosen network",
+            "run `mxnode config set network.environment <mainnet|testnet|devnet>`, or run `mxnode install` interactively",
+        )
+        .json_if(global.json));
+    }
+
+    let mut stdin = std::io::stdin().lock();
+    let mut stdout = std::io::stdout().lock();
+    let chosen = super::prompts::prompt_for_network(&mut stdin, &mut stdout, true).map_err(
+        |e| {
+            CliError::new(
+                "failed to read network choice from stdin",
+                e.to_string(),
+                "rerun with `--json` and run `mxnode config set network.environment <env>` instead",
+            )
+            .json_if(global.json)
+        },
+    )?;
+    persist_network_environment(chosen, global)?;
+    Ok(chosen)
+}
+
+/// Atomically write `network.environment = <chosen>` to the user's
+/// `mxnode.toml`. Routes through `toml_edit::DocumentMut` so any
+/// existing comments / section ordering survive untouched (same path
+/// `mxnode config set` uses).
+fn persist_network_environment(env: Environment, global: &GlobalArgs) -> Result<(), CliError> {
+    use toml_edit::{value, DocumentMut};
+    let target = mxnode_config::user_config_path().map_err(|e| {
+        CliError::new(
+            "could not resolve mxnode.toml path",
+            e.to_string(),
+            "set $XDG_CONFIG_HOME or $HOME so mxnode can locate the file",
+        )
+        .json_if(global.json)
+    })?;
+    let body = std::fs::read_to_string(&target).map_err(|e| {
+        CliError::new(
+            "could not read mxnode.toml",
+            format!("{}: {e}", target.display()),
+            "ensure the file is readable",
+        )
+        .json_if(global.json)
+    })?;
+    let mut doc: DocumentMut = body.parse().map_err(|e: toml_edit::TomlError| {
+        CliError::new(
+            "could not parse mxnode.toml",
+            format!("{}: {e}", target.display()),
+            "fix the file by hand or back it up and re-run `mxnode install`",
+        )
+        .json_if(global.json)
+    })?;
+    doc["network"]["environment"] = value(env.to_string());
+    std::fs::write(&target, doc.to_string()).map_err(|e| {
+        CliError::new(
+            "could not write mxnode.toml",
+            format!("{}: {e}", target.display()),
+            "ensure the parent directory is writable",
+        )
+        .json_if(global.json)
+    })?;
+    if !global.json {
+        eprintln!("→ saved network.environment = {env} to {}", target.display());
+    }
+    Ok(())
 }
 
 fn enforce_install_requirements(
