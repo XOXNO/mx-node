@@ -691,10 +691,25 @@ pub(super) fn install_err(
             "binary acquisition failed",
             "for source builds: ensure git+go are installed; for release mode: ensure the tag publishes a `multiversx_*_linux_<arch>.zip`",
         ),
-        E::ConfigRepo(_) => (
-            "could not clone the config repo",
-            "check that the org+env+tag combination resolves to a public mx-chain-{env}-config repo",
-        ),
+        E::ConfigRepo(inner) => {
+            // Two different failure modes share this branch:
+            //   - spawn errors (git missing / not executable / EACCES)
+            //   - clone errors (repo private, tag missing, network down)
+            // Route the operator at the actual cause instead of always
+            // suggesting they double-check the org/env/tag.
+            let msg = inner.to_string();
+            if msg.contains("io error spawning git") || msg.contains("Permission denied") {
+                (
+                    "could not run `git` to clone the config repo",
+                    "ensure `git` is installed and executable on PATH; run `mxnode doctor` to verify",
+                )
+            } else {
+                (
+                    "could not clone the config repo",
+                    "check that the org+env+tag combination resolves to a public mx-chain-{env}-config repo, and that the host has network access",
+                )
+            }
+        }
         E::Io { .. } => (
             "io error during install",
             "ensure the configured paths are writable by the current user",

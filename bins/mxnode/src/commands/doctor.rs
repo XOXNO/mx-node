@@ -520,6 +520,13 @@ fn check_supervisor_tools() -> Vec<Finding> {
             ));
         }
     }
+    // `git` is required for the source-build install path: every
+    // `mxnode install` runs `git clone` against the env-config repo
+    // (and against `mx-chain-go` when artifact_source = "source",
+    // which is the default). Surface a clear error here instead of
+    // letting `install` fail mid-way with `Permission denied (os
+    // error 13)` or `No such file or directory` from the spawn.
+    findings.push(check_command("git", &["--version"]));
     findings
 }
 
