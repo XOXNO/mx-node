@@ -118,8 +118,8 @@ impl Health {
         }
     }
 
-    /// ANSI colour code; only emitted when stdout is a TTY and `--no-color`
-    /// is not set.
+    /// ANSI colour code; only emitted when stdout is a TTY and the
+    /// `NO_COLOR` env var is not set (https://no-color.org/).
     fn color(&self) -> &'static str {
         match self {
             Self::Ok => "\x1b[32m",

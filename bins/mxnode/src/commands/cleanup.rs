@@ -1,4 +1,4 @@
-//! `mxnode cleanup`: full host cleanup — stop + disable units, remove unit
+//! `mxnode uninstall` (was `mxnode cleanup`): full host cleanup — stop + disable units, remove unit
 //! files, remove `elrond-nodes/`/`elrond-proxy/`/`elrond-utils/`, drop
 //! mxnode.toml. Defaults to dry-run for the first two minor releases per
 //! the plan.
@@ -50,7 +50,7 @@ pub async fn run(args: CleanupArgs, global: &GlobalArgs) -> Result<(), CliError>
         return Err(CliError::new(
             "refusing without --yes",
             "cleanup permanently removes all nodes, units, and binaries managed by mxnode",
-            "rerun with `mxnode cleanup --yes` to dry-run, then add `--execute` to actually delete",
+            "rerun with `mxnode uninstall --yes` to dry-run, then add `--execute` to actually delete",
         )
         .json_if(global.json));
     }
@@ -144,7 +144,7 @@ fn cleanup_with_no_state(
         return Err(CliError::new(
             "refusing without --yes",
             "found managed directories without mxnode.toml; cleanup is destructive",
-            "rerun with `mxnode cleanup --yes` to dry-run",
+            "rerun with `mxnode uninstall --yes` to dry-run",
         )
         .json_if(global.json));
     }

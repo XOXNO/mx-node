@@ -1,4 +1,4 @@
-//! `mxnode reapply-config`: walk every node in `mxnode.toml` and re-run
+//! `mxnode config apply` (was top-level `mxnode reapply-config`): walk every node in `mxnode.toml` and re-run
 //! the per-node TOML edit pass — display name from the template,
 //! observer-shape edits where applicable, and the operator's
 //! `[overrides.prefs]` / `[overrides.config]` map.

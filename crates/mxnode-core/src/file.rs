@@ -126,7 +126,7 @@ pub struct NetworkSection {
     /// state-changing op.
     pub environment: Option<Environment>,
     pub github_org: String,
-    /// Public gateway used by `mxnode dashboard` for trie-statistics.
+    /// Public gateway used by `mxnode status --watch` for trie-statistics.
     /// Empty string disables the lookup.
     pub gateway: String,
 }

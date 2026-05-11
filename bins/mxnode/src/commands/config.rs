@@ -199,7 +199,7 @@ fn run_validate(strict: bool, global: &GlobalArgs) -> Result<(), CliError> {
         Err(CliError::new(
             "config validation failed",
             format!("{} error(s)", report.errors.len()),
-            "fix the errors listed above (or pass --skip-safety-checks for read-only ops)",
+            "fix the errors listed above (or pass --force for read-only ops)",
         )
         .json_if(global.json))
     }

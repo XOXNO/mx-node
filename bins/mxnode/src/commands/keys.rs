@@ -1,4 +1,4 @@
-//! `mxnode keys check` and `mxnode keygen`.
+//! `mxnode keys check`, `mxnode keys generate` (was `mxnode keygen`), and `mxnode keys rename` (was top-level `mxnode rename`).
 //!
 //! `keys check` reports whether `node-{INDEX}.zip` is present for every node
 //! in `mxnode.toml`. `keygen` shells out to the keygenerator binary that

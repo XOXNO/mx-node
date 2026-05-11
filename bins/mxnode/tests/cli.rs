@@ -1011,7 +1011,7 @@ GITHUB_ORG="myfork"
         .arg(&systemd_dir)
         .arg("--execute")
         .output()
-        .expect("spawn mxnode migrate-bash");
+        .expect("spawn mxnode import-bash");
     assert!(
         output.status.success(),
         "non-zero exit: stdout={} stderr={}",
@@ -1173,7 +1173,7 @@ fn rename_persists_to_state_and_prefs_toml() {
         .arg(&sb.home)
         .arg("--execute")
         .output()
-        .expect("spawn mxnode migrate-bash");
+        .expect("spawn mxnode import-bash");
     assert!(
         migrate.status.success(),
         "migrate-bash --execute failed: stderr={}",
@@ -1204,7 +1204,7 @@ fn rename_persists_to_state_and_prefs_toml() {
             "renamed-validator",
         ])
         .output()
-        .expect("spawn mxnode rename");
+        .expect("spawn mxnode keys rename");
     assert!(
         rename.status.success(),
         "rename failed: stderr={}",

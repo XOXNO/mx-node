@@ -107,8 +107,8 @@ pub fn run(args: DoctorArgs, global: &GlobalArgs) -> Result<(), CliError> {
         findings.extend(check_journald());
     }
 
-    // `--skip-safety-checks` waives the install gate; for symmetry it
-    // also waives doctor's hard-exit on system-requirement errors.
+    // `--force` waives the install gate; for symmetry it also waives
+    // doctor's hard-exit on system-requirement errors.
     // The findings still print so the operator sees what's wrong, but
     // doctor returns 0 — matching install's "I know what I'm doing"
     // semantics. Useful in CI (GitHub-hosted runners ship 86 GB free

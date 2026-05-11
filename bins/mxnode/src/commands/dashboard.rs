@@ -1,4 +1,4 @@
-//! `mxnode dashboard`: multi-node ratatui live dashboard.
+//! `mxnode status --watch` (was top-level `mxnode dashboard`): multi-node ratatui live dashboard.
 //!
 //! Reads mxnode.toml + the operator's config to build a per-node spec
 //! (label / unit / api port / workdir) then hands off to mxnode-tui.
@@ -22,9 +22,9 @@ pub async fn run(args: DashboardArgs, global: &GlobalArgs) -> Result<(), CliErro
     // Catch that case up front with a focused error.
     if !std::io::stdout().is_terminal() {
         return Err(CliError::new(
-            "dashboard requires a terminal",
+            "status --watch requires a terminal for the live TUI",
             "stdout is not a TTY (piped, redirected, or non-interactive shell)",
-            "run `mxnode dashboard` directly in a terminal, or use `mxnode status --watch` for a non-TUI live view",
+            "run `mxnode status --watch` directly in a terminal, or use `mxnode status` (one-shot) for piped output",
         )
         .json_if(global.json));
     }
@@ -74,7 +74,7 @@ pub async fn run(args: DashboardArgs, global: &GlobalArgs) -> Result<(), CliErro
         })
         .map(|n| {
             // Honour the name persisted on `NodeState` (operator's
-            // wizard / `mxnode rename` choice) before falling back to
+            // wizard / `mxnode keys rename` choice) before falling back to
             // re-templating from config. Re-templating without that
             // check is the bug the dashboard was previously hitting:
             // the operator typed a custom name, it landed in

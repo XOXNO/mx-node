@@ -413,7 +413,7 @@ fn select_ws_log_node<'a>(
         many => Err(CliError::new(
             "logs --ws accepts one node",
             format!("got node selection {many:?}"),
-            "run one `mxnode logs --ws --node N` session per node, or use `mxnode dashboard --ws-logs` for multi-node viewing",
+            "run one `mxnode logs --ws --node N` session per node, or use `mxnode status --watch` for the multi-node live view",
         )
         .json_if(global.json)),
     }

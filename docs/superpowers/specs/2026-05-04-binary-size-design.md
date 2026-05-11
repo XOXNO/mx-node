@@ -314,7 +314,7 @@ Each rollback is a single PR, no data migration, no user-facing breakage (instal
 ### Per-PR testing
 
 - **Stage A:** `cargo build --release --features bench-harness` succeeds on macOS arm64 + Linux musl x86. `mxnode --bench-render 10` exits 0 and prints `elapsed_ms=<n>` to stderr. `cargo xtask bench-size --target aarch64-apple-darwin --combo baseline-only` produces a CSV row.
-- **Stage C:** full `integration.yml` green. Smoke install on a clean Hetzner test box: `curl install.sh | bash`, `mxnode --version`, `mxnode dashboard` opens within 2 s.
+- **Stage C:** full `integration.yml` green. Smoke install on a clean Hetzner test box: `curl install.sh | bash`, `mxnode --version`, `mxnode status --watch` opens within 2 s.
 - **Stage D:** same as C, plus `cosign verify-blob` succeeds against the UPX archive, plus `mxnode --version` cold-start measured on the Hetzner box ≤ baseline + 200 ms (UPX adds decompression).
 - **Stage E:** same as D, plus the `-min` archive smoke-installs on three distros (Ubuntu 24.04, Debian 12, Alpine 3.20).
 

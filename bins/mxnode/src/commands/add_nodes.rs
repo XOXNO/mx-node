@@ -1,8 +1,8 @@
-//! `mxnode add-nodes [--count N --role R]`: extend an existing install.
+//! `mxnode install --add N --role R` (was top-level `mxnode add-nodes`): extend an existing install.
 //!
 //! Refuses on observers-squad / multikey-squad installs (matches the bash
 //! `add_node` which exits when `.squad_install` is present). Operators
-//! who want a mixed host run `mxnode cleanup` + a fresh install.
+//! who want a mixed host run `mxnode uninstall` + a fresh install.
 
 use mxnode_core::{InstallKind, NodeIndex, Role, Shard};
 use mxnode_state::StateStore;
@@ -77,7 +77,7 @@ pub async fn run(args: AddNodesArgs, global: &GlobalArgs) -> Result<(), CliError
                 "this install is `{}`; squad layouts have a fixed shape (one node per shard)",
                 install.kind,
             ),
-            "run `mxnode cleanup --yes --execute` and reinstall with the new node count",
+            "run `mxnode uninstall --yes --execute` and reinstall with the new node count",
         )
         .json_if(global.json));
     }

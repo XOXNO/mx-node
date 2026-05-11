@@ -52,8 +52,8 @@ mxnode doctor
 # Stream the node /log WebSocket with a runtime log profile and local save.
 mxnode logs --ws --node 0 --log-level '*:DEBUG,api:INFO' --log-save
 
-# Run the installed upstream seednode utility (pass upstream flags after --).
-mxnode seednode -- --help
+# Run the installed upstream seednode utility directly (mxnode installs the binary).
+$HOME/elrond-utils/seednode/seednode --help
 ```
 
 ## Layout

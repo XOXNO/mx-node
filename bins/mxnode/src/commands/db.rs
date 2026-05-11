@@ -298,7 +298,7 @@ async fn run_import(req: ImportRequest, global: &GlobalArgs) -> Result<(), CliEr
         return Err(CliError::new(
             "node binary is missing",
             format!("expected {}", node_binary.display()),
-            "run `mxnode reapply-config`, reinstall, or repair the node symlink before import-db",
+            "run `mxnode config apply`, reinstall, or repair the node symlink before import-db",
         )
         .json_if(global.json));
     }

@@ -75,7 +75,7 @@ Verification:
 
 1. `cargo build --bin mxnode --release` — clean (~37 s with warm sccache, ~4 min cold).
 2. `./target/release/mxnode --version` — returns expected.
-3. `./target/release/mxnode dashboard --help` — returns expected (no link-time fault from LTO).
+3. `./target/release/mxnode status --watch --help` — returns expected (no link-time fault from LTO).
 4. `mxnode bench-render --frames 1000 --fixture <observer.json>` — 490 ms total = 0.49 ms per frame. Operator-accepted given the 250 ms dashboard tick rate.
 5. Pre-existing test failure `loader::tests::load_with_no_file_returns_defaults` is unrelated (env isolation bug — reads user's actual `~/.config/mxnode/config.toml`); confirmed failing on main without this change.
 

@@ -1,5 +1,6 @@
-//! Install orchestration shared by `mxnode install`, `mxnode observers`,
-//! `mxnode multikey`, and `mxnode add-nodes`.
+//! Install orchestration shared by `mxnode install` (fresh) and
+//! `mxnode install --add N` (extend an existing install — was
+//! `mxnode add-nodes`).
 //!
 //! Phase 3 carries forward the bash mental model:
 //!   1. acquire node (and proxy / keygenerator) binaries

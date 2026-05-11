@@ -1,4 +1,4 @@
-//! `mxnode dashboard` — multi-node ratatui TUI.
+//! `mxnode status --watch` — multi-node ratatui TUI (was `mxnode dashboard`).
 //!
 //! Renders the same metrics as the upstream Go `termui`, plus:
 //!   - **multi-node tabs** (Go shows one node only),

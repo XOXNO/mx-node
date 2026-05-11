@@ -240,7 +240,7 @@ pub fn expand_template(template: &str, env: &str, index: u16) -> String {
 ///
 /// Precedence:
 ///   1. The name persisted on the `NodeState` (stamped at install
-///      time, kept in sync by `mxnode rename`). Honouring this stops
+///      time, kept in sync by `mxnode keys rename`). Honouring this stops
 ///      every read-side surface from silently re-templating an
 ///      operator's chosen name just because the config-side
 ///      `node.name_template` happens to differ.

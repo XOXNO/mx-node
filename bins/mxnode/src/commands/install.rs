@@ -35,7 +35,7 @@ pub async fn run(mut args: InstallArgs, global: &GlobalArgs) -> Result<(), CliEr
         return Err(CliError::new(
             "mxnode.toml already exists",
             format!("found {}", store.state_path().display()),
-            "use `mxnode add-nodes` to extend, or `mxnode cleanup --yes --execute` to start over",
+            "use `mxnode install --add N` to extend, or `mxnode uninstall --yes --execute` to start over",
         )
         .json_if(global.json));
     }
@@ -385,7 +385,7 @@ fn enforce_install_requirements(
     Err(CliError::new(
         "host does not meet MultiversX system requirements",
         details,
-        "run `mxnode doctor` for full details, fix the requirements, or pass --skip-safety-checks to override deliberately",
+        "run `mxnode doctor` for full details, fix the requirements, or pass --force to override deliberately",
     )
     .json_if(global.json))
 }
@@ -868,7 +868,7 @@ mod tests {
             u16::MAX,
             &global,
         )
-        .expect("--skip-safety-checks must bypass the install gate");
+        .expect("--force must bypass the install gate");
     }
 
     #[test]

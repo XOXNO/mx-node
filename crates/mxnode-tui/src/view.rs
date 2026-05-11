@@ -1650,7 +1650,7 @@ fn draw_empty_state(frame: &mut Frame, area: Rect) {
 fn draw_help_overlay(frame: &mut Frame, area: Rect) {
     let overlay = centered_rect(60, 70, area);
     let body = Paragraph::new(
-        "mxnode dashboard — keybindings\n\n\
+        "mxnode status --watch — keybindings\n\n\
          Navigation\n\
            q, esc, ctrl+c   quit\n\
            tab / →          next node\n\

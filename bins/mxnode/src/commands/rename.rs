@@ -1,8 +1,8 @@
-//! `mxnode rename --node N --to NAME [--restart]`: change one node's
-//! `NodeDisplayName` in both `mxnode.toml` and the on-disk `prefs.toml`
-//! atomically.
+//! `mxnode keys rename --node N --to NAME [--restart]` (was top-level
+//! `mxnode rename`): change one node's `NodeDisplayName` in both
+//! `mxnode.toml` and the on-disk `prefs.toml` atomically.
 //!
-//! The persisted `display_name` is what `reapply-config` and `upgrade`
+//! The persisted `display_name` is what `config apply` and `upgrade`
 //! reapply on every subsequent edit pass — so renaming through this
 //! command sticks across re-templates. By contrast, hand-editing
 //! `prefs.toml` directly will be overwritten the next time

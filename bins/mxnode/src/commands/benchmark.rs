@@ -1,7 +1,8 @@
-//! `mxnode benchmark`: report host capability against MultiversX validator
-//! requirements. CPU count + model, total memory, free disk space, and
-//! latency to gateway. Standalone — does not require `mxnode install`
-//! to have run first.
+//! `mxnode doctor --benchmark` (was top-level `mxnode benchmark`):
+//! report host capability against MultiversX validator requirements.
+//! CPU count + model, total memory, free disk space, and latency to
+//! gateway. Standalone — does not require `mxnode install` to have
+//! run first.
 
 use std::fs;
 use std::time::{Duration, Instant};
