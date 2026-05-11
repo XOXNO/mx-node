@@ -364,7 +364,7 @@ fn enforce_install_requirements(
     count: u16,
     global: &GlobalArgs,
 ) -> Result<(), CliError> {
-    if global.skip_safety_checks {
+    if global.force {
         return Ok(());
     }
     let context =
@@ -888,12 +888,11 @@ mod tests {
         assert!(err.cause.contains("requirements.cpu"));
     }
 
-    fn global_for_tests(skip_safety_checks: bool) -> GlobalArgs {
+    fn global_for_tests(force: bool) -> GlobalArgs {
         GlobalArgs {
             config: None,
-            skip_safety_checks,
+            force,
             json: false,
-            no_color: false,
             verbose: false,
             quiet: false,
         no_update_check: true,

@@ -734,7 +734,7 @@ entries = []
 "#,);
     let output = sandbox
         .cmd()
-        .args(["add-nodes", "--count", "1"])
+        .args(["install", "--add", "1"])
         .output()
         .unwrap();
     assert!(!output.status.success());
@@ -1196,6 +1196,7 @@ fn rename_persists_to_state_and_prefs_toml() {
         .cmd()
         .args([
             "--json",
+            "keys",
             "rename",
             "--node",
             "0",
@@ -1255,7 +1256,7 @@ fn rename_rejects_empty_name() {
 
     let output = sb
         .cmd()
-        .args(["rename", "--node", "0", "--to", "   "])
+        .args(["keys", "rename", "--node", "0", "--to", "   "])
         .output()
         .expect("spawn rename");
     assert!(
@@ -1284,7 +1285,7 @@ fn rename_errors_when_node_index_unknown() {
 
     let output = sb
         .cmd()
-        .args(["rename", "--node", "42", "--to", "nope"])
+        .args(["keys", "rename", "--node", "42", "--to", "nope"])
         .output()
         .expect("spawn rename");
     assert!(

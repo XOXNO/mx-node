@@ -23,7 +23,7 @@ if [ ! -x "$MXNODE_BIN_PATH" ]; then
     echo "FATAL: mxnode binary not executable at $MXNODE_BIN_PATH" >&2
     exit 2
 fi
-# `--skip-safety-checks` is a global flag that bypasses
+# `--force` is a global flag that bypasses
 # `mxnode doctor`'s system-requirements gate. GitHub-hosted runners
 # only ship ~86 GB free disk vs. the documented MultiversX 200 GB
 # minimum, and have no business running a real mainnet validator
@@ -33,7 +33,7 @@ fi
 # safety checks (config show, version, ...) ignore it harmlessly.
 # `--no-update-check` keeps the gate from prompting in CI (also
 # defended by `CI=true`, but belt-and-braces).
-MXNODE="$MXNODE_BIN_PATH --skip-safety-checks --no-update-check"
+MXNODE="$MXNODE_BIN_PATH --force --no-update-check"
 
 # Per-phase counters. Aggregated and printed in the trailing summary.
 PASS=0
@@ -96,7 +96,7 @@ ensure_pristine() {
     units=$(ls /etc/systemd/system/elrond-*.service 2>/dev/null | head)
     if [ ${#stale[@]} -gt 0 ] || [ -n "$units" ]; then
         echo "host has leftover state — running cleanup first"
-        "$MXNODE" cleanup --yes --execute >/dev/null 2>&1 || true
+        "$MXNODE" uninstall --yes --execute >/dev/null 2>&1 || true
     fi
 }
 
@@ -118,16 +118,21 @@ assert "no elrond units"      "! ls /etc/systemd/system/elrond-*.service >/dev/n
 # P1  every command + subcommand renders --help
 # ============================================================
 phase "P1  --help for every command + subcommand"
-for cmd in config install add-nodes start stop restart status logs metrics upgrade db benchmark keygen keys reapply-config dashboard cleanup doctor version; do
+# Top-level command surface (post-v0.9 restructure: dropped add-nodes /
+# benchmark / dashboard / keygen / rename / reapply-config / seednode;
+# cleanup → uninstall, migrate-bash → import-bash).
+for cmd in config install start stop restart status logs metrics upgrade db keys uninstall doctor import-bash self-update completions version; do
     assert "mxnode $cmd --help" "$MXNODE $cmd --help >/dev/null"
 done
-for s in show get set edit validate; do
+for s in show get set edit validate apply; do
     assert "mxnode config $s --help" "$MXNODE config $s --help >/dev/null"
 done
 for s in prune remove reseed; do
     assert "mxnode db $s --help" "$MXNODE db $s --help >/dev/null"
 done
-assert "mxnode keys check --help" "$MXNODE keys check --help >/dev/null"
+for s in check generate rename; do
+    assert "mxnode keys $s --help" "$MXNODE keys $s --help >/dev/null"
+done
 for s in proxy squad; do
     assert "mxnode upgrade $s --help" "$MXNODE upgrade $s --help >/dev/null"
 done
@@ -142,13 +147,15 @@ assert_contains "mxnode version"     "$MXNODE version"   "mxnode "
 assert_contains "mxnode --json version" "$MXNODE --json version" '"version"'
 
 # ============================================================
-# P3  benchmark standalone (no install required)
+# P3  doctor + benchmark (no install required)
 # ============================================================
-phase "P3  benchmark works without an install"
-assert         "benchmark exits 0 on a host that meets the floor"  "$MXNODE benchmark"
-assert_contains "benchmark prints CPU check"  "$MXNODE benchmark"  "[cpu]"
-assert_contains "benchmark prints memory check"  "$MXNODE benchmark"  "[memory]"
-assert_contains "benchmark --json shape"  "$MXNODE --json benchmark"  '"checks"'
+phase "P3  doctor --benchmark works without an install"
+# `mxnode benchmark` was folded into `mxnode doctor --benchmark` in
+# v0.9. The doctor probes always run; `--benchmark` adds the CPU /
+# memory / disk-IO measurement pass on top.
+assert         "doctor --benchmark exits 0"  "$MXNODE doctor --benchmark"
+assert_contains "doctor prints platform check"  "$MXNODE doctor --benchmark"  "[platform]"
+assert_contains "doctor --benchmark --json shape"  "$MXNODE --json doctor --benchmark"  '"findings"'
 
 # ============================================================
 # P4  auto-init triggered on first state-changing command
@@ -156,7 +163,10 @@ assert_contains "benchmark --json shape"  "$MXNODE --json benchmark"  '"checks"'
 phase "P4  auto-init on first use"
 assert "status auto-inits config" "$MXNODE status >/dev/null 2>&1; [ -f $HOME/.config/mxnode/mxnode.toml ]"
 assert_contains "default network is mainnet" "$MXNODE config get network.environment" "mainnet"
-assert_contains "custom_user detected" "$MXNODE config get paths.custom_user" "$USER"
+# `paths.custom_user` is no longer persisted on auto-init (post-v0.8.33)
+# — it resolves from `$USER` at every read. The runtime path-resolver
+# tests in `mxnode-config::resolve` cover that; nothing for the sweep
+# to assert at the file layer.
 
 # ============================================================
 # P5  config show / get / set / edit / validate
@@ -272,7 +282,7 @@ assert "node-0 workdir exists"       "[ -d $HOME/elrond-nodes/node-0/config ]"
 assert "elrond-node-0.service exists" "[ -f /etc/systemd/system/elrond-node-0.service ]"
 assert "binary symlinked"            "[ -L $HOME/elrond-nodes/node-0/node ]"
 assert "status reads state"          "$MXNODE status >/dev/null"
-assert "cleanup --yes --execute"     "$MXNODE cleanup --yes --execute >/dev/null"
+assert "uninstall --yes --execute"     "$MXNODE uninstall --yes --execute >/dev/null"
 assert "no leftover units"           "! ls /etc/systemd/system/elrond-*.service >/dev/null 2>&1"
 assert "no leftover workdirs"        "[ ! -d $HOME/elrond-nodes ]"
 
@@ -328,10 +338,10 @@ assert "after prune: 2 Epoch_N dirs left" \
     "[ \$(find $HOME/elrond-nodes/node-1/db -maxdepth 1 -type d -name 'Epoch_*' | wc -l) -eq 2 ]"
 
 # add-nodes refuses on squad install
-assert "add-nodes refuses on squad" "$MXNODE add-nodes --count 1 --role observer" 0
+assert "install --add refuses on squad" "$MXNODE install --add 1 --role observer" 0
 
 # reapply-config + override edit
-assert "reapply-config (no override yet)" "$MXNODE reapply-config >/dev/null"
+assert "config apply (no override yet)" "$MXNODE config apply >/dev/null"
 $MXNODE config set overrides.prefs."Preferences.Identity" "mxnode-ci" >/dev/null 2>&1 || true
 # The above might fail if the dotted-path with quoted segment isn't supported;
 # fall back to manual edit.
@@ -342,7 +352,7 @@ if 'overrides.prefs' not in b:
     b += '\n[overrides.prefs]\n\"Preferences.Identity\" = \"mxnode-ci\"\n'
 open(p,'w').write(b)
 " 2>/dev/null
-assert "reapply-config propagates override" "$MXNODE reapply-config"
+assert "config apply propagates override" "$MXNODE config apply"
 assert "override present in node-0 prefs" "grep -q 'mxnode-ci' $HOME/elrond-nodes/node-0/config/prefs.toml"
 
 # upgrade dry-runs (every flag combination, no actual upgrade)
@@ -354,8 +364,8 @@ assert "upgrade --node + --shard mutex rejects" "$MXNODE upgrade --binary-tag $N
 assert "upgrade --skip-validators --dry-run"   "$MXNODE upgrade --binary-tag $NODE_TAG --skip-validators --dry-run >/dev/null"
 
 # Cleanup
-assert "cleanup --yes (dry-run shows plan)"    "$MXNODE cleanup --yes >/dev/null"
-assert "cleanup --yes --execute"               "$MXNODE cleanup --yes --execute >/dev/null"
+assert "uninstall --yes (dry-run shows plan)"    "$MXNODE uninstall --yes >/dev/null"
+assert "uninstall --yes --execute"               "$MXNODE uninstall --yes --execute >/dev/null"
 assert "no leftover proxy unit"                "[ ! -f /etc/systemd/system/elrond-proxy.service ]"
 assert "no leftover node units"                "! ls /etc/systemd/system/elrond-node-*.service >/dev/null 2>&1"
 
@@ -389,15 +399,15 @@ verify_multikey() {
 
 assert "install multikey primary"    "$MXNODE install --role multikey --binary-tag $NODE_TAG --config-tag $CONFIG_TAG"
 verify_multikey "primary RedundancyLevel=0 + keys mode 0600 on all 4 nodes" 0
-assert "cleanup primary"             "$MXNODE cleanup --yes --execute >/dev/null"
+assert "uninstall primary"             "$MXNODE uninstall --yes --execute >/dev/null"
 
 assert "install multikey --backup"   "$MXNODE install --role multikey --backup --binary-tag $NODE_TAG --config-tag $CONFIG_TAG"
 verify_multikey "backup RedundancyLevel=1 + keys mode 0600 on all 4 nodes" 1
-assert "cleanup backup"              "$MXNODE cleanup --yes --execute >/dev/null"
+assert "uninstall backup"              "$MXNODE uninstall --yes --execute >/dev/null"
 
 assert "install multikey --backup 2" "$MXNODE install --role multikey --backup 2 --binary-tag $NODE_TAG --config-tag $CONFIG_TAG"
 verify_multikey "backup-2 RedundancyLevel=2 + keys mode 0600 on all 4 nodes" 2
-assert "cleanup backup-2"            "$MXNODE cleanup --yes --execute >/dev/null"
+assert "uninstall backup-2"            "$MXNODE uninstall --yes --execute >/dev/null"
 
 cleanup_artifacts
 
@@ -410,10 +420,10 @@ assert "keys check (no zip) errors"  "$MXNODE keys check" 0
 mkdir -p "$HOME/VALIDATOR_KEYS"
 echo "fake" > "$HOME/VALIDATOR_KEYS/node-0.zip"
 assert "keys check passes after zip drop" "$MXNODE keys check"
-assert "keygen default"              "$MXNODE keygen >/dev/null"
-assert "keygen --output /tmp/...."    "$MXNODE keygen --for 5 --output /tmp/mxnode-test-keys >/dev/null"
-assert "keygen output produced .pem" "ls /tmp/mxnode-test-keys/*.pem >/dev/null 2>&1"
-assert "cleanup validator"           "$MXNODE cleanup --yes --execute >/dev/null"
+assert "keys generate default"              "$MXNODE keys generate >/dev/null"
+assert "keys generate --output /tmp/...."    "$MXNODE keys generate --for 5 --output /tmp/mxnode-test-keys >/dev/null"
+assert "keys generate output produced .pem" "ls /tmp/mxnode-test-keys/*.pem >/dev/null 2>&1"
+assert "uninstall validator"           "$MXNODE uninstall --yes --execute >/dev/null"
 cleanup_artifacts
 
 # ============================================================
@@ -421,19 +431,19 @@ cleanup_artifacts
 # ============================================================
 phase "P13  cleanup variations (--keep-binaries, --keep-config)"
 assert "install (cached binary)"     "$MXNODE install --role observer --count 1 --binary-tag $NODE_TAG --config-tag $CONFIG_TAG"
-assert "cleanup --keep-binaries"     "$MXNODE cleanup --yes --execute --keep-binaries >/dev/null"
+assert "uninstall --keep-binaries"     "$MXNODE uninstall --yes --execute --keep-binaries >/dev/null"
 assert "binstore preserved"          "[ -d $HOME/mxnode/binaries ]"
 assert "state removed"               "[ ! -d $HOME/.local/state/mxnode ]"
 assert "config removed"              "[ ! -f $HOME/.config/mxnode/mxnode.toml ]"
 
 assert "install (re-uses cached binary, fast)" \
     "$MXNODE install --role observer --count 1 --binary-tag $NODE_TAG --config-tag $CONFIG_TAG"
-assert "cleanup --keep-config"       "$MXNODE cleanup --yes --execute --keep-config >/dev/null"
+assert "uninstall --keep-config"       "$MXNODE uninstall --yes --execute --keep-config >/dev/null"
 assert "config preserved"            "[ -f $HOME/.config/mxnode/mxnode.toml ]"
 assert "binstore removed"            "[ ! -d $HOME/mxnode/binaries ]"
 
 # Final pristine
-assert "full cleanup"                "$MXNODE cleanup --yes --execute >/dev/null"
+assert "full cleanup"                "$MXNODE uninstall --yes --execute >/dev/null"
 assert "host pristine"               "[ ! -e $HOME/.config/mxnode ] && [ ! -e $HOME/.local/state/mxnode ] && [ ! -e $HOME/mxnode ] && [ ! -e $HOME/elrond-nodes ]"
 
 # ============================================================

@@ -699,9 +699,8 @@ mod tests {
     fn global(json: bool) -> GlobalArgs {
         GlobalArgs {
             config: None,
-            skip_safety_checks: false,
+            force: false,
             json,
-            no_color: false,
             verbose: false,
             quiet: false,
         no_update_check: true,

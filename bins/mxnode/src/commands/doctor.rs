@@ -114,7 +114,7 @@ pub fn run(args: DoctorArgs, global: &GlobalArgs) -> Result<(), CliError> {
     // semantics. Useful in CI (GitHub-hosted runners ship 86 GB free
     // disk vs. the 200 GB mainnet floor) and on dev boxes that just
     // want a sanity check without the full validator hardware spec.
-    if global.skip_safety_checks {
+    if global.force {
         for f in &mut findings {
             if f.severity == Severity::Error && f.check.starts_with("requirements.") {
                 f.severity = Severity::Warn;

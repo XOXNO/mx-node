@@ -1134,9 +1134,8 @@ mod tests {
     fn global() -> GlobalArgs {
         GlobalArgs {
             config: None,
-            skip_safety_checks: false,
+            force: false,
             json: false,
-            no_color: false,
             verbose: false,
             quiet: false,
         no_update_check: true,

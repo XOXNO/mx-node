@@ -76,7 +76,6 @@ fn should_skip(global: &GlobalArgs, command: &Command) -> bool {
         Command::Version
             | Command::SelfUpdate(_)
             | Command::Completions(_)
-            | Command::Dashboard(_)
             | Command::Metrics(_)
     ) || is_long_running_status_or_logs(command)
 }

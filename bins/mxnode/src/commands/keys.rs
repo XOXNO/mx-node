@@ -19,6 +19,12 @@ use crate::orchestrator::runtime::{CliErrorExt, Runtime};
 pub fn run_keys(cmd: KeysCommand, global: &GlobalArgs) -> Result<(), CliError> {
     match cmd {
         KeysCommand::Check => check(global),
+        // `Generate` and `Rename` are dispatched directly from
+        // `commands::dispatch` (they own their own handler modules),
+        // so this branch should never fire — but keep it defensive
+        // against future re-routing.
+        KeysCommand::Generate(args) => run_keygen(args, global),
+        KeysCommand::Rename(args) => super::rename::run(args, global),
     }
 }
 

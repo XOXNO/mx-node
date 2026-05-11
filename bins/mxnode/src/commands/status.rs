@@ -32,7 +32,7 @@ pub async fn run(args: StatusArgs, global: &GlobalArgs) -> Result<(), CliError> 
             tokio::time::sleep(Duration::from_secs(args.interval.max(1))).await;
             // Move cursor home + clear screen between repaints when stdout
             // is a TTY. Plain mode prints a blank line separator instead.
-            if std::io::stdout().is_terminal() && !global.no_color {
+            if std::io::stdout().is_terminal() && !no_color_env() {
                 let _ = std::io::stdout().write_all(b"\x1b[2J\x1b[H");
             } else {
                 println!();
@@ -41,6 +41,15 @@ pub async fn run(args: StatusArgs, global: &GlobalArgs) -> Result<(), CliError> 
     } else {
         paint_once(&store, &args, global).await
     }
+}
+
+/// Honour the [NO_COLOR](https://no-color.org/) convention. Any
+/// non-empty value disables colour; absent or empty allows colour
+/// when stdout is a TTY.
+fn no_color_env() -> bool {
+    std::env::var_os("NO_COLOR")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
 }
 
 async fn paint_once(
@@ -76,7 +85,7 @@ async fn paint_once(
     };
     match format {
         StatusFormat::Json => render_json(&state, &probes),
-        StatusFormat::Table => render_table(&state, &probes, !global.no_color),
+        StatusFormat::Table => render_table(&state, &probes, !no_color_env()),
     }
 
     Ok(())

@@ -18,6 +18,9 @@ pub fn run(cmd: ConfigCommand, global: &GlobalArgs) -> Result<(), CliError> {
         ConfigCommand::Validate { strict } => run_validate(strict, global),
         ConfigCommand::Set { path, value, scope } => set(path, value, scope, global),
         ConfigCommand::Edit { scope } => edit(scope, global),
+        // Dispatched directly in `commands::dispatch` — kept here as
+        // a defensive fallthrough for re-routing safety.
+        ConfigCommand::Apply(args) => super::reapply_config::run(args, global),
     }
 }
 

@@ -23,72 +23,78 @@ pub struct Cli {
 
 #[derive(Debug, Args)]
 pub struct GlobalArgs {
-    /// Override the config file path. By default, mxnode reads
-    /// `~/.config/mxnode/mxnode.toml` then `/etc/mxnode/mxnode.toml`.
+    /// Override the config file path. Default: `~/.config/mxnode/mxnode.toml`,
+    /// then `/etc/mxnode/mxnode.toml`.
     #[arg(long, global = true, value_name = "PATH")]
     pub config: Option<PathBuf>,
 
-    /// Bypass `config validate` and on-disk state checks. Use with care.
-    #[arg(long, global = true)]
-    pub skip_safety_checks: bool,
+    /// Bypass `config validate`, system-requirements gates, and on-disk
+    /// state checks. Use with care.
+    #[arg(long, global = true, alias = "skip-safety-checks")]
+    pub force: bool,
 
     /// Emit machine-readable JSON. Stable schema across releases.
-    /// When set, every command's output is JSON; takes precedence over any
-    /// per-command `--format` flag.
+    /// Takes precedence over per-command `--format`.
     #[arg(long, global = true)]
     pub json: bool,
 
-    /// Disable colour output, even on a TTY. Equivalent to setting
-    /// `NO_COLOR=1`. CI logs and `journalctl` consumers tend to lie about
-    /// being TTYs, so an explicit opt-out is necessary.
-    #[arg(long, global = true)]
-    pub no_color: bool,
-
-    #[arg(long, global = true)]
+    /// Verbose output (info-level structured events). Honoured by every
+    /// command. Mutually exclusive with `--quiet`.
+    #[arg(long, short = 'v', global = true)]
     pub verbose: bool,
 
-    #[arg(long, global = true, conflicts_with = "verbose")]
+    /// Suppress informational chatter. Errors still surface.
+    #[arg(long, short = 'q', global = true, conflicts_with = "verbose")]
     pub quiet: bool,
 
     /// Skip the once-per-day "is a newer mxnode out?" check. Useful in
-    /// CI, scripts, or when the operator wants offline determinism.
-    /// Equivalent to setting `MXNODE_NO_UPDATE_CHECK=1`.
+    /// CI, scripts, or for offline determinism. Equivalent to
+    /// `MXNODE_NO_UPDATE_CHECK=1`.
     #[arg(long, global = true, env = "MXNODE_NO_UPDATE_CHECK")]
     pub no_update_check: bool,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Install nodes from scratch. `--add N` extends an existing install.
+    Install(InstallArgs),
+
+    /// Upgrade (or downgrade) nodes to a different tag.
+    Upgrade(UpgradeArgs),
+
+    /// Remove nodes, units, and binaries. Inverse of `install`.
+    #[command(alias = "cleanup")]
+    Uninstall(CleanupArgs),
+
+    /// Start units.
+    Start(LifecycleArgs),
+
+    /// Stop units.
+    Stop(LifecycleArgs),
+
+    /// Restart units.
+    Restart(RestartArgs),
+
+    /// Health snapshot. `--watch` launches the live multi-node TUI.
+    Status(StatusArgs),
+
+    /// Tail or archive node logs.
+    Logs(LogsArgs),
+
+    /// Serve a Prometheus metrics endpoint.
+    Metrics(MetricsArgs),
+
     /// Configuration commands.
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
     },
 
-    /// Install nodes from scratch.
-    Install(InstallArgs),
-
-    /// Add more nodes to an existing install.
-    AddNodes(AddNodesArgs),
-
-    /// Start units.
-    Start(LifecycleArgs),
-    /// Stop units.
-    Stop(LifecycleArgs),
-    /// Restart units.
-    Restart(RestartArgs),
-    /// Show install + per-node health snapshot.
-    Status(StatusArgs),
-    /// Tail or archive node logs.
-    Logs(LogsArgs),
-    /// Serve a Prometheus metrics endpoint.
-    Metrics(MetricsArgs),
-
-    /// Upgrade (or downgrade) nodes to a different tag. To go back to
-    /// an old version, pass `--binary-tag <T>` for any T already in
-    /// the binstore — the acquirer reuses the cached binary instead of
-    /// re-downloading.
-    Upgrade(UpgradeArgs),
+    /// Key management (check, generate, rename).
+    Keys {
+        #[command(subcommand)]
+        command: KeysCommand,
+    },
 
     /// Database commands.
     Db {
@@ -96,53 +102,18 @@ pub enum Command {
         command: DbCommand,
     },
 
-    /// Run the bundled assessment benchmark.
-    Benchmark,
-
-    /// Run keygenerator (utility wrapper around mx-chain-go's keygen).
-    Keygen(KeygenArgs),
-
-    /// Run the installed seednode utility.
-    Seednode(SeednodeArgs),
-
-    /// Key management.
-    Keys {
-        #[command(subcommand)]
-        command: KeysCommand,
-    },
-
-    /// Re-apply per-node TOML edits (display name, observer pins, and any
-    /// `[overrides.prefs]` / `[overrides.config]` from your config) without
-    /// touching binaries or restarting units.
-    ReapplyConfig(ReapplyConfigArgs),
-
-    /// Rename a single node's `NodeDisplayName` in both `mxnode.toml` and
-    /// the on-disk `prefs.toml`. Unlike a hand-edit of `prefs.toml`, the
-    /// new name is persisted in `mxnode.toml` so subsequent
-    /// `reapply-config` / `upgrade` passes preserve it.
-    Rename(RenameArgs),
-
-    /// Live multi-node dashboard (ratatui). Better-than-termui replacement.
-    Dashboard(DashboardArgs),
-
-    /// Remove nodes, units, and binaries.
-    Cleanup(CleanupArgs),
-
-    /// Import an existing `mx-chain-scripts` (bash) install into mxnode's
-    /// `mxnode.toml`. Dry-run by default; pass `--execute` to write.
-    MigrateBash(crate::commands::migrate::MigrateBashArgs),
-
-    /// Full host diagnostic; suggests fixes.
+    /// Full host diagnostic. `--benchmark` runs the bundled assessment too.
     Doctor(DoctorArgs),
+
+    /// Import an existing bash install into `mxnode.toml`.
+    #[command(alias = "migrate-bash")]
+    ImportBash(crate::commands::migrate::MigrateBashArgs),
+
+    /// Update the mxnode binary.
+    SelfUpdate(SelfUpdateArgs),
 
     /// Generate shell completion scripts.
     Completions(CompletionsArgs),
-
-    /// Replace this `mxnode` binary with the latest (or a pinned) release
-    /// from `XOXNO/mx-node`. Verifies the download against `SHA256SUMS`
-    /// and falls back to `sudo install` when the install dir is
-    /// root-owned (typical for `/usr/local/bin`).
-    SelfUpdate(SelfUpdateArgs),
 
     /// Print version (also available via --version).
     Version,
@@ -196,6 +167,10 @@ pub enum ConfigCommand {
         #[arg(long)]
         strict: bool,
     },
+    /// Re-apply per-node config overrides without touching binaries
+    /// or restarting units. Was `mxnode reapply-config`.
+    #[command(alias = "reapply")]
+    Apply(ReapplyConfigArgs),
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -212,6 +187,16 @@ pub enum Scope {
 
 #[derive(Debug, Args)]
 pub struct InstallArgs {
+    /// Extend an existing install by N more nodes instead of doing a
+    /// fresh install. Bare `--add` means 1; pass `--add 3` for three.
+    /// Was the top-level `mxnode add-nodes` command.
+    #[arg(
+        long,
+        value_name = "N",
+        num_args = 0..=1,
+        default_missing_value = "1",
+    )]
+    pub add: Option<u16>,
     /// Number of nodes to install. Ignored when `--squad` is set, and
     /// rejected for `--role multikey` (multikey is always a 4-shard
     /// squad by design). Defaults to 1.
@@ -574,17 +559,6 @@ pub struct KeygenArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct SeednodeArgs {
-    /// Print the command that would run instead of starting seednode.
-    #[arg(long)]
-    pub dry_run: bool,
-    /// Arguments passed to the upstream seednode binary. Use `--` before
-    /// seednode flags, e.g. `mxnode seednode -- --help`.
-    #[arg(last = true, allow_hyphen_values = true)]
-    pub args: Vec<String>,
-}
-
-#[derive(Debug, Args)]
 pub struct DoctorArgs {
     /// Apply a known fix to the host. Currently only `journald` is
     /// supported (caps `/etc/systemd/journald.conf` retention so node
@@ -593,6 +567,10 @@ pub struct DoctorArgs {
     /// system mutation occurs.
     #[arg(long, value_enum)]
     pub fix: Option<DoctorFix>,
+    /// Also run the bundled host-assessment benchmark (CPU + memory
+    /// + disk IO). Was the top-level `mxnode benchmark` command.
+    #[arg(long)]
+    pub benchmark: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -604,6 +582,12 @@ pub enum DoctorFix {
 pub enum KeysCommand {
     /// Verify that node-{INDEX}.zip is present for every node.
     Check,
+    /// Run keygenerator (wrapper around mx-chain-go's keygen).
+    /// Was top-level `mxnode keygen`.
+    #[command(alias = "keygen")]
+    Generate(KeygenArgs),
+    /// Rename a node's `NodeDisplayName`. Was top-level `mxnode rename`.
+    Rename(RenameArgs),
 }
 
 #[derive(Debug, Args)]
@@ -855,46 +839,49 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_dry_run_default_is_safe() {
-        let cli = Cli::try_parse_from(["mxnode", "cleanup", "--yes"]).unwrap();
-        match cli.command {
-            Command::Cleanup(args) => {
-                assert!(args.yes);
-                assert!(!args.execute);
-                assert!(
-                    !args.should_execute(),
-                    "cleanup must default to dry-run; only --execute opts in",
-                );
+    fn uninstall_dry_run_default_is_safe() {
+        // The `cleanup` alias is preserved so muscle-memory typists
+        // and existing scripts keep working — exercise both spellings.
+        for argv in [
+            ["mxnode", "uninstall", "--yes"],
+            ["mxnode", "cleanup", "--yes"],
+        ] {
+            let cli = Cli::try_parse_from(argv).unwrap();
+            match cli.command {
+                Command::Uninstall(args) => {
+                    assert!(args.yes);
+                    assert!(!args.execute);
+                    assert!(
+                        !args.should_execute(),
+                        "uninstall must default to dry-run; only --execute opts in",
+                    );
+                }
+                other => panic!("expected Uninstall, got {other:?}"),
             }
-            other => panic!("expected Cleanup, got {other:?}"),
         }
     }
 
     #[test]
-    fn cleanup_with_execute_actually_executes() {
-        let cli = Cli::try_parse_from(["mxnode", "cleanup", "--yes", "--execute"]).unwrap();
+    fn uninstall_with_execute_actually_executes() {
+        let cli =
+            Cli::try_parse_from(["mxnode", "uninstall", "--yes", "--execute"]).unwrap();
         match cli.command {
-            Command::Cleanup(args) => {
+            Command::Uninstall(args) => {
                 assert!(args.execute);
                 assert!(args.should_execute());
             }
-            other => panic!("expected Cleanup, got {other:?}"),
+            other => panic!("expected Uninstall, got {other:?}"),
         }
     }
 
     #[test]
-    fn cleanup_execute_and_dry_run_conflict() {
-        let result = Cli::try_parse_from(["mxnode", "cleanup", "--yes", "--execute", "--dry-run"]);
+    fn uninstall_execute_and_dry_run_conflict() {
+        let result =
+            Cli::try_parse_from(["mxnode", "uninstall", "--yes", "--execute", "--dry-run"]);
         assert!(
             result.is_err(),
             "--execute and --dry-run must be mutually exclusive"
         );
-    }
-
-    #[test]
-    fn no_color_flag_is_globally_available() {
-        let cli = Cli::try_parse_from(["mxnode", "--no-color", "version"]).unwrap();
-        assert!(cli.global.no_color);
     }
 
     #[test]
@@ -1019,24 +1006,73 @@ mod tests {
     }
 
     #[test]
-    fn seednode_passes_trailing_args() {
-        let cli = Cli::try_parse_from(["mxnode", "seednode", "--", "--help"]).unwrap();
-        match cli.command {
-            Command::Seednode(args) => assert_eq!(args.args, vec!["--help"]),
-            other => panic!("expected Seednode, got {other:?}"),
+    fn seednode_subcommand_is_gone() {
+        // The wrapper around the upstream `seednode` binary was a pure
+        // passthrough. Operators on a post-install host invoke it
+        // directly from `<custom_home>/elrond-utils/seednode/seednode`.
+        let result = Cli::try_parse_from(["mxnode", "seednode", "--help"]);
+        assert!(
+            result.is_err(),
+            "`mxnode seednode` must no longer be a recognised subcommand",
+        );
+    }
+
+    #[test]
+    fn install_add_extends_existing_install() {
+        // `mxnode install --add 3` is the replacement for the old
+        // top-level `mxnode add-nodes --count 3`. Bare `--add` defaults
+        // to 1 node.
+        let bare = Cli::try_parse_from(["mxnode", "install", "--add"]).unwrap();
+        let three = Cli::try_parse_from(["mxnode", "install", "--add", "3"]).unwrap();
+        for (cli, expected) in [(bare, Some(1)), (three, Some(3))] {
+            match cli.command {
+                Command::Install(args) => assert_eq!(args.add, expected),
+                other => panic!("expected Install, got {other:?}"),
+            }
         }
     }
 
     #[test]
-    fn seednode_dry_run_keeps_trailing_args() {
-        let cli = Cli::try_parse_from(["mxnode", "seednode", "--dry-run", "--", "--port", "12000"])
-            .unwrap();
-        match cli.command {
-            Command::Seednode(args) => {
-                assert!(args.dry_run);
-                assert_eq!(args.args, vec!["--port", "12000"]);
-            }
-            other => panic!("expected Seednode, got {other:?}"),
+    fn keys_generate_replaces_top_level_keygen() {
+        // Both spellings parse — `keygen` is a clap alias on the
+        // `Generate` subcommand to honour muscle memory through this
+        // release.
+        for argv in [
+            ["mxnode", "keys", "generate"],
+            ["mxnode", "keys", "keygen"],
+        ] {
+            let cli = Cli::try_parse_from(argv).unwrap();
+            assert!(matches!(
+                cli.command,
+                Command::Keys {
+                    command: KeysCommand::Generate(_)
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn config_apply_replaces_reapply_config() {
+        // Both spellings parse — `reapply` is a clap alias.
+        for argv in [
+            ["mxnode", "config", "apply"],
+            ["mxnode", "config", "reapply"],
+        ] {
+            let cli = Cli::try_parse_from(argv).unwrap();
+            assert!(matches!(
+                cli.command,
+                Command::Config {
+                    command: ConfigCommand::Apply(_)
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn import_bash_aliases_migrate_bash() {
+        for argv in [["mxnode", "import-bash"], ["mxnode", "migrate-bash"]] {
+            let cli = Cli::try_parse_from(argv).unwrap();
+            assert!(matches!(cli.command, Command::ImportBash(_)));
         }
     }
 }
