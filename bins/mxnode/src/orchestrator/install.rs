@@ -1,6 +1,5 @@
 //! Install orchestration shared by `mxnode install` (fresh) and
-//! `mxnode install --add N` (extend an existing install — was
-//! `mxnode add-nodes`).
+//! `mxnode install --add N` (extend an existing install).
 //!
 //! Phase 3 carries forward the bash mental model:
 //!   1. acquire node (and proxy / keygenerator) binaries
@@ -579,7 +578,7 @@ pub(crate) struct NodeTomlEdit<'a> {
     pub edits: ConfigEdits,
     pub role: Role,
     /// `Some(level)` stamps `RedundancyLevel = level` for multikey roles.
-    /// `None` means "don't touch" — used by `reapply-config` so an
+    /// `None` means "don't touch" — used by `config apply` so an
     /// operator's hand-edited value survives a re-apply pass.
     pub redundancy_level: Option<u8>,
     pub prefs_overrides: &'a BTreeMap<String, toml::Value>,
@@ -634,7 +633,7 @@ pub(crate) fn apply_node_tomledit(input: NodeTomlEdit<'_>) -> Result<(), Install
         // decision; validators write only when level > 0 to keep the
         // upstream prefs.toml default untouched in the common case.
         // Observers never get the field — they don't sign at all.
-        // `reapply-config` passes `None` so re-applying never clobbers
+        // `config apply` passes `None` so re-applying never clobbers
         // an operator's hand-edited value.
         if let Some(level) = redundancy_level {
             let stamp = match role {
@@ -960,7 +959,7 @@ mod tests {
         assert!(prefs.contains("DestinationShardAsObserver = \"0\""));
     }
 
-    /// reapply-config passes `redundancy_level: None` to keep operator
+    /// `config apply` passes `redundancy_level: None` to keep operator
     /// hand-edits intact. Even on a multikey node, `None` must leave
     /// the existing `RedundancyLevel` line alone.
     #[test]

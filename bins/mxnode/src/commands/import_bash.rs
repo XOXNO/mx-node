@@ -1,7 +1,8 @@
-//! `mxnode import-bash` (alias: `migrate-bash`): import an existing `mx-chain-scripts` (bash) install
-//! into mxnode's cache-derived `mxnode.toml` and (optionally) merge
-//! operator-customised settings from the bash `variables.cfg` and the
-//! rendered systemd unit files into `~/.config/mxnode/mxnode.toml`.
+//! `mxnode import-bash`: import an existing `mx-chain-scripts` (bash)
+//! install into mxnode's cache-derived `mxnode.toml` and (optionally)
+//! merge operator-customised settings from the bash `variables.cfg`
+//! and the rendered systemd unit files into
+//! `~/.config/mxnode/mxnode.toml`.
 //!
 //! Three sources are consulted, all read-only — bash files on disk are
 //! never modified:
@@ -178,7 +179,7 @@ pub fn infer_state_from_bash(custom_home: &Path) -> Result<HostState, MigrateErr
         None
     };
 
-    let mut state = HostState::empty("mxnode/migrate-bash");
+    let mut state = HostState::empty("mxnode/import-bash");
     state.discovered = true;
     state.install = Some(HostInstall::observed(
         kind,
@@ -1009,7 +1010,7 @@ fn auto_detect_custom_home() -> Option<PathBuf> {
 // ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Args)]
-pub struct MigrateBashArgs {
+pub struct ImportBashArgs {
     /// Path to the bash `$CUSTOM_HOME` to import. Defaults to
     /// `paths.custom_home` from the resolved mxnode config (mirrors the
     /// bash `CUSTOM_HOME` variable).
@@ -1053,7 +1054,7 @@ pub struct MigrateBashArgs {
 /// host's bash-derived install paths unmigrated. Instead, we load
 /// any existing mxnode.toml directly (no auto-init), and treat its
 /// absence as "fresh host → use schema defaults as the baseline."
-pub fn run(args: MigrateBashArgs, global: &GlobalArgs) -> Result<(), CliError> {
+pub fn run(args: ImportBashArgs, global: &GlobalArgs) -> Result<(), CliError> {
     let opts = LoadOptions {
         config_path: global.config.clone(),
         flags_overlay: None,

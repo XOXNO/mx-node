@@ -8,7 +8,7 @@
 //! Returns the path to the clone; the caller is responsible for copying
 //! the contents into per-node working directories. The config repo is
 //! cached per-tag under `{paths.binaries}/config-repos/<env>/<tag>` so
-//! subsequent `add-nodes` calls don't re-clone.
+//! subsequent `install --add` calls don't re-clone.
 
 use std::path::{Path, PathBuf};
 

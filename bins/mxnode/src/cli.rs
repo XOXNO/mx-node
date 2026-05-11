@@ -30,7 +30,7 @@ pub struct GlobalArgs {
 
     /// Bypass `config validate`, system-requirements gates, and on-disk
     /// state checks. Use with care.
-    #[arg(long, global = true, alias = "skip-safety-checks")]
+    #[arg(long, global = true)]
     pub force: bool,
 
     /// Emit machine-readable JSON. Stable schema across releases.
@@ -63,8 +63,7 @@ pub enum Command {
     Upgrade(UpgradeArgs),
 
     /// Remove nodes, units, and binaries. Inverse of `install`.
-    #[command(alias = "cleanup")]
-    Uninstall(CleanupArgs),
+    Uninstall(UninstallArgs),
 
     /// Start units.
     Start(LifecycleArgs),
@@ -106,8 +105,7 @@ pub enum Command {
     Doctor(DoctorArgs),
 
     /// Import an existing bash install into `mxnode.toml`.
-    #[command(alias = "migrate-bash")]
-    ImportBash(crate::commands::migrate::MigrateBashArgs),
+    ImportBash(crate::commands::import_bash::ImportBashArgs),
 
     /// Update the mxnode binary.
     SelfUpdate(SelfUpdateArgs),
@@ -168,9 +166,8 @@ pub enum ConfigCommand {
         strict: bool,
     },
     /// Re-apply per-node config overrides without touching binaries
-    /// or restarting units. Was `mxnode reapply-config`.
-    #[command(alias = "reapply")]
-    Apply(ReapplyConfigArgs),
+    /// or restarting units.
+    Apply(ConfigApplyArgs),
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -189,7 +186,6 @@ pub enum Scope {
 pub struct InstallArgs {
     /// Extend an existing install by N more nodes instead of doing a
     /// fresh install. Bare `--add` means 1; pass `--add 3` for three.
-    /// Was the top-level `mxnode add-nodes` command.
     #[arg(
         long,
         value_name = "N",
@@ -268,7 +264,7 @@ pub struct InstallArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct AddNodesArgs {
+pub struct InstallAddArgs {
     #[arg(long, default_value_t = 1)]
     pub count: u16,
     #[arg(long, value_enum)]
@@ -551,7 +547,7 @@ pub enum DbCommand {
 }
 
 #[derive(Debug, Args)]
-pub struct KeygenArgs {
+pub struct KeysGenerateArgs {
     #[arg(long, value_name = "INDEX")]
     pub r#for: Option<u16>,
     #[arg(long)]
@@ -568,7 +564,7 @@ pub struct DoctorArgs {
     #[arg(long, value_enum)]
     pub fix: Option<DoctorFix>,
     /// Also run the bundled host-assessment benchmark (CPU + memory
-    /// + disk IO). Was the top-level `mxnode benchmark` command.
+    /// + disk IO).
     #[arg(long)]
     pub benchmark: bool,
 }
@@ -583,11 +579,9 @@ pub enum KeysCommand {
     /// Verify that node-{INDEX}.zip is present for every node.
     Check,
     /// Run keygenerator (wrapper around mx-chain-go's keygen).
-    /// Was top-level `mxnode keygen`.
-    #[command(alias = "keygen")]
-    Generate(KeygenArgs),
-    /// Rename a node's `NodeDisplayName`. Was top-level `mxnode rename`.
-    Rename(RenameArgs),
+    Generate(KeysGenerateArgs),
+    /// Rename a node's `NodeDisplayName`.
+    Rename(KeysRenameArgs),
 }
 
 #[derive(Debug, Args)]
@@ -597,7 +591,7 @@ pub struct CompletionsArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct CleanupArgs {
+pub struct UninstallArgs {
     /// Required to confirm intent. Without it, the command refuses.
     #[arg(long)]
     pub yes: bool,
@@ -623,7 +617,7 @@ pub struct CleanupArgs {
     pub dry_run: bool,
 }
 
-impl CleanupArgs {
+impl UninstallArgs {
     /// Returns true when cleanup should actually mutate the host.
     pub fn should_execute(&self) -> bool {
         self.execute && !self.dry_run
@@ -651,7 +645,7 @@ pub struct DashboardArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct ReapplyConfigArgs {
+pub struct ConfigApplyArgs {
     /// Restart units after the per-node edits land. Off by default — most
     /// operator overrides take effect on the next natural restart, and we
     /// don't want a config-only command surprising validators with a
@@ -679,7 +673,7 @@ pub struct SelfUpdateArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct RenameArgs {
+pub struct KeysRenameArgs {
     /// Node index to rename. Must exist in `mxnode.toml`.
     #[arg(long)]
     pub node: u16,
@@ -840,24 +834,17 @@ mod tests {
 
     #[test]
     fn uninstall_dry_run_default_is_safe() {
-        // The `cleanup` alias is preserved so muscle-memory typists
-        // and existing scripts keep working — exercise both spellings.
-        for argv in [
-            ["mxnode", "uninstall", "--yes"],
-            ["mxnode", "cleanup", "--yes"],
-        ] {
-            let cli = Cli::try_parse_from(argv).unwrap();
-            match cli.command {
-                Command::Uninstall(args) => {
-                    assert!(args.yes);
-                    assert!(!args.execute);
-                    assert!(
-                        !args.should_execute(),
-                        "uninstall must default to dry-run; only --execute opts in",
-                    );
-                }
-                other => panic!("expected Uninstall, got {other:?}"),
+        let cli = Cli::try_parse_from(["mxnode", "uninstall", "--yes"]).unwrap();
+        match cli.command {
+            Command::Uninstall(args) => {
+                assert!(args.yes);
+                assert!(!args.execute);
+                assert!(
+                    !args.should_execute(),
+                    "uninstall must default to dry-run; only --execute opts in",
+                );
             }
+            other => panic!("expected Uninstall, got {other:?}"),
         }
     }
 
@@ -1006,22 +993,8 @@ mod tests {
     }
 
     #[test]
-    fn seednode_subcommand_is_gone() {
-        // The wrapper around the upstream `seednode` binary was a pure
-        // passthrough. Operators on a post-install host invoke it
-        // directly from `<custom_home>/elrond-utils/seednode/seednode`.
-        let result = Cli::try_parse_from(["mxnode", "seednode", "--help"]);
-        assert!(
-            result.is_err(),
-            "`mxnode seednode` must no longer be a recognised subcommand",
-        );
-    }
-
-    #[test]
     fn install_add_extends_existing_install() {
-        // `mxnode install --add 3` is the replacement for the old
-        // top-level `mxnode add-nodes --count 3`. Bare `--add` defaults
-        // to 1 node.
+        // Bare `--add` defaults to 1 node; `--add N` extends by N.
         let bare = Cli::try_parse_from(["mxnode", "install", "--add"]).unwrap();
         let three = Cli::try_parse_from(["mxnode", "install", "--add", "3"]).unwrap();
         for (cli, expected) in [(bare, Some(1)), (three, Some(3))] {
@@ -1033,46 +1006,30 @@ mod tests {
     }
 
     #[test]
-    fn keys_generate_replaces_top_level_keygen() {
-        // Both spellings parse — `keygen` is a clap alias on the
-        // `Generate` subcommand to honour muscle memory through this
-        // release.
-        for argv in [
-            ["mxnode", "keys", "generate"],
-            ["mxnode", "keys", "keygen"],
-        ] {
-            let cli = Cli::try_parse_from(argv).unwrap();
-            assert!(matches!(
-                cli.command,
-                Command::Keys {
-                    command: KeysCommand::Generate(_)
-                }
-            ));
-        }
+    fn keys_generate_parses() {
+        let cli = Cli::try_parse_from(["mxnode", "keys", "generate"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Keys {
+                command: KeysCommand::Generate(_)
+            }
+        ));
     }
 
     #[test]
-    fn config_apply_replaces_reapply_config() {
-        // Both spellings parse — `reapply` is a clap alias.
-        for argv in [
-            ["mxnode", "config", "apply"],
-            ["mxnode", "config", "reapply"],
-        ] {
-            let cli = Cli::try_parse_from(argv).unwrap();
-            assert!(matches!(
-                cli.command,
-                Command::Config {
-                    command: ConfigCommand::Apply(_)
-                }
-            ));
-        }
+    fn config_apply_parses() {
+        let cli = Cli::try_parse_from(["mxnode", "config", "apply"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Config {
+                command: ConfigCommand::Apply(_)
+            }
+        ));
     }
 
     #[test]
-    fn import_bash_aliases_migrate_bash() {
-        for argv in [["mxnode", "import-bash"], ["mxnode", "migrate-bash"]] {
-            let cli = Cli::try_parse_from(argv).unwrap();
-            assert!(matches!(cli.command, Command::ImportBash(_)));
-        }
+    fn import_bash_parses() {
+        let cli = Cli::try_parse_from(["mxnode", "import-bash"]).unwrap();
+        assert!(matches!(cli.command, Command::ImportBash(_)));
     }
 }

@@ -1,12 +1,12 @@
-//! `mxnode keys rename --node N --to NAME [--restart]` (was top-level
-//! `mxnode rename`): change one node's `NodeDisplayName` in both
-//! `mxnode.toml` and the on-disk `prefs.toml` atomically.
+//! `mxnode keys rename --node N --to NAME [--restart]`: change one
+//! node's `NodeDisplayName` in both `mxnode.toml` and the on-disk
+//! `prefs.toml` atomically.
 //!
 //! The persisted `display_name` is what `config apply` and `upgrade`
 //! reapply on every subsequent edit pass — so renaming through this
 //! command sticks across re-templates. By contrast, hand-editing
 //! `prefs.toml` directly will be overwritten the next time
-//! `reapply-config` runs against a state that still has the old name
+//! `config apply` runs against a state that still has the old name
 //! persisted.
 
 use std::fs;
@@ -16,14 +16,14 @@ use mxnode_state::StateStore;
 use mxnode_systemd::{set_node_display_name, Ctl};
 use toml_edit::DocumentMut;
 
-use crate::cli::{GlobalArgs, RenameArgs};
+use crate::cli::{GlobalArgs, KeysRenameArgs};
 use crate::errors::CliError;
 use crate::events::{global_op, node_op_end, node_op_start, Outcome};
 use crate::orchestrator::runtime::{CliErrorExt, Runtime};
 use crate::orchestrator::supervisor::build_supervisor;
 
 #[tokio::main(flavor = "current_thread")]
-pub async fn run(args: RenameArgs, global: &GlobalArgs) -> Result<(), CliError> {
+pub async fn run(args: KeysRenameArgs, global: &GlobalArgs) -> Result<(), CliError> {
     let new_name = args.to.trim().to_string();
     if new_name.is_empty() {
         return Err(CliError::new(

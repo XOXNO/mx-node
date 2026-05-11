@@ -1,4 +1,4 @@
-//! `mxnode status --watch` (was top-level `mxnode dashboard`): multi-node ratatui live dashboard.
+//! `mxnode status --watch`: multi-node ratatui live dashboard.
 //!
 //! Reads mxnode.toml + the operator's config to build a per-node spec
 //! (label / unit / api port / workdir) then hands off to mxnode-tui.

@@ -1,4 +1,4 @@
-//! `mxnode config apply` (was top-level `mxnode reapply-config`): walk every node in `mxnode.toml` and re-run
+//! `mxnode config apply`: walk every node in `mxnode.toml` and re-run
 //! the per-node TOML edit pass — display name from the template,
 //! observer-shape edits where applicable, and the operator's
 //! `[overrides.prefs]` / `[overrides.config]` map.
@@ -16,7 +16,7 @@ use mxnode_state::StateStore;
 use mxnode_systemd::Ctl;
 use serde::Serialize;
 
-use crate::cli::{GlobalArgs, ReapplyConfigArgs};
+use crate::cli::{GlobalArgs, ConfigApplyArgs};
 use crate::commands::prompts::resolve_display_name;
 use crate::errors::CliError;
 use crate::events::global_op;
@@ -25,7 +25,7 @@ use crate::orchestrator::runtime::{CliErrorExt, Runtime};
 use crate::orchestrator::supervisor::build_supervisor;
 
 #[tokio::main(flavor = "current_thread")]
-pub async fn run(args: ReapplyConfigArgs, global: &GlobalArgs) -> Result<(), CliError> {
+pub async fn run(args: ConfigApplyArgs, global: &GlobalArgs) -> Result<(), CliError> {
     let runtime = Runtime::from_global(global)?;
     let store = StateStore::new(&runtime.paths.config_dir);
     let state = store
@@ -87,7 +87,7 @@ pub async fn run(args: ReapplyConfigArgs, global: &GlobalArgs) -> Result<(), Cli
     let template = &runtime.loaded.file.node.name_template;
 
     global_op(
-        "reapply-config",
+        "config apply",
         &format!(
             "{} node(s); {} prefs / {} config override(s)",
             selected.len(),
@@ -110,7 +110,7 @@ pub async fn run(args: ReapplyConfigArgs, global: &GlobalArgs) -> Result<(), Cli
             install.environment.as_str(),
             node.index.get(),
         );
-        // reapply-config preserves the operator's `RedundancyLevel`
+        // `config apply` preserves the operator's `RedundancyLevel`
         // by passing `None`: only install-time stamps the value, and
         // re-applying overrides should never silently reset it.
         // Operators who need to flip primary↔backup edit prefs.toml

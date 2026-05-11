@@ -45,12 +45,9 @@ mod tests {
         clap_complete::generate(clap_complete::Shell::Bash, &mut cmd, "mxnode", &mut out);
         let body = String::from_utf8(out).unwrap();
         assert!(body.contains("mxnode"));
-        // The bash-install importer is now `import-bash` (alias:
-        // `migrate-bash`). Either name in the completion script
-        // satisfies muscle memory + new spelling discoverability.
         assert!(
-            body.contains("import-bash") || body.contains("migrate-bash"),
-            "expected import-bash (or alias migrate-bash) in completions:\n{body}",
+            body.contains("import-bash"),
+            "expected import-bash in completions:\n{body}",
         );
         assert!(body.contains("completions"));
     }

@@ -306,8 +306,8 @@ pub struct NodeOverride {
 // ─────────────────────────────────────────────────────────────────────
 
 /// Cache-derived view of what's actually installed on the host. Never
-/// edited by hand. `mxnode adopt` / `migrate-bash` populate it; commands
-/// like `install` / `upgrade` mutate it; `status` / `dashboard` read it.
+/// edited by hand. `mxnode adopt` / `import-bash` populate it; commands
+/// like `install` / `upgrade` mutate it; `status` reads it.
 ///
 /// The `schema_version` field is kept here (in addition to the one on
 /// [`MxnodeFile`]) so the existing `StateStore` save/load pipeline keeps
@@ -322,7 +322,7 @@ pub struct HostState {
     pub written_by: String,
     /// True iff this snapshot came from a `rebuild_from_disk` pass.
     pub discovered: bool,
-    /// `None` until adopt / migrate-bash records observed reality. Never
+    /// `None` until adopt / import-bash records observed reality. Never
     /// fabricated — cache-derived model requires observation.
     #[serde(default)]
     pub install: Option<HostInstall>,
@@ -379,7 +379,7 @@ pub struct HostInstall {
 
 impl HostInstall {
     /// Build from observed reality. There is intentionally no `Default`
-    /// — `mxnode adopt` / `migrate-bash` must supply the environment,
+    /// — `mxnode adopt` / `import-bash` must supply the environment,
     /// kind, and org explicitly.
     pub fn observed(
         kind: InstallKind,

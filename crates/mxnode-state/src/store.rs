@@ -98,7 +98,7 @@ impl StateStore {
 
     /// True iff the file exists *and* the `[host]` section is
     /// populated (an install or at least one node has been recorded).
-    /// This is what commands like `install` and `migrate-bash` use to
+    /// This is what commands like `install` and `import-bash` use to
     /// guard against clobbering an existing install — the file alone
     /// is not evidence of an install since `mxnode config` writes
     /// operator-only sections too.
@@ -114,7 +114,7 @@ impl StateStore {
     /// (no install, no nodes) — the latter case preserves the
     /// pre-unified `mxnode.toml` semantics where "file absent" meant
     /// "host not yet initialized". Callers seed defaults or run
-    /// `mxnode adopt` / `migrate-bash` to populate it.
+    /// `mxnode adopt` / `import-bash` to populate it.
     ///
     /// Backwards-compatible with the pre-unified API: callers receive
     /// [`HostState`] (aliased as `HostState`) and continue to access

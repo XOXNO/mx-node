@@ -35,7 +35,7 @@ fi
 # Subcommands clap would recognise as the first positional after
 # `mxnode`. Used to filter lines that just happen to mention `mxnode`
 # in prose.
-SUBCOMMANDS="config install add-nodes start stop restart status logs metrics upgrade db benchmark keygen keys reapply-config dashboard cleanup doctor version help"
+SUBCOMMANDS="config install start stop restart status logs metrics upgrade db keys uninstall doctor import-bash self-update completions version help"
 
 PASS=0
 FAIL=0

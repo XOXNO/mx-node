@@ -1,9 +1,10 @@
-//! `mxnode keys check`, `mxnode keys generate` (was `mxnode keygen`), and `mxnode keys rename` (was top-level `mxnode rename`).
+//! `mxnode keys check`, `mxnode keys generate`, and `mxnode keys rename`.
 //!
-//! `keys check` reports whether `node-{INDEX}.zip` is present for every node
-//! in `mxnode.toml`. `keygen` shells out to the keygenerator binary that
-//! `mxnode install` (Phase 3) puts under `$CUSTOM_HOME/elrond-utils/`. We
-//! refuse cleanly if the binary isn't there yet.
+//! `keys check` reports whether `node-{INDEX}.zip` is present for every
+//! node in `mxnode.toml`. `keys generate` shells out to the keygenerator
+//! binary that `mxnode install` (Phase 3) puts under
+//! `$CUSTOM_HOME/elrond-utils/`. We refuse cleanly if the binary isn't
+//! there yet.
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -12,7 +13,7 @@ use mxnode_core::Role;
 use mxnode_state::StateStore;
 use serde::Serialize;
 
-use crate::cli::{GlobalArgs, KeygenArgs, KeysCommand};
+use crate::cli::{GlobalArgs, KeysGenerateArgs, KeysCommand};
 use crate::errors::CliError;
 use crate::orchestrator::runtime::{CliErrorExt, Runtime};
 
@@ -20,15 +21,14 @@ pub fn run_keys(cmd: KeysCommand, global: &GlobalArgs) -> Result<(), CliError> {
     match cmd {
         KeysCommand::Check => check(global),
         // `Generate` and `Rename` are dispatched directly from
-        // `commands::dispatch` (they own their own handler modules),
-        // so this branch should never fire — but keep it defensive
-        // against future re-routing.
-        KeysCommand::Generate(args) => run_keygen(args, global),
-        KeysCommand::Rename(args) => super::rename::run(args, global),
+        // `commands::dispatch`; this branch only fires if a future
+        // re-route ever sends them here, so we keep it defensive.
+        KeysCommand::Generate(args) => run_generate(args, global),
+        KeysCommand::Rename(args) => super::keys_rename::run(args, global),
     }
 }
 
-pub fn run_keygen(args: KeygenArgs, global: &GlobalArgs) -> Result<(), CliError> {
+pub fn run_generate(args: KeysGenerateArgs, global: &GlobalArgs) -> Result<(), CliError> {
     let runtime = Runtime::from_global(global)?;
     let binary = runtime.paths.elrond_utils_root().join("keygenerator");
     if !binary.exists() {

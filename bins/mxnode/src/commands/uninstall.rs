@@ -1,7 +1,6 @@
-//! `mxnode uninstall` (was `mxnode cleanup`): full host cleanup — stop + disable units, remove unit
-//! files, remove `elrond-nodes/`/`elrond-proxy/`/`elrond-utils/`, drop
-//! mxnode.toml. Defaults to dry-run for the first two minor releases per
-//! the plan.
+//! `mxnode uninstall`: full host cleanup — stop + disable units, remove
+//! unit files, remove `elrond-nodes/`/`elrond-proxy/`/`elrond-utils/`,
+//! drop mxnode.toml. Defaults to dry-run.
 //!
 //! Dry-run mode is the safe default: pass `--execute` to actually delete.
 //! `--yes` is a separate gate so even with `--execute` we still require a
@@ -16,14 +15,14 @@ use mxnode_state::StateStore;
 use mxnode_systemd::Ctl; // trait used by `Step::apply` parameter
 use serde::Serialize;
 
-use crate::cli::{CleanupArgs, GlobalArgs};
+use crate::cli::{UninstallArgs, GlobalArgs};
 use crate::errors::CliError;
 use crate::events::global_op;
 use crate::orchestrator::runtime::{CliErrorExt, Runtime};
 use crate::orchestrator::supervisor::{unit_dir_for_platform, unit_filename};
 
 #[tokio::main(flavor = "current_thread")]
-pub async fn run(args: CleanupArgs, global: &GlobalArgs) -> Result<(), CliError> {
+pub async fn run(args: UninstallArgs, global: &GlobalArgs) -> Result<(), CliError> {
     let runtime = Runtime::from_global(global)?;
     let store = StateStore::new(&runtime.paths.config_dir);
     let state = match store.load() {
@@ -101,7 +100,7 @@ pub async fn run(args: CleanupArgs, global: &GlobalArgs) -> Result<(), CliError>
 }
 
 fn cleanup_with_no_state(
-    args: &CleanupArgs,
+    args: &UninstallArgs,
     global: &GlobalArgs,
     runtime: &Runtime,
 ) -> Result<(), CliError> {
@@ -267,7 +266,7 @@ fn remove_dir_idempotent(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn build_plan(state: &HostState, paths: &mxnode_core::Paths, args: &CleanupArgs) -> Vec<Step> {
+fn build_plan(state: &HostState, paths: &mxnode_core::Paths, args: &UninstallArgs) -> Vec<Step> {
     let platform = Platform::current();
     // macOS LaunchAgents live in the operator's home, no sudo needed.
     // Linux systemd units live in /etc/systemd/system, removal needs sudo.

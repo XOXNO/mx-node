@@ -1,4 +1,4 @@
-//! Interactive prompts for `install` / `add-nodes`. Kept in one place so
+//! Interactive prompts for `install` / `install --add`. Kept in one place so
 //! both call sites have identical UX (template-expanded default, Enter
 //! accepts, blank input falls through, EOF / non-TTY skips silently).
 //!
@@ -234,9 +234,9 @@ pub fn expand_template(template: &str, env: &str, index: u16) -> String {
 }
 
 /// Resolve the display name to show for one node. Used by every
-/// surface that renders a node label (`reapply-config`, `dashboard`,
-/// `status`, the install/add-nodes success output) so they all agree
-/// on what "the operator's chosen name" is.
+/// surface that renders a node label (`config apply`, `status --watch`,
+/// `status`, the install success output) so they all agree on what
+/// "the operator's chosen name" is.
 ///
 /// Precedence:
 ///   1. The name persisted on the `NodeState` (stamped at install
@@ -246,7 +246,7 @@ pub fn expand_template(template: &str, env: &str, index: u16) -> String {
 ///      `node.name_template` happens to differ.
 ///   2. The current `node.name_template`, with `{env}` / `{index}`
 ///      substituted. Only used when the persisted name is empty
-///      (legacy installs imported via `migrate-bash`, or installs
+///      (legacy installs imported via `import-bash`, or installs
 ///      from mxnode versions that predated the persisted-name field).
 ///   3. Empty string when neither source has a value — callers fall
 ///      back to a unit-level label like `node-{index}`.
@@ -661,8 +661,8 @@ mod tests {
 
     #[test]
     fn add_nodes_indices_can_start_above_zero() {
-        // add-nodes appends to existing nodes; the index list reflects the
-        // first free slot rather than 0.
+        // `install --add` appends to existing nodes; the index list
+        // reflects the first free slot rather than 0.
         let (names, out) = run("\n\n", 2, &[7, 8], "later-{index}", true);
         assert_eq!(names, vec!["later-7", "later-8"]);
         assert!(out.contains("node 7"));

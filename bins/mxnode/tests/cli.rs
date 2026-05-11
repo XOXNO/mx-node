@@ -274,11 +274,11 @@ fn lifecycle_selectors_conflict_at_parse_time() {
 }
 
 #[test]
-fn cleanup_dry_run_default_is_safe_after_init() {
+fn uninstall_dry_run_default_is_safe_after_init() {
     let sandbox = Sandbox::new();
     // No state.toml and no managed dirs under the default
-    // /home/ubuntu — cleanup should report "nothing to clean" cleanly.
-    let output = sandbox.cmd().args(["cleanup"]).output().unwrap();
+    // /home/ubuntu — uninstall should report "nothing to clean" cleanly.
+    let output = sandbox.cmd().args(["uninstall"]).output().unwrap();
     // Either succeeds with "nothing to clean" or refuses without --yes —
     // both are safe; what we assert is the absence of any deletion.
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -409,31 +409,31 @@ fn write_sandbox_config(sandbox: &Sandbox, custom_home: &Path) -> PathBuf {
 }
 
 #[test]
-fn cleanup_without_yes_refuses_when_managed_dir_present() {
+fn uninstall_without_yes_refuses_when_managed_dir_present() {
     let sandbox = Sandbox::new();
     write_sandbox_config(&sandbox, &sandbox.home);
     std::fs::create_dir_all(sandbox.home.join("elrond-nodes")).unwrap();
 
-    let output = sandbox.cmd().args(["cleanup"]).output().unwrap();
+    let output = sandbox.cmd().args(["uninstall"]).output().unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("--yes"), "stderr: {stderr}");
 }
 
 #[test]
-fn cleanup_dry_run_lists_steps() {
+fn uninstall_dry_run_lists_steps() {
     let sandbox = Sandbox::new();
     write_sandbox_config(&sandbox, &sandbox.home);
     std::fs::create_dir_all(sandbox.home.join("elrond-nodes")).unwrap();
 
     let output = sandbox
         .cmd()
-        .args(["--json", "cleanup", "--yes"])
+        .args(["--json", "uninstall", "--yes"])
         .output()
         .unwrap();
     assert!(
         output.status.success(),
-        "cleanup --yes (dry-run default) should succeed:\n{}",
+        "uninstall --yes (dry-run default) should succeed:\n{}",
         String::from_utf8_lossy(&output.stderr),
     );
     // With no state.toml the JSON shape uses `mode: dry-run` and a
@@ -918,7 +918,7 @@ fn lifecycle_start_without_state_errors_clearly() {
 }
 
 #[test]
-fn migrate_bash_dry_run_prints_summary() {
+fn import_bash_dry_run_prints_summary() {
     let sb = Sandbox::new();
     // Lay down bash sentinel files inside HOME so `--from <home>` finds them.
     std::fs::write(sb.home.join(".installedenv"), "mainnet").unwrap();
@@ -927,7 +927,7 @@ fn migrate_bash_dry_run_prints_summary() {
 
     let output = sb
         .cmd()
-        .args(["migrate-bash", "--from"])
+        .args(["import-bash", "--from"])
         .arg(&sb.home)
         .output()
         .expect("spawn mxnode");
@@ -960,7 +960,7 @@ fn migrate_bash_dry_run_prints_summary() {
 }
 
 #[test]
-fn migrate_bash_execute_merges_variables_cfg_and_service_files() {
+fn import_bash_execute_merges_variables_cfg_and_service_files() {
     let sb = Sandbox::new();
 
     // 1. Bash sentinels (4-node observer squad).
@@ -1003,7 +1003,7 @@ GITHUB_ORG="myfork"
     // 4. Run with --execute.
     let output = sb
         .cmd()
-        .args(["migrate-bash", "--from"])
+        .args(["import-bash", "--from"])
         .arg(&sb.home)
         .args(["--scripts-dir"])
         .arg(&scripts_dir)
@@ -1075,13 +1075,13 @@ GITHUB_ORG="myfork"
 }
 
 #[test]
-fn migrate_bash_execute_refuses_when_state_toml_exists() {
+fn import_bash_execute_refuses_when_state_toml_exists() {
     let sb = Sandbox::new();
     // Lay down bash sentinels so infer succeeds.
     std::fs::write(sb.home.join(".installedenv"), "mainnet").unwrap();
     std::fs::write(sb.home.join(".numberofnodes"), "1").unwrap();
     // Pre-populated host inventory in the unified `mxnode.toml`.
-    // migrate-bash uses its own loader path (deliberately bypassing
+    // import-bash uses its own loader path (deliberately bypassing
     // `Runtime::from_global` to avoid auto-init) so we seed at the
     // new path directly rather than relying on legacy migration.
     std::fs::create_dir_all(sb.config_path().parent().unwrap()).unwrap();
@@ -1121,7 +1121,7 @@ binary_tag = "v1.7.13"
 
     let output = sb
         .cmd()
-        .args(["migrate-bash", "--from"])
+        .args(["import-bash", "--from"])
         .arg(&sb.home)
         .arg("--execute")
         .output()
@@ -1162,21 +1162,21 @@ fn state_path_falls_under_tempdir_state_home() {
 fn rename_persists_to_state_and_prefs_toml() {
     let sb = Sandbox::new();
 
-    // 1. Seed state.toml via migrate-bash --execute. infer_state_from_bash
+    // 1. Seed state.toml via import-bash --execute. infer_state_from_bash
     //    populates one validator pointing at <home>/elrond-nodes/node-0.
     std::fs::write(sb.home.join(".installedenv"), "mainnet").unwrap();
     std::fs::write(sb.home.join(".numberofnodes"), "1").unwrap();
 
     let migrate = sb
         .cmd()
-        .args(["migrate-bash", "--from"])
+        .args(["import-bash", "--from"])
         .arg(&sb.home)
         .arg("--execute")
         .output()
         .expect("spawn mxnode import-bash");
     assert!(
         migrate.status.success(),
-        "migrate-bash --execute failed: stderr={}",
+        "import-bash --execute failed: stderr={}",
         String::from_utf8_lossy(&migrate.stderr),
     );
 
@@ -1232,7 +1232,7 @@ fn rename_persists_to_state_and_prefs_toml() {
         "rename clobbered an unrelated prefs key:\n{prefs_body}",
     );
 
-    // 5. state.toml persists the new display_name so reapply-config /
+    // 5. state.toml persists the new display_name so `config apply` /
     //    upgrade preserve it on subsequent re-stamp passes.
     let state_body = std::fs::read_to_string(sb.state_path()).unwrap();
     assert!(
@@ -1248,11 +1248,11 @@ fn rename_rejects_empty_name() {
     std::fs::write(sb.home.join(".numberofnodes"), "1").unwrap();
     let _ = sb
         .cmd()
-        .args(["migrate-bash", "--from"])
+        .args(["import-bash", "--from"])
         .arg(&sb.home)
         .arg("--execute")
         .output()
-        .expect("spawn migrate-bash");
+        .expect("spawn import-bash");
 
     let output = sb
         .cmd()
@@ -1277,11 +1277,11 @@ fn rename_errors_when_node_index_unknown() {
     std::fs::write(sb.home.join(".numberofnodes"), "1").unwrap();
     let _ = sb
         .cmd()
-        .args(["migrate-bash", "--from"])
+        .args(["import-bash", "--from"])
         .arg(&sb.home)
         .arg("--execute")
         .output()
-        .expect("spawn migrate-bash");
+        .expect("spawn import-bash");
 
     let output = sb
         .cmd()

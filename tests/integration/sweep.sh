@@ -118,9 +118,6 @@ assert "no elrond units"      "! ls /etc/systemd/system/elrond-*.service >/dev/n
 # P1  every command + subcommand renders --help
 # ============================================================
 phase "P1  --help for every command + subcommand"
-# Top-level command surface (post-v0.9 restructure: dropped add-nodes /
-# benchmark / dashboard / keygen / rename / reapply-config / seednode;
-# cleanup → uninstall, migrate-bash → import-bash).
 for cmd in config install start stop restart status logs metrics upgrade db keys uninstall doctor import-bash self-update completions version; do
     assert "mxnode $cmd --help" "$MXNODE $cmd --help >/dev/null"
 done
@@ -150,9 +147,8 @@ assert_contains "mxnode --json version" "$MXNODE --json version" '"version"'
 # P3  doctor + benchmark (no install required)
 # ============================================================
 phase "P3  doctor --benchmark works without an install"
-# `mxnode benchmark` was folded into `mxnode doctor --benchmark` in
-# v0.9. The doctor probes always run; `--benchmark` adds the CPU /
-# memory / disk-IO measurement pass on top.
+# The doctor probes always run; `--benchmark` adds the CPU / memory /
+# disk-IO measurement pass on top.
 assert         "doctor --benchmark exits 0"  "$MXNODE doctor --benchmark"
 assert_contains "doctor prints platform check"  "$MXNODE doctor --benchmark"  "[platform]"
 assert_contains "doctor --benchmark --json shape"  "$MXNODE --json doctor --benchmark"  '"findings"'
@@ -337,10 +333,10 @@ assert "db prune trims to --epochs 2" "$MXNODE db prune --node 1 --epochs 2"
 assert "after prune: 2 Epoch_N dirs left" \
     "[ \$(find $HOME/elrond-nodes/node-1/db -maxdepth 1 -type d -name 'Epoch_*' | wc -l) -eq 2 ]"
 
-# add-nodes refuses on squad install
+# `install --add` refuses on squad install
 assert "install --add refuses on squad" "$MXNODE install --add 1 --role observer" 0
 
-# reapply-config + override edit
+# config apply + override edit
 assert "config apply (no override yet)" "$MXNODE config apply >/dev/null"
 $MXNODE config set overrides.prefs."Preferences.Identity" "mxnode-ci" >/dev/null 2>&1 || true
 # The above might fail if the dotted-path with quoted segment isn't supported;
@@ -412,9 +408,9 @@ assert "uninstall backup-2"            "$MXNODE uninstall --yes --execute >/dev/
 cleanup_artifacts
 
 # ============================================================
-# P12  validator + keys check + keygen
+# P12  validator + keys check + keys generate
 # ============================================================
-phase "P12  validator + keys check + keygen"
+phase "P12  validator + keys check + keys generate"
 assert "install --role validator"    "$MXNODE install --role validator --binary-tag $NODE_TAG --config-tag $CONFIG_TAG"
 assert "keys check (no zip) errors"  "$MXNODE keys check" 0
 mkdir -p "$HOME/VALIDATOR_KEYS"

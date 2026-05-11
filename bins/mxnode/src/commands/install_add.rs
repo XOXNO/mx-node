@@ -1,4 +1,4 @@
-//! `mxnode install --add N --role R` (was top-level `mxnode add-nodes`): extend an existing install.
+//! `mxnode install --add N --role R`: extend an existing install.
 //!
 //! Refuses on observers-squad / multikey-squad installs (matches the bash
 //! `add_node` which exits when `.squad_install` is present). Operators
@@ -7,7 +7,7 @@
 use mxnode_core::{InstallKind, NodeIndex, Role, Shard};
 use mxnode_state::StateStore;
 
-use crate::cli::{AddNodesArgs, GlobalArgs, RoleArg};
+use crate::cli::{InstallAddArgs, GlobalArgs, RoleArg};
 use crate::errors::CliError;
 use crate::events::global_op;
 use crate::orchestrator::acquirer_factory::build_acquirer;
@@ -23,9 +23,9 @@ use super::install::{emit_success, install_err};
 
 /// When extending a multikey install, look at node-0's existing
 /// `config/allValidatorsKeys.pem` and reuse it for the new nodes.
-/// `add-nodes` doesn't accept `--keys-file`; the assumption is that
-/// every multikey node on a host signs for the same key set, so the
-/// original bundle is the right one. Returns `None` when the file
+/// `install --add` doesn't accept `--keys-file`; the assumption is
+/// that every multikey node on a host signs for the same key set, so
+/// the original bundle is the right one. Returns `None` when the file
 /// isn't there (mismatched install, or operator never ran multikey).
 fn existing_multikey_keys(runtime: &Runtime) -> Option<PathBuf> {
     let candidate = runtime
@@ -36,7 +36,7 @@ fn existing_multikey_keys(runtime: &Runtime) -> Option<PathBuf> {
 }
 
 #[tokio::main(flavor = "current_thread")]
-pub async fn run(args: AddNodesArgs, global: &GlobalArgs) -> Result<(), CliError> {
+pub async fn run(args: InstallAddArgs, global: &GlobalArgs) -> Result<(), CliError> {
     let runtime = Runtime::from_global(global)?;
     let store = StateStore::new(&runtime.paths.config_dir);
     let mut state = store
@@ -109,7 +109,7 @@ pub async fn run(args: AddNodesArgs, global: &GlobalArgs) -> Result<(), CliError
 
     // Resolve per-node display names. Interactive when stdin is a TTY
     // and the operator did not pass `--non-interactive`; mirrors the
-    // install flow so add-nodes UX matches.
+    // install flow so `install --add` UX matches.
     let resolved_template = args
         .name_template
         .as_deref()
@@ -205,12 +205,12 @@ pub async fn run(args: AddNodesArgs, global: &GlobalArgs) -> Result<(), CliError
             InstallKind::Validators | InstallKind::Mixed => ConfigEdits::Validator,
             _ => ConfigEdits::Observer,
         },
-        // add-nodes never installs/replaces the proxy.
+        // `install --add` never installs/replaces the proxy.
         install_proxy: false,
-        // add-nodes inherits the original install's keys-file: there's
-        // no UX surface for changing the multikey bundle on an
-        // already-installed host. A future `mxnode keys rotate` would
-        // be the right home for that.
+        // `install --add` inherits the original install's keys-file:
+        // there's no UX surface for changing the multikey bundle on
+        // an already-installed host. A future `mxnode keys rotate`
+        // would be the right home for that.
         multikey_keys_file: existing_multikey_keys(&runtime),
         redundancy_level: 0,
         prefs_overrides: &runtime.loaded.file.overrides.prefs,
@@ -231,7 +231,7 @@ pub async fn run(args: AddNodesArgs, global: &GlobalArgs) -> Result<(), CliError
     let upstream_go = read_go_version_from_repo(&config_repo_path);
     let acquirer = build_acquirer(&runtime, upstream_go.as_deref());
     global_op(
-        "add-nodes",
+        "install --add",
         &format!("{count} {role} on {environment}", role = role),
     );
     let outcome = run_install(plan, acquirer)

@@ -39,7 +39,7 @@ current pass.
 | Logviewer | Covered and extended | `mxnode logs --ws --node N --log-level '*:DEBUG' --log-save`; `mxnode status --watch --ws-logs` | Reuses the node `/log` WebSocket protocol and custom profile JSON fields from the upstream Go logviewer; the dashboard keeps the multi-node view. |
 | Keygenerator utility | Covered | `mxnode keys generate --output DIR`; install/upgrade refresh keygenerator artifacts | Preserves the utility wrapper without requiring users to run binaries out of `elrond-utils` manually. |
 | Bash config variables | Covered and extended | `mxnode config show|get|set|edit|validate`; `[overrides]` | Rust has typed config and origin reporting. |
-| Migrate existing Bash install | Covered | `mxnode import-bash` (alias: `migrate-bash`) | Imports marker files, variables, units, and proxy shape. |
+| Migrate existing Bash install | Covered | `mxnode import-bash` | Imports marker files, variables, units, and proxy shape. |
 | Script completion | Covered in this pass | `mxnode completions <shell>` | Explicit stdout generation replaces Bash's implicit `/etc/bash_completion.d` mutation. |
 | Seednode utility | Covered in this pass | `mxnode install` installs `elrond-utils/seednode/{seednode,config/*}`; `mxnode upgrade` refreshes it; operators invoke the binary directly | Copies `config.toml` and intended `p2p.toml` from the config repo when present. |
 | Import DB with Elasticsearch presets | Covered in this pass | `mxnode db import-plan --require-elasticsearch` enforces one source/node per shard plus metachain and validates `external.toml` connector basics | Future: optional richer checks for indexer topology outside node config. |

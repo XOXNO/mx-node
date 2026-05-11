@@ -20,7 +20,7 @@ pub fn run(cmd: ConfigCommand, global: &GlobalArgs) -> Result<(), CliError> {
         ConfigCommand::Edit { scope } => edit(scope, global),
         // Dispatched directly in `commands::dispatch` — kept here as
         // a defensive fallthrough for re-routing safety.
-        ConfigCommand::Apply(args) => super::reapply_config::run(args, global),
+        ConfigCommand::Apply(args) => super::config_apply::run(args, global),
     }
 }
 
