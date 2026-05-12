@@ -12,6 +12,52 @@ use tokio::sync::Mutex;
 
 use crate::metrics::{LogLevel, NodeSnapshot};
 
+/// What's installed on this host vs what GitHub Releases currently
+/// publishes for the same repos. The renderer reads a cloned snapshot
+/// every frame to colour-code the BinaryVersion / ConfigVersion rows
+/// in the instance panel and surface a yellow "LatestVersion — run
+/// `mxnode upgrade`" hint when an upgrade is available.
+///
+/// `installed_*` fields are populated once at TUI startup from
+/// `mxnode.toml::install.versions`. `latest_*` are `None` until the
+/// dashboard caller's background fetcher resolves them; the renderer
+/// treats `None` as "unknown" and skips the comparison (neutral
+/// colour, no upgrade hint).
+#[derive(Clone, Debug, Default)]
+pub struct VersionInfo {
+    pub installed_binary_tag: Option<String>,
+    pub installed_config_tag: Option<String>,
+    pub latest_binary_tag: Option<String>,
+    pub latest_config_tag: Option<String>,
+}
+
+impl VersionInfo {
+    /// True iff the installed binary tag is known AND differs from the
+    /// latest binary tag (which must also be known). `false` when
+    /// either side is `None` so the UI stays neutral while the fetcher
+    /// is still resolving.
+    pub fn binary_outdated(&self) -> bool {
+        match (&self.installed_binary_tag, &self.latest_binary_tag) {
+            (Some(a), Some(b)) => a != b,
+            _ => false,
+        }
+    }
+
+    /// Same logic for the config tag.
+    pub fn config_outdated(&self) -> bool {
+        match (&self.installed_config_tag, &self.latest_config_tag) {
+            (Some(a), Some(b)) => a != b,
+            _ => false,
+        }
+    }
+
+    /// True when at least one tag is known to be behind the latest.
+    /// Drives whether the LatestVersion hint row renders.
+    pub fn has_upgrade_available(&self) -> bool {
+        self.binary_outdated() || self.config_outdated()
+    }
+}
+
 /// One entry in the fleet tab list.
 #[derive(Clone)]
 pub struct NodeHandle {
@@ -64,6 +110,12 @@ pub struct App {
     /// summing them — four observers each reporting 50 keys is a 50-key
     /// squad, not 200.
     pub shares_keys: bool,
+    /// Shared installed-vs-latest version snapshot. The dashboard
+    /// caller (in the binary crate) owns the writer end via a
+    /// background tokio task that polls GitHub Releases every few
+    /// minutes; the renderer locks briefly, clones, releases. A `sync`
+    /// mutex keeps the draw path off any `await` boundary.
+    pub version_info: Arc<std::sync::Mutex<VersionInfo>>,
 }
 
 impl App {
@@ -87,6 +139,7 @@ impl App {
             // production launch.
             title: "By XOXNO ✦ TrustStaking".to_string(),
             shares_keys: false,
+            version_info: Arc::new(std::sync::Mutex::new(VersionInfo::default())),
         }
     }
 
@@ -202,6 +255,16 @@ impl App {
         false
     }
 
+    /// Snapshot the shared version info. Returns a default
+    /// (everything `None`) if the mutex is poisoned, so a panicked
+    /// fetcher can't take down the renderer.
+    pub fn version_snapshot(&self) -> VersionInfo {
+        self.version_info
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default()
+    }
+
     /// Handle one mouse event. Currently: scroll = nothing (logs aren't
     /// scrollable yet), click on a tab = select that node.
     pub fn on_mouse(&mut self, m: MouseEvent, tab_columns: &[(u16, u16)]) {
@@ -217,5 +280,63 @@ impl App {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_info_neutral_when_latest_unknown() {
+        let v = VersionInfo {
+            installed_binary_tag: Some("v1.7.99".into()),
+            installed_config_tag: Some("T1.7.99.0".into()),
+            latest_binary_tag: None,
+            latest_config_tag: None,
+        };
+        assert!(!v.binary_outdated());
+        assert!(!v.config_outdated());
+        assert!(!v.has_upgrade_available());
+    }
+
+    #[test]
+    fn version_info_outdated_when_tags_differ() {
+        let v = VersionInfo {
+            installed_binary_tag: Some("v1.7.99".into()),
+            installed_config_tag: Some("T1.7.99.0".into()),
+            latest_binary_tag: Some("v1.8.0".into()),
+            latest_config_tag: Some("T1.8.0.0".into()),
+        };
+        assert!(v.binary_outdated());
+        assert!(v.config_outdated());
+        assert!(v.has_upgrade_available());
+    }
+
+    #[test]
+    fn version_info_up_to_date_when_tags_match() {
+        let v = VersionInfo {
+            installed_binary_tag: Some("v1.8.0".into()),
+            installed_config_tag: Some("T1.8.0.0".into()),
+            latest_binary_tag: Some("v1.8.0".into()),
+            latest_config_tag: Some("T1.8.0.0".into()),
+        };
+        assert!(!v.binary_outdated());
+        assert!(!v.config_outdated());
+        assert!(!v.has_upgrade_available());
+    }
+
+    #[test]
+    fn version_info_partial_outdated_triggers_hint() {
+        // Binary current, config behind → still surfaces upgrade hint.
+        let v = VersionInfo {
+            installed_binary_tag: Some("v1.8.0".into()),
+            installed_config_tag: Some("T1.7.99.0".into()),
+            latest_binary_tag: Some("v1.8.0".into()),
+            latest_config_tag: Some("T1.8.0.0".into()),
+        };
+        assert!(!v.binary_outdated());
+        assert!(v.config_outdated());
+        assert!(v.has_upgrade_available());
     }
 }

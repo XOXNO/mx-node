@@ -47,7 +47,7 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 
 use crate::app::App;
-pub use crate::app::NodeHandle;
+pub use crate::app::{NodeHandle, VersionInfo};
 use crate::metrics::NodeSnapshot;
 use crate::poller::Poller;
 use crate::view::{draw, DrawContext};
@@ -85,6 +85,13 @@ pub struct DashboardOpts {
     /// the same `allValidatorsKeys.pem`. The header collapses the
     /// managed-key counts instead of summing them across observers.
     pub shares_keys: bool,
+    /// Shared installed-vs-latest version state. The caller seeds the
+    /// `installed_*` fields from `mxnode.toml::install.versions` and
+    /// keeps the writer side of the mutex around to update
+    /// `latest_*` from a background GitHub Releases poller. The
+    /// renderer reads a clone each frame; `Default::default()` (every
+    /// field `None`) renders as neutral with no upgrade hint.
+    pub version_info: Arc<std::sync::Mutex<VersionInfo>>,
 }
 
 #[derive(Clone)]
@@ -163,6 +170,7 @@ pub async fn run(opts: DashboardOpts) -> Result<(), DashboardError> {
     app.environment = environment;
     app.title = title;
     app.shares_keys = shares_keys;
+    app.version_info = opts.version_info;
     let mut ctx = DrawContext {
         tab_columns: Vec::new(),
     };
@@ -344,8 +352,122 @@ mod tests {
         assert!(rendered.contains("TxPool"), "missing TxPool row");
         assert!(rendered.contains("MiniBlocks"), "missing MiniBlocks row");
         assert!(rendered.contains("KnownVal"), "missing KnownVal row");
+        // No version rows when `VersionInfo` is defaulted to all-None.
+        assert!(
+            !rendered.contains("BinaryVer"),
+            "BinaryVer row should be hidden when installed_binary_tag is None",
+        );
+        assert!(
+            !rendered.contains("Latest"),
+            "Latest hint row should be hidden when no upgrade is available",
+        );
         // Tab column ranges should be populated for the mouse handler.
         assert_eq!(ctx.tab_columns.len(), 1);
+    }
+
+    /// When the dashboard caller seeds `installed_*` but `latest_*` is
+    /// still resolving (the GitHub fetcher hasn't responded yet), both
+    /// version rows show but stay neutral — no upgrade hint.
+    #[test]
+    fn renders_version_rows_neutral_when_latest_unknown() {
+        let mut snap = NodeSnapshot {
+            metrics: synthetic_metrics(),
+            ..NodeSnapshot::default()
+        };
+        snap.recompute_state();
+        let label = "test-node".to_string();
+        let mut app = App::new(vec![NodeHandle {
+            index: NodeIndex::new(0),
+            label: label.clone(),
+            unit: "elrond-node-0.service".to_string(),
+            api_port: 8080,
+            workdir: PathBuf::from("/tmp/test-workdir"),
+            snapshot: std::sync::Arc::new(Mutex::new(snap.clone())),
+        }]);
+        app.version_info = std::sync::Arc::new(std::sync::Mutex::new(VersionInfo {
+            installed_binary_tag: Some("v1.7.99".into()),
+            installed_config_tag: Some("T1.7.99.0".into()),
+            latest_binary_tag: None,
+            latest_config_tag: None,
+        }));
+
+        let mut terminal = ratatui::Terminal::new(TestBackend::new(120, 60)).unwrap();
+        let mut ctx = DrawContext {
+            tab_columns: Vec::new(),
+        };
+        terminal
+            .draw(|f| view::draw(f, &app, &mut ctx, Some((label.as_str(), &snap))))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut rendered = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                rendered.push_str(buf[(x, y)].symbol());
+            }
+            rendered.push('\n');
+        }
+        assert!(rendered.contains("BinaryVer"), "BinaryVer row missing");
+        assert!(rendered.contains("ConfigVer"), "ConfigVer row missing");
+        assert!(rendered.contains("v1.7.99"), "installed binary tag missing");
+        assert!(rendered.contains("T1.7.99.0"), "installed config tag missing");
+        assert!(
+            !rendered.contains("mxnode upgrade"),
+            "upgrade hint must stay hidden until latest tags resolve",
+        );
+    }
+
+    /// Installed and latest differ → the BinaryVer / ConfigVer rows
+    /// flip to red ✗ and a yellow Latest row surfaces with the
+    /// `mxnode upgrade` hint.
+    #[test]
+    fn renders_upgrade_hint_when_behind_latest() {
+        let mut snap = NodeSnapshot {
+            metrics: synthetic_metrics(),
+            ..NodeSnapshot::default()
+        };
+        snap.recompute_state();
+        let label = "test-node".to_string();
+        let mut app = App::new(vec![NodeHandle {
+            index: NodeIndex::new(0),
+            label: label.clone(),
+            unit: "elrond-node-0.service".to_string(),
+            api_port: 8080,
+            workdir: PathBuf::from("/tmp/test-workdir"),
+            snapshot: std::sync::Arc::new(Mutex::new(snap.clone())),
+        }]);
+        app.version_info = std::sync::Arc::new(std::sync::Mutex::new(VersionInfo {
+            installed_binary_tag: Some("v1.7.99".into()),
+            installed_config_tag: Some("T1.7.99.0".into()),
+            latest_binary_tag: Some("v1.8.0".into()),
+            latest_config_tag: Some("T1.8.0.0".into()),
+        }));
+
+        let mut terminal = ratatui::Terminal::new(TestBackend::new(120, 60)).unwrap();
+        let mut ctx = DrawContext {
+            tab_columns: Vec::new(),
+        };
+        terminal
+            .draw(|f| view::draw(f, &app, &mut ctx, Some((label.as_str(), &snap))))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut rendered = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                rendered.push_str(buf[(x, y)].symbol());
+            }
+            rendered.push('\n');
+        }
+        assert!(rendered.contains("v1.7.99"), "installed binary tag missing");
+        assert!(rendered.contains("v1.8.0"), "latest binary tag missing");
+        assert!(rendered.contains("Latest"), "Latest hint row missing");
+        assert!(
+            rendered.contains("mxnode upgrade"),
+            "upgrade hint missing from Latest row",
+        );
+        assert!(
+            rendered.contains("upgrade available"),
+            "concise badge missing when both binary and config are behind",
+        );
     }
 
     fn synthetic_metrics() -> RawMetrics {

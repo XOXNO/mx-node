@@ -4,11 +4,13 @@
 //! (label / unit / api port / workdir) then hands off to mxnode-tui.
 
 use std::io::IsTerminal;
+use std::sync::Arc;
 use std::time::Duration;
 
 use mxnode_core::InstallKind;
+use mxnode_github::{Client as GithubClient, ClientConfig as GithubClientConfig};
 use mxnode_state::StateStore;
-use mxnode_tui::{DashboardOpts, NodeSpec};
+use mxnode_tui::{DashboardOpts, NodeSpec, VersionInfo};
 
 use crate::cli::{DashboardArgs, GlobalArgs};
 use crate::errors::CliError;
@@ -138,6 +140,34 @@ pub async fn run(args: DashboardArgs, global: &GlobalArgs) -> Result<(), CliErro
         .map(|i| matches!(i.kind, InstallKind::MultikeySquad))
         .unwrap_or(false);
 
+    // Seed the version info with what mxnode.toml says is installed,
+    // then spawn a background task to resolve "latest" from GitHub
+    // Releases. The poller writes into the shared mutex; the TUI
+    // renderer reads a clone every frame and colour-codes accordingly.
+    let installed_binary = state
+        .install
+        .as_ref()
+        .and_then(|i| i.versions.binary_tag.as_ref().map(|t| t.to_string()));
+    let installed_config = state
+        .install
+        .as_ref()
+        .and_then(|i| i.versions.config_tag.as_ref().map(|t| t.to_string()));
+    let version_info = Arc::new(std::sync::Mutex::new(VersionInfo {
+        installed_binary_tag: installed_binary,
+        installed_config_tag: installed_config,
+        latest_binary_tag: None,
+        latest_config_tag: None,
+    }));
+    spawn_version_poller(
+        Arc::clone(&version_info),
+        runtime.loaded.file.network.github_org.clone(),
+        state
+            .install
+            .as_ref()
+            .map(|i| i.environment.config_repo()),
+        runtime.github_token(),
+    );
+
     let opts = DashboardOpts {
         nodes,
         interval: Duration::from_millis(args.interval.max(100)),
@@ -146,6 +176,7 @@ pub async fn run(args: DashboardArgs, global: &GlobalArgs) -> Result<(), CliErro
         environment,
         title: runtime.loaded.file.branding.title.clone(),
         shares_keys,
+        version_info,
     };
 
     mxnode_tui::run(opts).await.map_err(|e| {
@@ -156,4 +187,58 @@ pub async fn run(args: DashboardArgs, global: &GlobalArgs) -> Result<(), CliErro
         )
         .json_if(global.json)
     })
+}
+
+/// Background loop that resolves the latest `mx-chain-go` and
+/// `mx-chain-{env}-config` release tags from GitHub and writes them
+/// into the shared `VersionInfo`. The TUI renderer reads a clone every
+/// frame to colour-code the BinaryVer / ConfigVer rows.
+///
+/// Refresh cadence is **30 minutes** — fast enough to surface a fresh
+/// release during a long dashboard session, slow enough to stay well
+/// under the 60 req/h anonymous GitHub API limit even for operators
+/// who run multiple dashboards in parallel. A `MXNODE_GITHUB_TOKEN`
+/// dodges the limit entirely if the operator has one configured.
+///
+/// Failures are silent. The TUI already shows "unknown" colour state
+/// when `latest_*` is `None`, so a flaky GitHub API just keeps the
+/// instance panel neutral instead of surfacing transient errors mid
+/// frame.
+fn spawn_version_poller(
+    version_info: Arc<std::sync::Mutex<VersionInfo>>,
+    github_org: String,
+    config_repo: Option<String>,
+    token: Option<String>,
+) {
+    tokio::spawn(async move {
+        // Build the client once. `unwrap_or_return` on the first
+        // failure is fine — a client build error means reqwest itself
+        // is broken and retrying won't help.
+        let client = match GithubClient::new(GithubClientConfig {
+            token,
+            ..GithubClientConfig::default()
+        }) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        loop {
+            // Binary: always queried. mx-chain-go is org-wide.
+            if let Ok(release) = client.latest_release(&github_org, "mx-chain-go").await {
+                if let Ok(mut guard) = version_info.lock() {
+                    guard.latest_binary_tag = Some(release.tag_name.clone());
+                }
+            }
+            // Config: only queried when the operator's environment is
+            // recorded (i.e. `mxnode install` has run). No env → no
+            // config repo to compare against.
+            if let Some(repo) = config_repo.as_deref() {
+                if let Ok(release) = client.latest_release(&github_org, repo).await {
+                    if let Ok(mut guard) = version_info.lock() {
+                        guard.latest_config_tag = Some(release.tag_name.clone());
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(30 * 60)).await;
+        }
+    });
 }

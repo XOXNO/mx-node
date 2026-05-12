@@ -28,7 +28,7 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
-use crate::app::App;
+use crate::app::{App, VersionInfo};
 use crate::metrics::{LogLevel, LogLine, NodeSnapshot, SyncState};
 use crate::theme;
 
@@ -87,6 +87,9 @@ pub fn draw(
     draw_header(frame, chunks[0], app);
     draw_tabs(frame, chunks[1], app, ctx);
 
+    // Snapshot the shared version info once so the renderer touches
+    // the mutex at most once per frame.
+    let version = app.version_snapshot();
     if body_focus {
         // chunks[2] is the log panel taking the entire body.
         if let Some((_, snap)) = current {
@@ -96,7 +99,7 @@ pub fn draw(
     } else if app.show_logs {
         // chunks[2] = body, chunks[3] = logs, chunks[4] = status
         if let Some((label, snap)) = current {
-            draw_body(frame, chunks[2], label, snap);
+            draw_body(frame, chunks[2], label, snap, &version);
             draw_log_panel(frame, chunks[3], app, snap);
         } else {
             draw_empty_state(frame, chunks[2]);
@@ -104,7 +107,7 @@ pub fn draw(
         draw_status_bar(frame, chunks[4], app);
     } else {
         if let Some((label, snap)) = current {
-            draw_body(frame, chunks[2], label, snap);
+            draw_body(frame, chunks[2], label, snap, &version);
         } else {
             draw_empty_state(frame, chunks[2]);
         }
@@ -442,20 +445,38 @@ fn glyph_style(glyph: &str) -> Style {
 
 // ── Body ─────────────────────────────────────────────────────────────
 
-fn draw_body(frame: &mut Frame, area: Rect, label: &str, snap: &NodeSnapshot) {
+fn draw_body(
+    frame: &mut Frame,
+    area: Rect,
+    label: &str,
+    snap: &NodeSnapshot,
+    version: &VersionInfo,
+) {
+    // Three extra rows when an upgrade is available
+    // (BinaryVersion / ConfigVersion / LatestVersion), two otherwise.
+    // The wider layout uses fixed-height Length cells for the left
+    // column so the instance panel still fits comfortably alongside
+    // the chain panel underneath.
+    let instance_extra_rows = if version.has_upgrade_available() {
+        3
+    } else if version.installed_binary_tag.is_some() || version.installed_config_tag.is_some() {
+        2
+    } else {
+        0
+    };
     let narrow = area.width < 110;
     if narrow {
         let stacked = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Min(8),
+                Constraint::Min(8 + instance_extra_rows as u16),
                 Constraint::Min(8),
                 Constraint::Min(7),
                 Constraint::Length(3),
                 Constraint::Length(3),
             ])
             .split(area);
-        draw_instance(frame, stacked[0], label, snap);
+        draw_instance(frame, stacked[0], label, snap, version);
         draw_chain(frame, stacked[1], snap);
         draw_block_info(frame, stacked[2], snap);
         draw_load_row(frame, stacked[3], snap);
@@ -478,9 +499,12 @@ fn draw_body(frame: &mut Frame, area: Rect, label: &str, snap: &NodeSnapshot) {
 
     let left = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(9), Constraint::Min(8)])
+        .constraints([
+            Constraint::Length(9 + instance_extra_rows as u16),
+            Constraint::Min(8),
+        ])
         .split(halves[0]);
-    draw_instance(frame, left[0], label, snap);
+    draw_instance(frame, left[0], label, snap, version);
     draw_chain(frame, left[1], snap);
 
     let right = Layout::default()
@@ -544,7 +568,13 @@ fn val_strong<'a>(text: impl Into<String>) -> Span<'a> {
 
 // ── Instance panel ───────────────────────────────────────────────────
 
-fn draw_instance(frame: &mut Frame, area: Rect, label: &str, snap: &NodeSnapshot) {
+fn draw_instance(
+    frame: &mut Frame,
+    area: Rect,
+    label: &str,
+    snap: &NodeSnapshot,
+    version: &VersionInfo,
+) {
     let m = &snap.metrics;
     let shard = match m.get_u64("erd_shard_id") {
         Some(s) if s == u32::MAX as u64 => "metachain".to_string(),
@@ -607,11 +637,46 @@ fn draw_instance(frame: &mut Frame, area: Rect, label: &str, snap: &NodeSnapshot
                 theme::ok(),
             ))),
         ]),
-        Row::new(vec![
-            Cell::from(lbl("PubKey")),
-            Cell::from(val(pubkey_short)),
-        ]),
     ];
+
+    // Installed-vs-latest version rows. Colour rules:
+    //   - latest unknown (fetcher hasn't returned yet) → neutral, no
+    //     comparison glyph.
+    //   - installed matches latest → green ✓.
+    //   - installed differs from latest → red ✗, plus a third
+    //     "LatestVersion" row in yellow with the upgrade hint.
+    //
+    // Both BinaryVersion and ConfigVersion sit immediately under the
+    // App row so the eye groups them with the other identity fields.
+    if let Some(installed) = version.installed_binary_tag.as_ref() {
+        rows.push(Row::new(vec![
+            Cell::from(lbl("BinaryVer")),
+            Cell::from(version_value_line(
+                installed,
+                version.latest_binary_tag.as_deref(),
+            )),
+        ]));
+    }
+    if let Some(installed) = version.installed_config_tag.as_ref() {
+        rows.push(Row::new(vec![
+            Cell::from(lbl("ConfigVer")),
+            Cell::from(version_value_line(
+                installed,
+                version.latest_config_tag.as_deref(),
+            )),
+        ]));
+    }
+    if version.has_upgrade_available() {
+        rows.push(Row::new(vec![
+            Cell::from(lbl("Latest")),
+            Cell::from(latest_hint_line(version)),
+        ]));
+    }
+
+    rows.push(Row::new(vec![
+        Cell::from(lbl("PubKey")),
+        Cell::from(val(pubkey_short)),
+    ]));
     if is_validator_peer {
         rows.push(Row::new(vec![
             Cell::from(lbl("Validator")),
@@ -669,6 +734,73 @@ fn draw_instance(frame: &mut Frame, area: Rect, label: &str, snap: &NodeSnapshot
     let t = Table::new(rows, [Constraint::Length(13), Constraint::Min(20)])
         .block(bordered(box_title("MultiversX instance")));
     frame.render_widget(t, area);
+}
+
+/// Build the value cell for a BinaryVersion / ConfigVersion row.
+/// Latest unknown → neutral white. Match → green `✓ <tag>`. Mismatch
+/// → red `✗ <installed>` followed by a dim ` → <latest>` so the
+/// operator can read both at a glance.
+fn version_value_line(installed: &str, latest: Option<&str>) -> Line<'static> {
+    match latest {
+        None => Line::from(Span::styled(
+            installed.to_string(),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Some(latest_tag) if latest_tag == installed => Line::from(vec![
+            Span::styled("✓ ", theme::ok()),
+            Span::styled(
+                installed.to_string(),
+                Style::default()
+                    .fg(theme::OK)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Some(latest_tag) => Line::from(vec![
+            Span::styled("✗ ", theme::fail()),
+            Span::styled(
+                installed.to_string(),
+                Style::default()
+                    .fg(theme::FAIL)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" → ", theme::dim()),
+            Span::styled(latest_tag.to_string(), theme::dim()),
+        ]),
+    }
+}
+
+/// Yellow `Latest:` hint row body — short on purpose so it survives
+/// the narrow-terminal layout where the instance panel only gets ~40
+/// chars of value-cell width. The full installed-vs-latest delta lives
+/// on the BinaryVer / ConfigVer rows above; this row only nudges the
+/// operator toward `mxnode upgrade`.
+fn latest_hint_line(version: &VersionInfo) -> Line<'static> {
+    let warn = Style::default()
+        .fg(theme::WARN)
+        .add_modifier(Modifier::BOLD);
+    let upgrade = Span::styled(
+        "mxnode upgrade",
+        Style::default()
+            .fg(theme::ACCENT)
+            .add_modifier(Modifier::BOLD),
+    );
+    // Both outdated → short "upgrade available" badge plus the action.
+    // Only one outdated → name the lagging component so the operator
+    // knows which side moved.
+    let label = if version.binary_outdated() && version.config_outdated() {
+        "upgrade available".to_string()
+    } else if version.binary_outdated() {
+        "new binary".to_string()
+    } else {
+        "new config".to_string()
+    };
+    Line::from(vec![
+        Span::styled(label, warn),
+        Span::styled(" → ", theme::dim()),
+        upgrade,
+    ])
 }
 
 /// Match the Go termui's redundancy display:
