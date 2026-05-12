@@ -452,6 +452,13 @@ pub struct UpgradeArgs {
     pub shard: Option<String>,
     #[arg(long)]
     pub skip_validators: bool,
+    /// Start each node after its binary + config is swapped. Off by
+    /// default — `mxnode upgrade` mirrors the bash flow (stop, swap,
+    /// leave stopped) so the operator can verify the new config before
+    /// resuming consensus. Run `mxnode start --all` when ready, or pass
+    /// `--start` to opt back into the rolling restart + readiness probe.
+    #[arg(long)]
+    pub start: bool,
     #[arg(long)]
     pub dry_run: bool,
 }

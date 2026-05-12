@@ -146,8 +146,19 @@ mxnode install --role observer --count 1 --operation-mode full-archive
 # Multikey signer host with a custom keys bundle
 mxnode install --role multikey --keys-file /srv/keys/allValidatorsKeys.pem
 
-# Rolling upgrade with a pinned config repo tag — prefs.toml is preserved
-mxnode upgrade --binary-tag v1.7.99 --config-tag T1.7.99.0 --strategy rolling --max-parallel 1
+# Bash-style upgrade: resolves the latest config release, reads its
+# `binaryVersion` file, swaps binary + config on every node, and leaves
+# the units stopped so you can verify before `mxnode start --all`.
+mxnode upgrade
+
+# Pin the config tag (binary follows from the repo's binaryVersion)
+mxnode upgrade --config-tag T1.7.99.0
+
+# Pin both for full control (expert mode — config X with binary Y)
+mxnode upgrade --config-tag T1.7.99.0 --binary-tag v1.7.99
+
+# Auto-start every node after the swap (rolling restart + readiness probe)
+mxnode upgrade --start
 
 # Import an existing database (dry-run first)
 mxnode db import --node 0 --source /srv/import-db --dry-run

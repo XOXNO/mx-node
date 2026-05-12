@@ -127,6 +127,38 @@ pub fn read_go_version_from_repo(repo_dir: &Path) -> Option<String> {
     Some(trimmed.trim_start_matches("go").to_string())
 }
 
+/// Read the `binaryVersion` file at the root of a cloned config repo.
+/// MultiversX config releases (`mx-chain-{env}-config`) declare which
+/// `mx-chain-go` tag they pair with via this file — the bash flow
+/// (`functions.cfg:git_clone`) treats it as authoritative and clones
+/// the node repo at the tag it returns.
+///
+/// Some upstream tags prefix the value with `tags/` (the GitHub refs
+/// shape); the prefix is stripped so callers receive a plain tag like
+/// `v1.7.99`.
+pub fn read_binary_version_from_repo(repo_dir: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(repo_dir.join("binaryVersion")).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.trim_start_matches("tags/").to_string())
+}
+
+/// Read the `proxyVersion` file at the root of a cloned config repo.
+/// Mirrors `binaryVersion`: when the config release ships a
+/// `proxyVersion` file, bash (`functions.cfg:git_clone_proxy`) uses it
+/// to pin the proxy tag. Networks without a paired proxy release omit
+/// the file — callers fall through to GitHub-latest or an override.
+pub fn read_proxy_version_from_repo(repo_dir: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(repo_dir.join("proxyVersion")).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.trim_start_matches("tags/").to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,5 +233,64 @@ mod tests {
     fn read_go_version_from_repo_returns_none_when_absent() {
         let tmp = tempfile::tempdir().unwrap();
         assert!(read_go_version_from_repo(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn read_binary_version_from_repo_handles_plain_tag() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("binaryVersion"), "v1.7.99\n").unwrap();
+        assert_eq!(
+            read_binary_version_from_repo(tmp.path()).unwrap(),
+            "v1.7.99"
+        );
+    }
+
+    #[test]
+    fn read_binary_version_from_repo_strips_tags_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("binaryVersion"), "tags/v1.7.99").unwrap();
+        assert_eq!(
+            read_binary_version_from_repo(tmp.path()).unwrap(),
+            "v1.7.99"
+        );
+    }
+
+    #[test]
+    fn read_binary_version_from_repo_returns_none_when_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(read_binary_version_from_repo(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn read_binary_version_from_repo_returns_none_when_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("binaryVersion"), "   \n").unwrap();
+        assert!(read_binary_version_from_repo(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn read_proxy_version_from_repo_handles_plain_tag() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("proxyVersion"), "v1.1.66").unwrap();
+        assert_eq!(
+            read_proxy_version_from_repo(tmp.path()).unwrap(),
+            "v1.1.66"
+        );
+    }
+
+    #[test]
+    fn read_proxy_version_from_repo_strips_tags_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("proxyVersion"), "tags/v1.1.66\n").unwrap();
+        assert_eq!(
+            read_proxy_version_from_repo(tmp.path()).unwrap(),
+            "v1.1.66"
+        );
+    }
+
+    #[test]
+    fn read_proxy_version_from_repo_returns_none_when_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(read_proxy_version_from_repo(tmp.path()).is_none());
     }
 }

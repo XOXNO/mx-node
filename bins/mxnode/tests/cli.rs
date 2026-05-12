@@ -527,6 +527,112 @@ entries = []
     assert_eq!(selected.len(), 2);
 }
 
+/// Bare `mxnode upgrade --dry-run` (no binary flag) derives the
+/// target binary tag from the cloned config repo's `binaryVersion`
+/// file, matching the bash `git_clone` flow. We pre-seed the cache so
+/// the test stays offline.
+#[test]
+fn upgrade_dry_run_derives_binary_tag_from_config_repo() {
+    let sandbox = Sandbox::new();
+    sandbox.seed_host(
+        r#"
+schema_version = 1
+written_at = "2026-04-25T08:00:00Z"
+written_by = "test"
+discovered = true
+
+[install]
+kind = "validators"
+environment = "mainnet"
+github_org = "multiversx"
+node_count = 2
+
+[install.versions]
+go_version = ""
+
+[install.binaries]
+node = []
+proxy = []
+keygenerator = []
+
+[[nodes]]
+index = 0
+role = "validator"
+shard = "auto"
+display_name = ""
+api_port = 8080
+unit = "elrond-node-0.service"
+unit_override = ""
+workdir = "/tmp/elrond-nodes/node-0"
+last_known_pubkey = ""
+last_action = ""
+
+[[nodes]]
+index = 1
+role = "validator"
+shard = "auto"
+display_name = ""
+api_port = 8081
+unit = "elrond-node-1.service"
+unit_override = ""
+workdir = "/tmp/elrond-nodes/node-1"
+last_known_pubkey = ""
+last_action = ""
+
+[migrations]
+entries = []
+"#,
+    );
+
+    // Pin the config tag via [overrides] so resolution stays local.
+    let body = std::fs::read_to_string(sandbox.config_path()).unwrap();
+    let body = format!("{body}\n[overrides]\nconfigver = \"T1.7.99.0\"\n");
+    std::fs::write(sandbox.config_path(), body).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            sandbox.config_path(),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+    }
+
+    // Pre-seed the per-(env, tag) config-repo cache with a binaryVersion
+    // file. acquire_config_repo skips the clone when the directory is
+    // non-empty, so this stands in for a real clone.
+    let cache_dir = sandbox
+        .home
+        .join("mxnode/binaries/config-repos/mainnet/T1.7.99.0");
+    std::fs::create_dir_all(&cache_dir).unwrap();
+    std::fs::write(cache_dir.join("binaryVersion"), "v1.7.99\n").unwrap();
+
+    let output = sandbox
+        .cmd()
+        .args(["--json", "upgrade", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let v: serde_json::Value = serde_json::from_slice(&output.stdout).expect("JSON on stdout");
+    assert_eq!(v["mode"].as_str(), Some("dry-run"));
+    assert_eq!(
+        v["config_tag"].as_str(),
+        Some("T1.7.99.0"),
+        "config_tag should resolve from [overrides].configver",
+    );
+    assert_eq!(
+        v["binary_tag"].as_str(),
+        Some("v1.7.99"),
+        "binary_tag should be read from the config repo's binaryVersion file",
+    );
+    // Default upgrade leaves nodes stopped; verify the flag echoes that.
+    assert_eq!(v["start_after_swap"].as_bool(), Some(false));
+}
+
 #[test]
 fn upgrade_without_binary_tag_or_recorded_version_errors_clearly() {
     let sandbox = Sandbox::new();

@@ -32,7 +32,6 @@ use crate::cli::{GlobalArgs, Strategy, UpgradeArgs, UpgradeTarget};
 use crate::errors::CliError;
 use crate::events::{node_op_end, node_op_start, Outcome};
 use crate::orchestrator::acquirer::{Artifact, BinaryAcquirer, SourceBuildAcquirer};
-use crate::orchestrator::config_repo::acquire_config_repo;
 use crate::orchestrator::install::{
     apply_node_tomledit, copy_dir_recursive, copy_executable, install_seednode_configs,
     ConfigEdits, NodeTomlEdit,
@@ -172,11 +171,13 @@ pub async fn run(mut args: UpgradeArgs, global: &GlobalArgs) -> Result<(), CliEr
     // the migration entry plus per-node results regardless of partial
     // failure status.
 
+    let started_after_swap = plan.start;
     persist_migration(
         &store,
         outcome,
         &inflight_loc,
         runtime.loaded.file.install.binary_keep as usize,
+        started_after_swap,
         global,
     )
 }
@@ -186,8 +187,15 @@ struct Plan {
     binary_tag: Tag,
     config_tag: Option<Tag>,
     proxy_tag: Option<Tag>,
+    /// Pre-cloned config repo path. `build_plan` clones the repo eagerly
+    /// so it can read `binaryVersion` / `proxyVersion` while resolving
+    /// the other two tags. `execute_upgrade` reuses the same path.
+    config_repo_path: Option<std::path::PathBuf>,
     strategy: Strategy,
     skip_validators: bool,
+    /// Start each node after the binary + config swap. Off by default
+    /// — operators run `mxnode start --all` once they're satisfied.
+    start: bool,
     /// Apply observer-squad-specific tomledit edits during ConfigApplied.
     /// Set when the operator runs `mxnode upgrade squad`.
     is_squad: bool,
@@ -199,52 +207,191 @@ async fn build_plan(
     runtime: &Runtime,
     global: &GlobalArgs,
 ) -> Result<Plan, CliError> {
+    use crate::orchestrator::config_repo::{acquire_config_repo, read_proxy_version_from_repo};
     use crate::orchestrator::tag_resolver::{
         resolve_binary_tag, resolve_config_tag, resolve_proxy_tag,
     };
 
-    // Binary: priority CLI > [overrides] > GitHub-latest. We deliberately
-    // skip the mxnode.toml fallback for the *target* tag — staying on the
-    // currently-installed version isn't an upgrade. Operators who want to
-    // redeploy the same tag pass --binary-tag explicitly.
-    let binary = resolve_binary_tag(runtime, args.binary_tag.as_deref())
+    // Step 1 — resolve the config tag. Unlike the previous "leave
+    // untouched unless asked" semantics, `mxnode upgrade` now always
+    // refreshes the config repo: CLI > [overrides].configver >
+    // GitHub-latest. This mirrors the bash `upgrade` function, which
+    // treats the operator's choice of `CONFIGVER` as the entry point
+    // and derives every other version from it.
+    let environment = state.install.as_ref().map(|i| i.environment);
+    let env = environment.ok_or_else(|| {
+        CliError::new(
+            "cannot resolve config tag without an environment",
+            "state.install.environment is missing",
+            "run `mxnode install` first, or pass --config-tag explicitly",
+        )
+        .json_if(global.json)
+    })?;
+    let resolved_config = resolve_config_tag(runtime, env, args.config_tag.as_deref())
         .await
         .map_err(|e| crate::commands::install::resolve_err(e, global))?;
-    crate::commands::install::announce_resolved(global, "binary", &binary);
-    let binary_tag = binary.tag;
+    crate::commands::install::announce_resolved(global, "config", &resolved_config);
+    let config_tag = resolved_config.tag;
 
-    // Config + proxy are optional during an upgrade — `None` means "leave
-    // untouched". Resolve only when the operator actually passed the flag
-    // OR set [overrides], otherwise the upgrade flow doesn't touch them.
-    let environment = state.install.as_ref().map(|i| i.environment);
-    let config_tag =
-        if args.config_tag.is_some() || runtime.loaded.file.overrides.configver().is_some() {
-            let env = environment.ok_or_else(|| {
-                CliError::new(
-                    "cannot resolve --config-tag without an environment",
-                    "state.install.environment is missing",
-                    "run hand-edit and re-run or pass --config-tag explicitly",
-                )
-                .json_if(global.json)
-            })?;
-            let r = resolve_config_tag(runtime, env, args.config_tag.as_deref())
+    // Step 2 — clone the config repo eagerly so we can read
+    // `binaryVersion` / `proxyVersion` from it (bash:`git_clone`).
+    // Cached per-(env, tag) under `<binaries>/config-repos/<env>/<tag>`
+    // — `execute_upgrade` reuses the same path without re-cloning.
+    //
+    // Dry-run + explicit `--binary-tag` shortcut: the operator already
+    // overrode the config-driven resolution, so there's nothing to
+    // learn from cloning the repo. Skip it so `--dry-run` stays a
+    // zero-network preview. The actual `execute_upgrade` path always
+    // clones, since the per-node config-copy step needs the repo.
+    let skip_repo_clone = args.dry_run && args.binary_tag.is_some();
+    let config_repo_path = if skip_repo_clone {
+        None
+    } else {
+        let path = acquire_config_repo(
+            &runtime.paths.binaries,
+            &runtime.loaded.file.network.github_org,
+            env,
+            &config_tag,
+        )
+        .await
+        .map_err(|e| {
+            CliError::new(
+                "failed to acquire config repo for upgrade",
+                e.to_string(),
+                "check network connectivity to github.com or pre-seed `<binaries>/config-repos/<env>/<tag>`",
+            )
+            .json_if(global.json)
+        })?;
+        Some(path)
+    };
+
+    // Step 3 — resolve the binary tag. Chain: CLI > [overrides].binaryver
+    // > config repo's `binaryVersion` file > GitHub-latest of mx-chain-go.
+    // The config-repo fallback is what makes `mxnode upgrade` with zero
+    // flags do the same thing as bash: the config release we just
+    // cloned declares which node tag it pairs with.
+    let binary_tag = resolve_binary_tag_via_config(
+        runtime,
+        args.binary_tag.as_deref(),
+        config_repo_path.as_deref(),
+        global,
+    )
+    .await?;
+
+    // Step 4 — resolve the proxy tag the same way (config repo's
+    // `proxyVersion` as a fallback). Only emitted when the upgrade
+    // target includes the proxy: bare `mxnode upgrade` doesn't touch
+    // the proxy unit unless the operator passes --proxy-tag or sets
+    // [overrides].proxyver. The proxy.run() flow uses its own resolver.
+    let proxy_tag = if args.proxy_tag.is_some()
+        || runtime.loaded.file.overrides.proxyver().is_some()
+    {
+        Some(
+            resolve_proxy_tag_via_config(
+                runtime,
+                args.proxy_tag.as_deref(),
+                config_repo_path.as_deref(),
+                global,
+            )
+            .await?,
+        )
+    } else {
+        // Hint a paired proxy tag without committing to upgrading
+        // the proxy — populated only when the config repo declared one,
+        // so the migration log entry can record what the config
+        // recommended even when the operator skipped the proxy bump.
+        config_repo_path
+            .as_deref()
+            .and_then(read_proxy_version_from_repo)
+            .and_then(|raw| Tag::parse(&raw).ok())
+    };
+
+    // Local helper closures (`async fn` items inside `build_plan` would
+    // need their own desugaring boilerplate). They keep the resolution
+    // chains readable while routing the same `tag_resolver` errors as
+    // before. `config_repo_path` is `None` only on the dry-run shortcut
+    // where the operator explicitly passed `--binary-tag`; the
+    // config-repo-derived fallback is unreachable in that case.
+    async fn resolve_binary_tag_via_config(
+        runtime: &Runtime,
+        cli_value: Option<&str>,
+        config_repo_path: Option<&std::path::Path>,
+        global: &GlobalArgs,
+    ) -> Result<Tag, CliError> {
+        use crate::orchestrator::config_repo::read_binary_version_from_repo;
+        if let Some(raw) = cli_value {
+            let resolved = resolve_binary_tag(runtime, Some(raw))
                 .await
                 .map_err(|e| crate::commands::install::resolve_err(e, global))?;
-            crate::commands::install::announce_resolved(global, "config", &r);
-            Some(r.tag)
-        } else {
-            None
-        };
-    let proxy_tag =
-        if args.proxy_tag.is_some() || runtime.loaded.file.overrides.proxyver().is_some() {
-            let r = resolve_proxy_tag(runtime, args.proxy_tag.as_deref())
+            crate::commands::install::announce_resolved(global, "binary", &resolved);
+            return Ok(resolved.tag);
+        }
+        if let Some(raw) = runtime.loaded.file.overrides.binaryver() {
+            let resolved = resolve_binary_tag(runtime, Some(raw))
                 .await
                 .map_err(|e| crate::commands::install::resolve_err(e, global))?;
-            crate::commands::install::announce_resolved(global, "proxy", &r);
-            Some(r.tag)
-        } else {
-            None
-        };
+            crate::commands::install::announce_resolved(global, "binary", &resolved);
+            return Ok(resolved.tag);
+        }
+        if let Some(repo) = config_repo_path {
+            if let Some(raw) = read_binary_version_from_repo(repo) {
+                let resolved = resolve_binary_tag(runtime, Some(&raw))
+                    .await
+                    .map_err(|e| crate::commands::install::resolve_err(e, global))?;
+                announce_via_config(global, "binary", &resolved.tag);
+                return Ok(resolved.tag);
+            }
+        }
+        let resolved = resolve_binary_tag(runtime, None)
+            .await
+            .map_err(|e| crate::commands::install::resolve_err(e, global))?;
+        crate::commands::install::announce_resolved(global, "binary", &resolved);
+        Ok(resolved.tag)
+    }
+
+    async fn resolve_proxy_tag_via_config(
+        runtime: &Runtime,
+        cli_value: Option<&str>,
+        config_repo_path: Option<&std::path::Path>,
+        global: &GlobalArgs,
+    ) -> Result<Tag, CliError> {
+        use crate::orchestrator::config_repo::read_proxy_version_from_repo;
+        if let Some(raw) = cli_value {
+            let resolved = resolve_proxy_tag(runtime, Some(raw))
+                .await
+                .map_err(|e| crate::commands::install::resolve_err(e, global))?;
+            crate::commands::install::announce_resolved(global, "proxy", &resolved);
+            return Ok(resolved.tag);
+        }
+        if let Some(raw) = runtime.loaded.file.overrides.proxyver() {
+            let resolved = resolve_proxy_tag(runtime, Some(raw))
+                .await
+                .map_err(|e| crate::commands::install::resolve_err(e, global))?;
+            crate::commands::install::announce_resolved(global, "proxy", &resolved);
+            return Ok(resolved.tag);
+        }
+        if let Some(repo) = config_repo_path {
+            if let Some(raw) = read_proxy_version_from_repo(repo) {
+                let resolved = resolve_proxy_tag(runtime, Some(&raw))
+                    .await
+                    .map_err(|e| crate::commands::install::resolve_err(e, global))?;
+                announce_via_config(global, "proxy", &resolved.tag);
+                return Ok(resolved.tag);
+            }
+        }
+        let resolved = resolve_proxy_tag(runtime, None)
+            .await
+            .map_err(|e| crate::commands::install::resolve_err(e, global))?;
+        crate::commands::install::announce_resolved(global, "proxy", &resolved);
+        Ok(resolved.tag)
+    }
+
+    fn announce_via_config(global: &GlobalArgs, kind: &str, tag: &Tag) {
+        if global.json || global.quiet {
+            return;
+        }
+        eprintln!("  → {kind} {tag} (from config repo)");
+    }
 
     // Selection: route every form through the same resolver as the
     // lifecycle commands so behaviour stays consistent. Default with
@@ -287,10 +434,12 @@ async fn build_plan(
     Ok(Plan {
         selected,
         binary_tag,
-        config_tag,
+        config_tag: Some(config_tag),
         proxy_tag,
+        config_repo_path,
         strategy: args.strategy,
         skip_validators: args.skip_validators,
+        start: args.start,
         is_squad: false,
     })
 }
@@ -311,6 +460,7 @@ fn emit_dry_run(plan: &Plan, global: &GlobalArgs) -> Result<(), CliError> {
             "proxy_tag": plan.proxy_tag.as_ref().map(|t| t.to_string()),
             "strategy": strategy_label(plan.strategy),
             "skip_validators": plan.skip_validators,
+            "start_after_swap": plan.start,
             "selected": plan.selected.iter().map(|i| i.get()).collect::<Vec<_>>(),
         });
         println!("{payload}");
@@ -330,6 +480,11 @@ fn emit_dry_run(plan: &Plan, global: &GlobalArgs) -> Result<(), CliError> {
         );
         if plan.skip_validators {
             println!("  skip_validators: true");
+        }
+        if plan.start {
+            println!("  start_after_swap: true (rolling restart + readiness probe)");
+        } else {
+            println!("  start_after_swap: false (nodes left stopped; run `mxnode start --all`)");
         }
     }
     Ok(())
@@ -391,10 +546,11 @@ async fn execute_upgrade(
             }
         };
 
-    let config_repo = match acquire_upgrade_config_repo(plan, state, runtime).await {
-        Ok(repo) => repo,
-        Err(e) => return failure_outcome(plan, started, e),
-    };
+    // `build_plan` cloned the config repo eagerly so it could read
+    // `binaryVersion` / `proxyVersion`. Reuse the same cached path
+    // here — `acquire_config_repo` is idempotent, but skipping the
+    // round-trip keeps the audit log linear.
+    let config_repo = plan.config_repo_path.clone();
 
     if let Err(e) = refresh_upgrade_utilities(
         &acquirer,
@@ -435,6 +591,7 @@ async fn execute_upgrade(
             is_squad: plan.is_squad,
             config_repo: config_repo.as_deref(),
             runtime,
+            start_after_swap: plan.start,
         };
 
         match upgrade_one_node(node_ctx, node, inflight).await {
@@ -501,30 +658,6 @@ fn failure_outcome(plan: &Plan, started: time::OffsetDateTime, error: String) ->
     }
 }
 
-async fn acquire_upgrade_config_repo(
-    plan: &Plan,
-    state: &HostState,
-    runtime: &Runtime,
-) -> Result<Option<std::path::PathBuf>, String> {
-    let Some(config_tag) = plan.config_tag.as_ref() else {
-        return Ok(None);
-    };
-    let environment = state
-        .install
-        .as_ref()
-        .map(|install| install.environment)
-        .ok_or_else(|| "config update: state.install.environment is missing".to_string())?;
-    acquire_config_repo(
-        &runtime.paths.binaries,
-        &runtime.loaded.file.network.github_org,
-        environment,
-        config_tag,
-    )
-    .await
-    .map(Some)
-    .map_err(|e| format!("config repo: {e}"))
-}
-
 async fn refresh_upgrade_utilities(
     acquirer: &Arc<dyn BinaryAcquirer>,
     bin_store: &BinStore,
@@ -573,6 +706,10 @@ struct UpgradeNodeContext<'a> {
     is_squad: bool,
     config_repo: Option<&'a Path>,
     runtime: &'a Runtime,
+    /// When false (default), `upgrade_one_node` stops + swaps and
+    /// leaves the unit stopped. Operators run `mxnode start --all`
+    /// afterwards. Mirrors the bash `upgrade` flow.
+    start_after_swap: bool,
 }
 
 async fn upgrade_one_node(
@@ -644,34 +781,40 @@ async fn upgrade_one_node(
         return Err(format!("symlink swap failed: {cause}"));
     }
 
-    inflight.current_step = Started;
-    let _ = inflight.save(ctx.inflight_loc);
-    if let Err(e) = ctx.ctl.start(&node.unit).await {
-        let cause = e.to_string();
-        node_op_end(
-            "upgrade",
-            node.index,
-            &node.unit,
-            Outcome::Fail { cause: &cause },
-        );
-        return Err(format!("systemctl start failed: {cause}"));
-    }
+    // The bash `upgrade` flow stops every node, swaps binary + config,
+    // and leaves the units stopped — the operator decides when to bring
+    // consensus back. mxnode mirrors that by default; `--start` opts
+    // back into the rolling restart + readiness probe.
+    if ctx.start_after_swap {
+        inflight.current_step = Started;
+        let _ = inflight.save(ctx.inflight_loc);
+        if let Err(e) = ctx.ctl.start(&node.unit).await {
+            let cause = e.to_string();
+            node_op_end(
+                "upgrade",
+                node.index,
+                &node.unit,
+                Outcome::Fail { cause: &cause },
+            );
+            return Err(format!("systemctl start failed: {cause}"));
+        }
 
-    inflight.current_step = NonceVerified;
-    let _ = inflight.save(ctx.inflight_loc);
-    // Readiness probe: wait for the node's nonce to be within K of the
-    // highest known network nonce among siblings, OR for the node to
-    // report `erd_is_syncing == 0` with a non-zero nonce. Single-node
-    // hosts skip the cross-sibling comparison.
-    if let Err(e) = wait_for_node_ready(ctx.state, node).await {
-        let cause = format!("readiness probe: {e}");
-        node_op_end(
-            "upgrade",
-            node.index,
-            &node.unit,
-            Outcome::Fail { cause: &cause },
-        );
-        return Err(cause);
+        inflight.current_step = NonceVerified;
+        let _ = inflight.save(ctx.inflight_loc);
+        // Readiness probe: wait for the node's nonce to be within K of
+        // the highest known network nonce among siblings, OR for the
+        // node to report `erd_is_syncing == 0` with a non-zero nonce.
+        // Single-node hosts skip the cross-sibling comparison.
+        if let Err(e) = wait_for_node_ready(ctx.state, node).await {
+            let cause = format!("readiness probe: {e}");
+            node_op_end(
+                "upgrade",
+                node.index,
+                &node.unit,
+                Outcome::Fail { cause: &cause },
+            );
+            return Err(cause);
+        }
     }
 
     node_op_end("upgrade", node.index, &node.unit, Outcome::Ok);
@@ -844,6 +987,7 @@ fn persist_migration(
     outcome: UpgradeOutcome,
     inflight_loc: &Path,
     binary_keep: usize,
+    started_after_swap: bool,
     global: &GlobalArgs,
 ) -> Result<(), CliError> {
     let keep = binary_keep.max(1);
@@ -963,6 +1107,12 @@ fn persist_migration(
                 print!(" — {err}");
             }
             println!();
+        }
+        // The default upgrade leaves nodes stopped (matching bash). Make
+        // the next step explicit so the operator doesn't sit on a host
+        // with consensus paused wondering why `status` reads `failed`.
+        if !any_failed && !started_after_swap {
+            println!("\n→ run `mxnode start --all` to bring nodes back up");
         }
     }
 
