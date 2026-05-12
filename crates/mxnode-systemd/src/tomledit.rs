@@ -3,8 +3,8 @@
 //! Replaces the bash `sed -i` invocations that today rewrite:
 //!   - `prefs.toml` → `NodeDisplayName = "..."`
 //!   - `prefs.toml` → `DestinationShardAsObserver = "..."`
-//!   - `mxnode.toml` → `[DbLookupExtensions] Enabled = true`
-//!   - proxy `mxnode.toml` → `ServerPort = 8079` + observers list
+//!   - node `config.toml` → `[DbLookupExtensions] Enabled = true`
+//!   - proxy `config.toml` → `ServerPort = 8079` + observers list
 //!
 //! Every mutator is **idempotent**: applying it twice produces the same
 //! bytes as applying it once. Comments and key ordering survive the
@@ -375,7 +375,7 @@ fn substitute_in_value(v: &toml::Value, subs: &[(&str, &str)]) -> toml::Value {
     }
 }
 
-/// One observer entry rendered into the proxy `mxnode.toml`'s
+/// One observer entry rendered into the proxy `config.toml`'s
 /// `[[Observers]]` array-of-tables.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObserverEntry {

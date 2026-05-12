@@ -249,9 +249,22 @@ pub async fn run_install(
         .await
         .map_err(InstallError::ConfigRepo)?;
 
-        let upstream_cfg = proxy_repo.join("cmd/proxy/config/mxnode.toml");
-        let raw = fs::read_to_string(&upstream_cfg).map_err(|e| InstallError::Io {
-            path: upstream_cfg.display().to_string(),
+        // mx-chain-proxy-go ships its config as `cmd/proxy/config/`
+        // (config.toml + external.toml + apiConfig/* + economics.toml
+        // + ...). Bash `cp -pr cmd/proxy/* $CUSTOM_HOME/elrond-proxy/`
+        // — we mirror that by recursive-copying the whole config
+        // tree first, then patching `config.toml` in place. A
+        // previous rename mistakenly looked for `mxnode.toml` here,
+        // which broke fresh proxy installs at the file-read step
+        // (and also skipped the rest of the upstream config files
+        // entirely, which would have surfaced at proxy startup).
+        let upstream_cfg_dir = proxy_repo.join("cmd/proxy/config");
+        let proxy_cfg_dir = proxy_dir.join("config");
+        copy_dir_recursive(&upstream_cfg_dir, &proxy_cfg_dir)?;
+
+        let proxy_cfg_dest = proxy_cfg_dir.join("config.toml");
+        let raw = fs::read_to_string(&proxy_cfg_dest).map_err(|e| InstallError::Io {
+            path: proxy_cfg_dest.display().to_string(),
             source: e,
         })?;
         let mut proxy_config: DocumentMut = raw
@@ -266,12 +279,8 @@ pub async fn run_install(
 
         rewrite_proxy_config(&mut proxy_config, DEFAULT_PROXY_PORT, &observers)
             .map_err(|e| InstallError::Toml(format!("proxy config: {e}")))?;
-        fs::write(
-            proxy_dir.join("config/mxnode.toml"),
-            proxy_config.to_string(),
-        )
-        .map_err(|e| InstallError::Io {
-            path: proxy_dir.join("config/mxnode.toml").display().to_string(),
+        fs::write(&proxy_cfg_dest, proxy_config.to_string()).map_err(|e| InstallError::Io {
+            path: proxy_cfg_dest.display().to_string(),
             source: e,
         })?;
 
@@ -1033,7 +1042,7 @@ mod tests {
         let proxy_config_dir = tmp.path().join("config");
         fs::create_dir_all(&proxy_config_dir).unwrap();
 
-        // Simulate upstream cmd/proxy/config/mxnode.toml with sections we must preserve.
+        // Simulate upstream cmd/proxy/config/config.toml with sections we must preserve.
         let upstream = r#"
 [GeneralSettings]
 ServerPort = 8080
@@ -1047,17 +1056,17 @@ Address = "http://upstream:8083"
 LoggingEnabled = true
 ThresholdInMicroSeconds = 10000
 "#;
-        fs::write(proxy_config_dir.join("mxnode.toml"), upstream).unwrap();
+        fs::write(proxy_config_dir.join("config.toml"), upstream).unwrap();
 
         // Seed from upstream then patch.
-        let raw = fs::read_to_string(proxy_config_dir.join("mxnode.toml")).unwrap();
+        let raw = fs::read_to_string(proxy_config_dir.join("config.toml")).unwrap();
         let mut doc: DocumentMut = raw.parse().unwrap();
         let observers = build_default_observers(8080, 4);
         mxnode_systemd::rewrite_proxy_config(&mut doc, mxnode_core::DEFAULT_PROXY_PORT, &observers)
             .unwrap();
-        fs::write(proxy_config_dir.join("mxnode.toml"), doc.to_string()).unwrap();
+        fs::write(proxy_config_dir.join("config.toml"), doc.to_string()).unwrap();
 
-        let out = fs::read_to_string(proxy_config_dir.join("mxnode.toml")).unwrap();
+        let out = fs::read_to_string(proxy_config_dir.join("config.toml")).unwrap();
         assert!(
             out.contains("RequestTimeoutSec = 60"),
             "upstream value lost: {out}"
