@@ -183,9 +183,57 @@ pub fn bootstrap(version: &str) -> Result<GoInstall, ToolchainError> {
     result
 }
 
-/// `sudo apt-get install` the bash build-deps list. Idempotent — apt
-/// is happy to re-confirm already-installed packages.
+/// Required binaries that the [`APT_BUILD_DEPS`] list provides. Used
+/// by [`build_deps_satisfied`] to short-circuit the apt invocation
+/// when an earlier `mxnode install` (or the operator's distro image)
+/// already put them on PATH.
+///
+/// `build-essential` is a metapackage; what mxnode actually shells
+/// out is `make` and `gcc`, so those are the binaries we check. The
+/// other entries are 1:1 with their package name.
+const BUILD_DEP_BINARIES: &[&str] = &[
+    "make", "gcc", "git", "rsync", "curl", "zip", "unzip", "jq", "wget",
+];
+
+/// True iff every binary in [`BUILD_DEP_BINARIES`] resolves on the
+/// current `PATH`. Cheap (one stat per binary, no subprocess) — runs
+/// in single-digit microseconds on a warm cache, which makes it free
+/// to call on every `mxnode install` / `mxnode upgrade` and skip the
+/// 2–5 second `apt-get install` when nothing needs to land.
+pub fn build_deps_satisfied() -> bool {
+    BUILD_DEP_BINARIES.iter().all(|b| is_on_path(b))
+}
+
+/// Walk `$PATH` and return `true` if any directory contains an
+/// executable named `bin`. Treats a missing/empty `PATH` as
+/// "nothing found" rather than erroring — that lines up with the
+/// bash fallback semantics and keeps the helper infallible.
+fn is_on_path(bin: &str) -> bool {
+    let Ok(path) = std::env::var("PATH") else {
+        return false;
+    };
+    for dir in std::env::split_paths(&path) {
+        if dir.join(bin).is_file() {
+            return true;
+        }
+    }
+    false
+}
+
+/// `sudo apt-get install` the bash build-deps list. Short-circuits to
+/// a no-op when every binary the deps would provide is already on
+/// `PATH` — the historic behaviour re-ran apt-get on every upgrade
+/// and wasted 2–5 seconds re-confirming already-installed packages.
+/// Operators on a host where `mxnode install` already landed will see
+/// a single skip line instead of the full apt-get banter.
 pub fn install_apt_deps() -> Result<(), ToolchainError> {
+    if build_deps_satisfied() {
+        eprintln!(
+            "→ build deps already on PATH ({}); skipping apt-get install",
+            BUILD_DEP_BINARIES.join(" "),
+        );
+        return Ok(());
+    }
     eprintln!("→ installing apt build deps ({})", APT_BUILD_DEPS.join(" "));
     let mut cmd = Command::new("sudo");
     cmd.env("DEBIAN_FRONTEND", "noninteractive")
@@ -522,5 +570,20 @@ mod tests {
     fn satisfies_pads_missing_components() {
         assert!(satisfies("1.21", "1.21.0"));
         assert!(!satisfies("1.21", "1.21.1"));
+    }
+
+    #[test]
+    fn is_on_path_finds_known_binary() {
+        // `ls` exists on every supported host (Linux + macOS dev box).
+        // If this fails on a CI runner missing coreutils, the test
+        // setup itself is broken — that's a useful signal.
+        assert!(is_on_path("ls"));
+    }
+
+    #[test]
+    fn is_on_path_misses_garbage() {
+        assert!(!is_on_path(
+            "mxnode-this-binary-cannot-possibly-exist-d8c8f6a2"
+        ));
     }
 }
