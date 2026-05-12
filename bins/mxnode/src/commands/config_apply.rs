@@ -108,6 +108,7 @@ pub async fn run(args: ConfigApplyArgs, global: &GlobalArgs) -> Result<(), CliEr
             &node.display_name,
             template,
             install.environment.as_str(),
+            node.role.as_str(),
             node.index.get(),
         );
         // `config apply` preserves the operator's `RedundancyLevel`

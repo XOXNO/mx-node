@@ -288,6 +288,7 @@ fn render_table(state: &HostState, probes: &[Probe], color: bool) {
             &node.display_name,
             template,
             env_str,
+            node.role.as_str(),
             node.index.get(),
         );
         let label = if label.is_empty() {

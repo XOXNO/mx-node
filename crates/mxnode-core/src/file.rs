@@ -196,7 +196,15 @@ impl Default for NodeSection {
             log_level: "*:DEBUG".to_string(),
             limit_nofile: 4096,
             restart_sec: 3,
-            name_template: "mx-chain-{env}-validator-{index}".to_string(),
+            // Role-aware default so observer / multikey installs don't
+            // render with "validator" baked into the name. `{role}` is
+            // expanded by `prompts::expand_template` to the install
+            // role's `Role::as_str()` lowercase form. Operators on
+            // configs cached before v0.9.5 keep the literal
+            // `mx-chain-{env}-validator-{index}`; the shim in
+            // `prompts::expand_template` transparently upgrades that
+            // exact legacy default to the role-aware shape.
+            name_template: "mx-chain-{env}-{role}-{index}".to_string(),
         }
     }
 }

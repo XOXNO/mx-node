@@ -186,6 +186,7 @@ pub async fn run(mut args: InstallArgs, global: &GlobalArgs) -> Result<(), CliEr
             &indices,
             resolved_template,
             environment.as_str(),
+            role.as_str(),
             interactive,
         )
         .map_err(|e| {

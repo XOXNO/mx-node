@@ -85,6 +85,7 @@ pub async fn run(args: DashboardArgs, global: &GlobalArgs) -> Result<(), CliErro
                 &n.display_name,
                 template,
                 env_str,
+                n.role.as_str(),
                 n.index.get(),
             );
             NodeSpec {

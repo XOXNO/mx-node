@@ -128,6 +128,7 @@ pub async fn run(args: InstallAddArgs, global: &GlobalArgs) -> Result<(), CliErr
             &indices,
             resolved_template,
             environment.as_str(),
+            role.as_str(),
             interactive,
         )
         .map_err(|e| {

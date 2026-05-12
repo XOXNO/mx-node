@@ -224,12 +224,36 @@ pub fn prompt_for_redundancy<R: BufRead, W: Write>(
     }
 }
 
-/// Substitute `{env}` and `{index}` in a name template, matching the
-/// expansion done by the install orchestrator. Pure helper so prompts
-/// and the orchestrator agree on what "the default" is byte-for-byte.
-pub fn expand_template(template: &str, env: &str, index: u16) -> String {
-    template
+/// Pre-v0.9.5 default. Older mxnode installs cached this verbatim in
+/// `mxnode.toml::node.name_template`. `expand_template` transparently
+/// upgrades it to the role-aware default so an observer install on a
+/// host that auto-initialised the config months ago doesn't render
+/// every prompt with "validator" baked in.
+const LEGACY_DEFAULT_TEMPLATE: &str = "mx-chain-{env}-validator-{index}";
+
+/// Role-aware default. Lives next to the legacy default here (instead
+/// of in `mxnode-core::file`) so the migration shim above can stay a
+/// pure-string compare without pulling cycle-creating imports.
+const ROLE_AWARE_DEFAULT_TEMPLATE: &str = "mx-chain-{env}-{role}-{index}";
+
+/// Substitute `{env}`, `{role}`, and `{index}` in a name template,
+/// matching the expansion done by the install orchestrator. Pure
+/// helper so prompts and the orchestrator agree on what "the default"
+/// is byte-for-byte.
+///
+/// Legacy migration: a template that exactly matches the pre-v0.9.5
+/// default (no `{role}` placeholder, "validator" baked in) is silently
+/// treated as the role-aware default. Operators who hand-edited their
+/// template to something else are untouched.
+pub fn expand_template(template: &str, env: &str, role: &str, index: u16) -> String {
+    let effective = if template == LEGACY_DEFAULT_TEMPLATE {
+        ROLE_AWARE_DEFAULT_TEMPLATE
+    } else {
+        template
+    };
+    effective
         .replace("{env}", env)
+        .replace("{role}", role)
         .replace("{index}", &index.to_string())
 }
 
@@ -250,14 +274,20 @@ pub fn expand_template(template: &str, env: &str, index: u16) -> String {
 ///      from mxnode versions that predated the persisted-name field).
 ///   3. Empty string when neither source has a value — callers fall
 ///      back to a unit-level label like `node-{index}`.
-pub fn resolve_display_name(persisted: &str, template: &str, env: &str, index: u16) -> String {
+pub fn resolve_display_name(
+    persisted: &str,
+    template: &str,
+    env: &str,
+    role: &str,
+    index: u16,
+) -> String {
     if !persisted.is_empty() {
         return persisted.to_string();
     }
     if template.is_empty() {
         return String::new();
     }
-    expand_template(template, env, index)
+    expand_template(template, env, role, index)
 }
 
 /// Resolve per-node display names.
@@ -267,6 +297,7 @@ pub fn resolve_display_name(persisted: &str, template: &str, env: &str, index: u
 /// blank line (default). When `interactive` is false, expand silently.
 /// EOF mid-prompt is treated as "accept all remaining defaults" so a
 /// piped-stdin invocation still completes.
+#[allow(clippy::too_many_arguments)]
 pub fn resolve_node_names<R: BufRead, W: Write>(
     reader: &mut R,
     writer: &mut W,
@@ -274,6 +305,7 @@ pub fn resolve_node_names<R: BufRead, W: Write>(
     indices: &[u16],
     template: &str,
     env: &str,
+    role: &str,
     interactive: bool,
 ) -> std::io::Result<Vec<String>> {
     debug_assert_eq!(
@@ -284,7 +316,7 @@ pub fn resolve_node_names<R: BufRead, W: Write>(
     if !interactive {
         return Ok(indices
             .iter()
-            .map(|i| expand_template(template, env, *i))
+            .map(|i| expand_template(template, env, role, *i))
             .collect());
     }
 
@@ -296,7 +328,7 @@ pub fn resolve_node_names<R: BufRead, W: Write>(
 
     let mut names: Vec<String> = Vec::with_capacity(count as usize);
     for (slot, idx) in indices.iter().enumerate() {
-        let default = expand_template(template, env, *idx);
+        let default = expand_template(template, env, role, *idx);
         write!(writer, "  node {idx} [{default}]: ")?;
         writer.flush()?;
 
@@ -311,7 +343,7 @@ pub fn resolve_node_names<R: BufRead, W: Write>(
                 count as usize - slot
             )?;
             for j in &indices[slot..] {
-                names.push(expand_template(template, env, *j));
+                names.push(expand_template(template, env, role, *j));
             }
             return Ok(names);
         }
@@ -338,6 +370,17 @@ mod tests {
         template: &str,
         interactive: bool,
     ) -> (Vec<String>, String) {
+        run_with_role(input, count, indices, template, "validator", interactive)
+    }
+
+    fn run_with_role(
+        input: &str,
+        count: u16,
+        indices: &[u16],
+        template: &str,
+        role: &str,
+        interactive: bool,
+    ) -> (Vec<String>, String) {
         let mut reader = Cursor::new(input.as_bytes().to_vec());
         let mut writer: Vec<u8> = Vec::new();
         let names = resolve_node_names(
@@ -347,6 +390,7 @@ mod tests {
             indices,
             template,
             "mainnet",
+            role,
             interactive,
         )
         .expect("ok");
@@ -361,6 +405,50 @@ mod tests {
             out.is_empty(),
             "non-interactive must not write anything: {out:?}"
         );
+    }
+
+    /// Regression for the operator complaint: `mxnode install --role
+    /// observer` against a host whose cached config still had the
+    /// pre-v0.9.5 legacy default (`mx-chain-{env}-validator-{index}`)
+    /// was prompting with "validator" in every default name. The
+    /// migration shim must produce observer-flavoured defaults now.
+    #[test]
+    fn legacy_default_template_renders_observer_defaults_for_observer_install() {
+        let (names, out) = run_with_role(
+            "\n\n\n\n",
+            4,
+            &[0, 1, 2, 3],
+            LEGACY_DEFAULT_TEMPLATE,
+            "observer",
+            true,
+        );
+        assert_eq!(
+            names,
+            vec![
+                "mx-chain-mainnet-observer-0",
+                "mx-chain-mainnet-observer-1",
+                "mx-chain-mainnet-observer-2",
+                "mx-chain-mainnet-observer-3",
+            ],
+        );
+        assert!(
+            out.contains("node 0 [mx-chain-mainnet-observer-0]"),
+            "prompt must show observer-flavoured default, got: {out}",
+        );
+    }
+
+    /// Same legacy template + multikey install → "multikey" defaults.
+    #[test]
+    fn legacy_default_template_renders_multikey_defaults_for_multikey_install() {
+        let (names, _) = run_with_role(
+            "\n",
+            1,
+            &[0],
+            LEGACY_DEFAULT_TEMPLATE,
+            "multikey",
+            true,
+        );
+        assert_eq!(names, vec!["mx-chain-mainnet-multikey-0"]);
     }
 
     #[test]
@@ -473,20 +561,78 @@ mod tests {
             "my-validator-prod",
             "mx-chain-{env}-validator-{index}",
             "mainnet",
+            "observer",
             0,
         );
         assert_eq!(out, "my-validator-prod");
     }
 
+    /// Pre-v0.9.5 default template + observer install → the legacy
+    /// "validator" literal is transparently treated as the role-aware
+    /// default so the operator sees observer-flavoured defaults
+    /// without hand-editing their cached `name_template`.
     #[test]
-    fn resolve_display_name_falls_back_to_template() {
-        let out = resolve_display_name("", "mx-chain-{env}-validator-{index}", "mainnet", 3);
+    fn legacy_default_template_swaps_role_for_observer() {
+        let out = resolve_display_name(
+            "",
+            "mx-chain-{env}-validator-{index}",
+            "mainnet",
+            "observer",
+            3,
+        );
+        assert_eq!(out, "mx-chain-mainnet-observer-3");
+    }
+
+    /// Legacy default + validator install behaves exactly as before
+    /// (the shim is a no-op when the role IS validator).
+    #[test]
+    fn legacy_default_template_keeps_validator_for_validator_install() {
+        let out = resolve_display_name(
+            "",
+            "mx-chain-{env}-validator-{index}",
+            "mainnet",
+            "validator",
+            3,
+        );
         assert_eq!(out, "mx-chain-mainnet-validator-3");
+    }
+
+    /// Hand-edited templates are NOT touched even when they contain
+    /// the word "validator" — only the exact legacy default migrates.
+    #[test]
+    fn hand_edited_template_with_validator_literal_is_preserved() {
+        let out = resolve_display_name(
+            "",
+            "my-{env}-validator-pool-{index}",
+            "mainnet",
+            "observer",
+            0,
+        );
+        assert_eq!(out, "my-mainnet-validator-pool-0");
+    }
+
+    /// New role-aware default works for every role.
+    #[test]
+    fn role_aware_default_template_substitutes_role() {
+        for (role, expected) in [
+            ("validator", "mx-chain-mainnet-validator-0"),
+            ("observer", "mx-chain-mainnet-observer-0"),
+            ("multikey", "mx-chain-mainnet-multikey-0"),
+        ] {
+            let out = resolve_display_name(
+                "",
+                "mx-chain-{env}-{role}-{index}",
+                "mainnet",
+                role,
+                0,
+            );
+            assert_eq!(out, expected, "role={role}");
+        }
     }
 
     #[test]
     fn resolve_display_name_empty_when_neither_source_set() {
-        assert_eq!(resolve_display_name("", "", "mainnet", 0), "");
+        assert_eq!(resolve_display_name("", "", "mainnet", "observer", 0), "");
     }
 
     #[test]
