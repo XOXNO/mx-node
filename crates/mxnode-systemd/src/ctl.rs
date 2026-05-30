@@ -6,7 +6,8 @@
 //! that door open by hiding the implementation behind the [`Ctl`] trait so
 //! callers can swap in a different backend later.
 
-use std::path::PathBuf;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use thiserror::Error;
@@ -22,6 +23,9 @@ pub enum CtlError {
 
     #[error("systemctl exited via signal")]
     Signaled,
+
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 /// Result of `systemctl is-active <unit>`.
@@ -60,6 +64,24 @@ pub trait Ctl: Send + Sync {
     /// Read a single property via `systemctl show -p <prop>`. Returns the
     /// trimmed value (e.g. `ActiveState=active` → `"active"`).
     async fn show_property(&self, unit: &str, property: &str) -> Result<String, CtlError>;
+    /// `systemctl daemon-reload`. Must run after any unit file is written
+    /// to or removed from `/etc/systemd/system` so the manager doesn't act
+    /// on a stale in-memory view.
+    async fn daemon_reload(&self) -> Result<(), CtlError>;
+    /// `systemctl enable <unit>`.
+    async fn enable(&self, unit: &str) -> Result<(), CtlError>;
+    /// `systemctl disable <unit>`. Idempotent: a unit that was never
+    /// enabled is treated as success, not an error.
+    async fn disable(&self, unit: &str) -> Result<(), CtlError>;
+    /// `systemctl reset-failed` (all units). Clears lingering failed state
+    /// after stopping/removing units.
+    async fn reset_failed(&self) -> Result<(), CtlError>;
+    /// Place a rendered unit file at `dest` (privileged on Linux:
+    /// `/etc/systemd/system` is root-owned; unprivileged on macOS).
+    async fn install_unit_file(&self, src: &Path, dest: &Path) -> Result<(), CtlError>;
+    /// Remove a file at a privileged path (unit file under
+    /// `/etc/systemd/system`). Missing file is success.
+    async fn remove_file(&self, path: &Path) -> Result<(), CtlError>;
 }
 
 /// Default `Ctl` backed by the host's `systemctl` binary, prefixed with
@@ -132,12 +154,47 @@ impl SystemctlCtl {
         // exit codes as informational here — only spawn errors propagate.
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
+
+    async fn run_privileged(&self, program: &str, args: &[&OsStr]) -> Result<(), CtlError> {
+        let mut cmd = if self.sudo {
+            let mut c = Command::new("sudo");
+            c.arg("--non-interactive").arg(program);
+            c
+        } else {
+            Command::new(program)
+        };
+        for a in args {
+            cmd.arg(a);
+        }
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = cmd.output().await.map_err(CtlError::Spawn)?;
+        if output.status.success() {
+            return Ok(());
+        }
+        match output.status.code() {
+            Some(code) => Err(CtlError::NonZero {
+                code,
+                stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            }),
+            None => Err(CtlError::Signaled),
+        }
+    }
 }
 
 impl Default for SystemctlCtl {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// True when a `systemctl disable` failure means "there was nothing to
+/// disable" (the unit was never enabled, or its file is already gone) —
+/// which uninstall treats as success.
+fn is_not_enabled(stderr: &str) -> bool {
+    let s = stderr.to_ascii_lowercase();
+    s.contains("not enabled") || s.contains("does not exist") || s.contains("no such file")
 }
 
 #[async_trait::async_trait]
@@ -163,6 +220,29 @@ impl Ctl for SystemctlCtl {
             Some((_, v)) => Ok(v.trim().to_string()),
             None => Ok(raw),
         }
+    }
+    async fn daemon_reload(&self) -> Result<(), CtlError> {
+        self.run_mutation(&["daemon-reload"]).await
+    }
+    async fn enable(&self, unit: &str) -> Result<(), CtlError> {
+        self.run_mutation(&["enable", unit]).await
+    }
+    async fn disable(&self, unit: &str) -> Result<(), CtlError> {
+        match self.run_mutation(&["disable", unit]).await {
+            Err(CtlError::NonZero { stderr, .. }) if is_not_enabled(&stderr) => Ok(()),
+            other => other,
+        }
+    }
+    async fn reset_failed(&self) -> Result<(), CtlError> {
+        self.run_mutation(&["reset-failed"]).await
+    }
+    async fn install_unit_file(&self, src: &Path, dest: &Path) -> Result<(), CtlError> {
+        self.run_privileged("mv", &[src.as_os_str(), dest.as_os_str()])
+            .await
+    }
+    async fn remove_file(&self, path: &Path) -> Result<(), CtlError> {
+        self.run_privileged("rm", &[OsStr::new("-f"), path.as_os_str()])
+            .await
     }
 }
 
@@ -340,6 +420,30 @@ impl Ctl for LaunchdCtl {
         }
         Ok(String::new())
     }
+
+    async fn daemon_reload(&self) -> Result<(), CtlError> {
+        Ok(())
+    }
+    async fn enable(&self, _unit: &str) -> Result<(), CtlError> {
+        Ok(())
+    }
+    async fn disable(&self, _unit: &str) -> Result<(), CtlError> {
+        Ok(())
+    }
+    async fn reset_failed(&self) -> Result<(), CtlError> {
+        Ok(())
+    }
+    async fn install_unit_file(&self, src: &Path, dest: &Path) -> Result<(), CtlError> {
+        std::fs::copy(src, dest)?;
+        Ok(())
+    }
+    async fn remove_file(&self, path: &Path) -> Result<(), CtlError> {
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -366,13 +470,14 @@ pub mod testing {
     //! integration tests across the workspace can use it.
 
     use super::*;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::sync::Mutex;
 
     #[derive(Default)]
     pub struct FakeCtl {
         pub calls: Mutex<Vec<(String, String)>>,
         active_states: Mutex<HashMap<String, ActiveState>>,
+        fail_on: Mutex<HashSet<String>>,
     }
 
     impl FakeCtl {
@@ -389,6 +494,24 @@ pub mod testing {
 
         pub fn calls(&self) -> Vec<(String, String)> {
             self.calls.lock().unwrap().clone()
+        }
+
+        pub fn fail_on(&self, verb: &str) {
+            self.fail_on.lock().unwrap().insert(verb.to_string());
+        }
+
+        fn record_or_fail(&self, verb: &str, target: &str) -> Result<(), CtlError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((verb.to_string(), target.to_string()));
+            if self.fail_on.lock().unwrap().contains(verb) {
+                return Err(CtlError::NonZero {
+                    code: 1,
+                    stderr: format!("fake failure on {verb}"),
+                });
+            }
+            Ok(())
         }
     }
 
@@ -434,6 +557,24 @@ pub mod testing {
         async fn show_property(&self, _unit: &str, _property: &str) -> Result<String, CtlError> {
             Ok(String::new())
         }
+        async fn daemon_reload(&self) -> Result<(), CtlError> {
+            self.record_or_fail("daemon-reload", "")
+        }
+        async fn enable(&self, unit: &str) -> Result<(), CtlError> {
+            self.record_or_fail("enable", unit)
+        }
+        async fn disable(&self, unit: &str) -> Result<(), CtlError> {
+            self.record_or_fail("disable", unit)
+        }
+        async fn reset_failed(&self) -> Result<(), CtlError> {
+            self.record_or_fail("reset-failed", "")
+        }
+        async fn install_unit_file(&self, _src: &Path, dest: &Path) -> Result<(), CtlError> {
+            self.record_or_fail("install-unit", &dest.display().to_string())
+        }
+        async fn remove_file(&self, path: &Path) -> Result<(), CtlError> {
+            self.record_or_fail("remove-file", &path.display().to_string())
+        }
     }
 }
 
@@ -477,5 +618,84 @@ mod tests {
             calls[2],
             ("stop".to_string(), "elrond-node-0.service".to_string())
         );
+    }
+}
+
+#[cfg(test)]
+mod privileged_trait_tests {
+    use super::testing::FakeCtl;
+    use super::Ctl;
+    use std::path::Path;
+
+    #[tokio::test]
+    async fn fake_records_privileged_ops_and_can_fail() {
+        let ctl = FakeCtl::new();
+        ctl.daemon_reload().await.unwrap();
+        ctl.enable("elrond-node-0.service").await.unwrap();
+        ctl.disable("elrond-node-0.service").await.unwrap();
+        ctl.reset_failed().await.unwrap();
+        ctl.install_unit_file(Path::new("/tmp/x"), Path::new("/etc/systemd/system/x"))
+            .await
+            .unwrap();
+        ctl.remove_file(Path::new("/etc/systemd/system/x"))
+            .await
+            .unwrap();
+        let verbs: Vec<String> = ctl.calls().into_iter().map(|(v, _)| v).collect();
+        assert_eq!(
+            verbs,
+            vec![
+                "daemon-reload",
+                "enable",
+                "disable",
+                "reset-failed",
+                "install-unit",
+                "remove-file"
+            ]
+        );
+
+        let ctl = FakeCtl::new();
+        ctl.fail_on("remove-file");
+        assert!(ctl
+            .remove_file(Path::new("/etc/systemd/system/x"))
+            .await
+            .is_err());
+    }
+}
+
+#[cfg(test)]
+mod systemctl_helpers {
+    use super::is_not_enabled;
+    #[test]
+    fn not_enabled_is_tolerated() {
+        assert!(is_not_enabled(
+            "Failed to disable unit: Unit file elrond-node-0.service does not exist."
+        ));
+        assert!(is_not_enabled(
+            "The unit files have no installation config (WantedBy=...) and are not enabled."
+        ));
+        assert!(!is_not_enabled("Interactive authentication required."));
+        assert!(!is_not_enabled(""));
+    }
+}
+
+#[cfg(test)]
+mod launchd_privileged {
+    use super::{Ctl, LaunchdCtl};
+    #[tokio::test]
+    async fn install_and_remove_unit_file_are_fs_ops() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src.plist");
+        let dest = dir.path().join("dest.plist");
+        std::fs::write(&src, b"<plist/>").unwrap();
+        let ctl = LaunchdCtl::new();
+        ctl.daemon_reload().await.unwrap();
+        ctl.enable("elrond-node-0.service").await.unwrap();
+        ctl.disable("elrond-node-0.service").await.unwrap();
+        ctl.reset_failed().await.unwrap();
+        ctl.install_unit_file(&src, &dest).await.unwrap();
+        assert!(dest.exists());
+        ctl.remove_file(&dest).await.unwrap();
+        assert!(!dest.exists());
+        ctl.remove_file(&dest).await.unwrap();
     }
 }
