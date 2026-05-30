@@ -6,7 +6,7 @@
 use std::io::{IsTerminal, Write};
 use std::time::Duration;
 
-use mxnode_core::HostState;
+use mxnode_core::{HostState, Shard};
 use mxnode_rpc::{NodeClient, NodeMetrics};
 use mxnode_state::StateStore;
 use serde::Serialize;
@@ -137,6 +137,40 @@ struct Probe {
     health: Health,
     nonce: Option<u64>,
     pubkey_prefix: Option<String>,
+    /// Live `erd_shard_id` reported by the node when the probe succeeded.
+    /// `None` when the probe failed/timed out, in which case callers fall
+    /// back to the recorded `node.shard`.
+    live_shard: Option<u32>,
+}
+
+/// Render a node's shard for display, preferring the live value the probe
+/// observed over the recorded one. When live disagrees with recorded (e.g.
+/// an auto-assigned observer, or a validator recorded as `auto`), both are
+/// shown as `live <X> (rec <Y>)` so the drift is visible. The metachain id
+/// `u32::MAX` is rendered via the [`Shard`] mapping, not the raw number.
+fn shard_cell(recorded: Shard, live: Option<u32>) -> String {
+    match live {
+        None => recorded.as_str().to_string(),
+        Some(id) => {
+            let live_label = shard_id_label(id);
+            let matches = recorded.protocol_id().is_some_and(|rec| rec == id);
+            if matches {
+                live_label
+            } else {
+                format!("live {live_label} (rec {})", recorded.as_str())
+            }
+        }
+    }
+}
+
+/// Map a wire-level shard id to its label, reusing the [`Shard`] metachain
+/// mapping so `u32::MAX` prints `metachain`, not the raw number.
+fn shard_id_label(id: u32) -> String {
+    if Shard::Metachain.protocol_id() == Some(id) {
+        Shard::Metachain.as_str().to_string()
+    } else {
+        id.to_string()
+    }
 }
 
 async fn probe_all(state: &HostState) -> Vec<Probe> {
@@ -153,6 +187,7 @@ async fn probe_all(state: &HostState) -> Vec<Probe> {
             health: Health::Unknown,
             nonce: None,
             pubkey_prefix: None,
+            live_shard: None,
         })
         .collect();
     while let Some(res) = set.join_next().await {
@@ -174,6 +209,7 @@ async fn probe_one(port: u16) -> Probe {
                 health: Health::Failed,
                 nonce: None,
                 pubkey_prefix: None,
+                live_shard: None,
             };
         }
     };
@@ -183,6 +219,7 @@ async fn probe_one(port: u16) -> Probe {
             let metrics: NodeMetrics = status.data.metrics;
             let pubkey_prefix = metrics.pubkey_prefix().map(|s| s.to_string());
             let nonce = metrics.erd_nonce;
+            let live_shard = metrics.erd_shard_id;
             // Heuristic: `erd_is_syncing == 0` (or absent) and a non-zero
             // nonce → ok. Anything else is "lagging" — we don't have the
             // network high nonce here yet (proxy probe is Phase 2).
@@ -194,12 +231,14 @@ async fn probe_one(port: u16) -> Probe {
                 health,
                 nonce,
                 pubkey_prefix,
+                live_shard,
             }
         }
         Ok(Err(_)) | Err(_) => Probe {
             health: Health::Failed,
             nonce: None,
             pubkey_prefix: None,
+            live_shard: None,
         },
     }
 }
@@ -296,11 +335,11 @@ fn render_table(state: &HostState, probes: &[Probe], color: bool) {
         } else {
             label
         };
+        let shard = shard_cell(node.shard, probe.live_shard);
         println!(
             "{glyph_cell} │ {idx:<3} │ {label:<24} │ {shard:<10} │ {nonce:<10} │ {pubkey:<12} │ {port}",
             idx = node.index.get(),
             label = truncate(&label, 24),
-            shard = node.shard.as_str(),
             port = node.api_port,
         );
     }
@@ -360,7 +399,7 @@ impl JsonReport {
                 index: node.index.get(),
                 display_name: node.display_name.clone(),
                 unit: node.unit.clone(),
-                shard: node.shard.as_str().to_string(),
+                shard: shard_cell(node.shard, probe.live_shard),
                 api_port: node.api_port,
                 health: probe.health.label(),
                 nonce: probe.nonce,
@@ -436,23 +475,47 @@ mod tests {
                 health: Health::Ok,
                 nonce: Some(1),
                 pubkey_prefix: None,
+                live_shard: None,
             },
             Probe {
                 health: Health::Ok,
                 nonce: Some(2),
                 pubkey_prefix: None,
+                live_shard: None,
             },
             Probe {
                 health: Health::Lagging,
                 nonce: Some(3),
                 pubkey_prefix: None,
+                live_shard: None,
             },
             Probe {
                 health: Health::Failed,
                 nonce: None,
                 pubkey_prefix: None,
+                live_shard: None,
             },
         ];
         assert_eq!(summarize(&probes), "2 ok, 1 lagging, 1 failed, 0 unknown");
+    }
+
+    #[test]
+    fn shard_id_label_maps_metachain_to_name() {
+        assert_eq!(shard_id_label(0), "0");
+        assert_eq!(shard_id_label(2), "2");
+        assert_eq!(shard_id_label(u32::MAX), "metachain");
+    }
+
+    #[test]
+    fn shard_cell_prefers_live_and_flags_drift() {
+        // Probe failed → recorded value.
+        assert_eq!(shard_cell(Shard::Zero, None), "0");
+        assert_eq!(shard_cell(Shard::Auto, None), "auto");
+        // Live matches recorded → plain live label.
+        assert_eq!(shard_cell(Shard::Two, Some(2)), "2");
+        assert_eq!(shard_cell(Shard::Metachain, Some(u32::MAX)), "metachain");
+        // Live disagrees → drift surfaced.
+        assert_eq!(shard_cell(Shard::Auto, Some(2)), "live 2 (rec auto)");
+        assert_eq!(shard_cell(Shard::Zero, Some(u32::MAX)), "live metachain (rec 0)");
     }
 }

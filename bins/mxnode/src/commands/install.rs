@@ -10,7 +10,7 @@
 //!   * `--with-proxy` — also install the MultiversX proxy (off by
 //!     default; many operators host the proxy on a separate box)
 
-use mxnode_core::{Environment, InstallKind, NodeIndex, Role, Shard, Tag};
+use mxnode_core::{Environment, InstallKind, NodeIndex, Role, Shard, Tag, DEFAULT_PROXY_PORT};
 use mxnode_state::StateStore;
 use serde::Serialize;
 
@@ -126,6 +126,16 @@ pub async fn run(mut args: InstallArgs, global: &GlobalArgs) -> Result<(), CliEr
         enforce_install_requirements(&runtime, environment, role, count, global)?;
     }
 
+    // Node REST API ports are `api_port_base + index` and must stay in
+    // u16 range; reject installs whose highest port would overflow before
+    // any network or filesystem work. If a proxy is co-installed, warn
+    // (non-fatal) when the node API window collides with the proxy port.
+    let api_port_base = runtime.loaded.file.node.api_port_base;
+    guard_api_port_window(api_port_base, count, global)?;
+    if args.with_proxy {
+        warn_proxy_port_overlap(api_port_base, count, global);
+    }
+
     // Resolve the three GitHub-API tag lookups concurrently. Each is
     // an independent HTTP round-trip on a fresh box; serial they cost
     // ~3x what concurrent does on a typical install.
@@ -199,11 +209,21 @@ pub async fn run(mut args: InstallArgs, global: &GlobalArgs) -> Result<(), CliEr
         })?
     };
 
+    // A validator's shard is protocol-assigned from its BLS key — it
+    // cannot be pinned by install index. Only observer/multikey squads
+    // place one node per shard, so only they get the index → shard
+    // mapping. Validators stay `Shard::Auto` even under `--squad` so
+    // state.toml reflects reality and `status` won't report a fictional
+    // shard.
+    let pin_squad_shards = is_squad && !matches!(role, Role::Validator);
+    if args.squad && matches!(role, Role::Validator) {
+        announce_validator_squad_unpinned(global);
+    }
     let nodes: Vec<NodeSpec> = (0..count)
         .map(|i| NodeSpec {
             index: NodeIndex::new(i),
             role,
-            shard: if is_squad {
+            shard: if pin_squad_shards {
                 squad_shard_for_index(i)
             } else {
                 Shard::Auto
@@ -226,7 +246,7 @@ pub async fn run(mut args: InstallArgs, global: &GlobalArgs) -> Result<(), CliEr
         node_count: count,
         kind,
         nodes,
-        api_port_base: runtime.loaded.file.node.api_port_base,
+        api_port_base,
         log_level: &runtime.loaded.file.node.log_level,
         limit_nofile: runtime.loaded.file.node.limit_nofile,
         restart_sec: runtime.loaded.file.node.restart_sec,
@@ -485,6 +505,52 @@ fn announce_redundancy(global: &GlobalArgs, level: u8) {
         return;
     }
     println!("redundancy level → {level} (backup machine; same keys as primary)");
+}
+
+fn announce_validator_squad_unpinned(global: &GlobalArgs) {
+    if global.json {
+        return;
+    }
+    println!(
+        "note: validator shards are assigned by the protocol from each BLS key, not pinned by index — recording shard=auto"
+    );
+}
+
+/// Reject installs whose highest node API port (`api_port_base + count -
+/// 1`) would overflow `u16`. Ports are computed as `api_port_base +
+/// index` (both `u16`); the widened `u32` arithmetic here only detects
+/// the overflow without wrapping.
+fn guard_api_port_window(api_port_base: u16, count: u16, global: &GlobalArgs) -> Result<(), CliError> {
+    let highest = api_port_base as u32 + count as u32 - 1;
+    if highest > u16::MAX as u32 {
+        return Err(CliError::new(
+            "api port range overflows u16",
+            format!(
+                "api_port_base {api_port_base} + {count} node(s) would need port {highest}, above the max {}",
+                u16::MAX,
+            ),
+            "lower node.api_port_base or reduce --count so the highest port stays ≤ 65535",
+        )
+        .json_if(global.json));
+    }
+    Ok(())
+}
+
+/// Warn (non-fatal) when the node API window `[base, base+count)`
+/// contains the proxy `server_port`. The proxy binds
+/// [`DEFAULT_PROXY_PORT`] at install time, so an overlap means one
+/// service will fail to bind once both are up. Suppressed under `--json`.
+fn warn_proxy_port_overlap(api_port_base: u16, count: u16, global: &GlobalArgs) {
+    if global.json {
+        return;
+    }
+    let window_end = api_port_base as u32 + count as u32;
+    let proxy_port = DEFAULT_PROXY_PORT as u32;
+    if proxy_port >= api_port_base as u32 && proxy_port < window_end {
+        println!(
+            "warning: node API ports [{api_port_base}, {window_end}) overlap the proxy port {DEFAULT_PROXY_PORT}; one service will fail to bind — move node.api_port_base or proxy.server_port",
+        );
+    }
 }
 
 /// Map a [`ResolveError`] into the 3-line CLI error shape.

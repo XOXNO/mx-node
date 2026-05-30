@@ -497,17 +497,74 @@ fn wipe_node_data(workdir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Trim `db/Epoch_N/` directories down to the most recent `keep` of
-/// them. Returns a one-line summary the caller prints alongside the
-/// per-node `✓`. Missing/empty `db/` directories are a no-op.
+/// Directory mx-chain-go writes that holds static (non-epoch) trie data
+/// next to the chain-id dir; it is never an `Epoch_N` rotation and must
+/// never be pruned.
+const STATIC_DB_DIR: &str = "Static";
+
+/// Trim `Epoch_N/` directories down to the most recent `keep` per
+/// chain-id. mx-chain-go writes its DB under
+/// `<workdir>/db/<chainID>/Epoch_N/Shard_M/...`, so `db/` itself holds
+/// the chain-id dir(s) (plus possibly `Static/`), not `Epoch_N`
+/// directly. We descend one level into each chain-id dir to find the
+/// real epochs. Returns a one-line summary the caller prints alongside
+/// the per-node `✓`. Missing/empty `db/` directories are a no-op.
 fn prune_old_epochs(workdir: &Path, keep: u32) -> std::io::Result<String> {
     let db = workdir.join("db");
     if !db.exists() {
         return Ok("no db/ to prune".to_string());
     }
-    let mut epochs: Vec<(u32, std::path::PathBuf)> = Vec::new();
+
+    let mut total = 0usize;
+    let mut removed = 0usize;
+    let mut chain_dirs = 0usize;
+
+    // Defensive: if `db/` somehow contains `Epoch_N` directly (no
+    // chain-id wrapper), prune it in place.
+    let (direct_total, direct_removed) = prune_epochs_in_dir(&db, keep)?;
+    total += direct_total;
+    removed += direct_removed;
+
     for entry in std::fs::read_dir(&db)? {
         let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        // Skip `Static/` and the defensive top-level `Epoch_N` dirs
+        // already handled above.
+        if name_str == STATIC_DB_DIR || name_str.starts_with("Epoch_") {
+            continue;
+        }
+        let (chain_total, chain_removed) = prune_epochs_in_dir(&entry.path(), keep)?;
+        if chain_total > 0 {
+            chain_dirs += 1;
+        }
+        total += chain_total;
+        removed += chain_removed;
+    }
+
+    if total == 0 {
+        return Ok("no Epoch_N directories found".to_string());
+    }
+    let kept = total - removed;
+    Ok(format!(
+        "removed {removed} of {total} Epoch_N directories across {chain_dirs} chain-id dir(s) (kept newest {kept})",
+    ))
+}
+
+/// Enumerate the immediate `Epoch_N` children of `dir`, keep the newest
+/// `keep` by N, and `remove_dir_all` the rest. Returns
+/// `(total_found, removed)`. A `dir` with no `Epoch_N` children is a
+/// `(0, 0)` no-op.
+fn prune_epochs_in_dir(dir: &Path, keep: u32) -> std::io::Result<(usize, usize)> {
+    let mut epochs: Vec<(u32, std::path::PathBuf)> = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
         if let Some(rest) = name_str.strip_prefix("Epoch_") {
@@ -516,21 +573,17 @@ fn prune_old_epochs(workdir: &Path, keep: u32) -> std::io::Result<String> {
             }
         }
     }
-    if epochs.is_empty() {
-        return Ok("no Epoch_N directories found".to_string());
+    let total = epochs.len();
+    if total == 0 {
+        return Ok((0, 0));
     }
     // Sort descending so the head of the vec is the newest.
     epochs.sort_by(|a, b| b.0.cmp(&a.0));
-    let total = epochs.len();
-    let to_remove = epochs.split_off(keep.min(total as u32) as usize);
-    let removed = to_remove.len();
+    let to_remove = epochs.split_off((keep as usize).min(total));
     for (_, path) in &to_remove {
         std::fs::remove_dir_all(path)?;
     }
-    Ok(format!(
-        "removed {removed} of {total} Epoch_N directories (kept newest {})",
-        keep.min(total as u32),
-    ))
+    Ok((total, to_remove.len()))
 }
 
 fn validate_import_source(source: &Path, global: &GlobalArgs) -> Result<PathBuf, CliError> {
@@ -1140,6 +1193,51 @@ mod tests {
             quiet: false,
         no_update_check: true,
         }
+    }
+
+    fn make_epoch(workdir: &Path, chain_id: &str, epoch: u32) {
+        let dir = workdir
+            .join("db")
+            .join(chain_id)
+            .join(format!("Epoch_{epoch}"))
+            .join("Shard_0");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("data.dat"), b"x").unwrap();
+    }
+
+    fn epoch_exists(workdir: &Path, chain_id: &str, epoch: u32) -> bool {
+        workdir
+            .join("db")
+            .join(chain_id)
+            .join(format!("Epoch_{epoch}"))
+            .exists()
+    }
+
+    #[test]
+    fn prune_descends_into_chain_id_dir_and_keeps_newest() {
+        // Real mx-chain-go layout: db/<chainID>/Epoch_N/Shard_M.
+        let tmp = tempfile::tempdir().unwrap();
+        let wd = tmp.path();
+        for e in 0..5 {
+            make_epoch(wd, "1", e);
+        }
+        // A Static/ sibling must never be pruned.
+        std::fs::create_dir_all(wd.join("db/1/Static/Shard_0")).unwrap();
+
+        let summary = prune_old_epochs(wd, 2).unwrap();
+        assert!(summary.contains("removed 3 of 5"), "summary: {summary}");
+        assert!(epoch_exists(wd, "1", 4));
+        assert!(epoch_exists(wd, "1", 3));
+        assert!(!epoch_exists(wd, "1", 2));
+        assert!(!epoch_exists(wd, "1", 0));
+        assert!(wd.join("db/1/Static").exists(), "Static must survive");
+    }
+
+    #[test]
+    fn prune_reports_no_epochs_when_only_chain_dir_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("db/1/Static")).unwrap();
+        assert_eq!(prune_old_epochs(tmp.path(), 4).unwrap(), "no Epoch_N directories found");
     }
 
     #[test]
