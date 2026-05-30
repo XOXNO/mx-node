@@ -76,6 +76,30 @@ pub async fn install_one_unit(
     }
 }
 
+/// Stage `contents` into a temp file and hand it to `install_unit_file`,
+/// then remove the temp file. Linux's `sudo mv` consumes the temp (the
+/// cleanup hits `NotFound`, harmless); macOS's copy leaves it behind, so
+/// the cleanup is what actually frees the staging file there. Cleanup is
+/// best-effort: a failed removal does not undo an install that succeeded.
+async fn write_tmp_and_install(
+    ctl: &dyn mxnode_systemd::Ctl,
+    dest: &Path,
+    unit_name: &str,
+    contents: &str,
+) -> Result<(), InstallUnitError> {
+    let tmp = std::env::temp_dir().join(unit_name);
+    fs::write(&tmp, contents).map_err(|e| InstallUnitError::Io {
+        path: tmp.display().to_string(),
+        source: e,
+    })?;
+    let result = ctl
+        .install_unit_file(&tmp, dest)
+        .await
+        .map_err(|e| InstallUnitError::Privileged(format!("install {}: {e}", dest.display())));
+    let _ = fs::remove_file(&tmp);
+    result
+}
+
 async fn install_unit_linux(
     ctl: &dyn mxnode_systemd::Ctl,
     dest: &Path,
@@ -83,14 +107,7 @@ async fn install_unit_linux(
     unit_name: &str,
     enable: bool,
 ) -> Result<(), InstallUnitError> {
-    let tmp = std::env::temp_dir().join(unit_name);
-    fs::write(&tmp, contents).map_err(|e| InstallUnitError::Io {
-        path: tmp.display().to_string(),
-        source: e,
-    })?;
-    ctl.install_unit_file(&tmp, dest)
-        .await
-        .map_err(|e| InstallUnitError::Privileged(format!("install unit {}: {e}", dest.display())))?;
+    write_tmp_and_install(ctl, dest, unit_name, contents).await?;
     // systemd caches unit files; reload so the freshly-installed unit is
     // visible to `enable`/`start` instead of failing with "unit file
     // changed on disk" or operating on a stale view.
@@ -112,14 +129,7 @@ async fn install_unit_macos(
     unit_name: &str,
     enable: bool,
 ) -> Result<(), InstallUnitError> {
-    let tmp = std::env::temp_dir().join(unit_name);
-    fs::write(&tmp, contents).map_err(|e| InstallUnitError::Io {
-        path: tmp.display().to_string(),
-        source: e,
-    })?;
-    ctl.install_unit_file(&tmp, dest)
-        .await
-        .map_err(|e| InstallUnitError::Privileged(format!("install plist {}: {e}", dest.display())))?;
+    write_tmp_and_install(ctl, dest, unit_name, contents).await?;
     if enable {
         ctl.enable(unit_name)
             .await
@@ -200,9 +210,10 @@ mod tests {
             .await
             .expect("install should succeed");
         let verbs: Vec<String> = ctl.calls().into_iter().map(|(v, _)| v).collect();
+        let install = verbs.iter().position(|v| v == "install-unit").unwrap();
         let reload = verbs.iter().position(|v| v == "daemon-reload").unwrap();
         let enable = verbs.iter().position(|v| v == "enable").unwrap();
-        assert!(verbs.contains(&"install-unit".to_string()));
+        assert!(install < reload, "install-unit must precede daemon-reload: {verbs:?}");
         assert!(reload < enable, "daemon-reload must precede enable: {verbs:?}");
 
         let ctl = FakeCtl::new();
