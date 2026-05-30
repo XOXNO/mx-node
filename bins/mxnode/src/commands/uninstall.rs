@@ -88,6 +88,20 @@ pub async fn run(args: UninstallArgs, global: &GlobalArgs) -> Result<(), CliErro
         }
     }
 
+    // systemd caches removed unit files until told otherwise; reload so the
+    // units we just deleted leave the manager's in-memory view, and clear
+    // any lingering failed state from stopping them. Best-effort: a reload
+    // failure does not undo the removals already performed.
+    if matches!(Platform::current(), Platform::Linux) {
+        crate::orchestrator::supervisor::daemon_reload_linux();
+        let _ = Command::new("sudo")
+            .args(["--non-interactive", "systemctl", "reset-failed"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .stdin(Stdio::null())
+            .status();
+    }
+
     if had_error {
         return Err(CliError::new(
             "cleanup completed with errors",
@@ -230,7 +244,7 @@ impl Step {
             }
             Step::RemoveUnitFile { path, sudo } => {
                 if *sudo {
-                    let _ = Command::new("sudo")
+                    let status = Command::new("sudo")
                         .args([
                             "--non-interactive",
                             "rm",
@@ -242,6 +256,16 @@ impl Step {
                         .stdin(Stdio::null())
                         .status()
                         .map_err(|e| e.to_string())?;
+                    // A non-zero exit (e.g. passwordless sudo not configured)
+                    // must surface — otherwise the unit file is left on disk
+                    // while uninstall reports success.
+                    if !status.success() {
+                        return Err(format!(
+                            "sudo rm {} exited {:?}",
+                            path.display(),
+                            status.code(),
+                        ));
+                    }
                 } else if let Err(e) = fs::remove_file(path) {
                     if e.kind() != std::io::ErrorKind::NotFound {
                         return Err(e.to_string());

@@ -100,8 +100,40 @@ async fn drive(
     let mut results: Vec<NodeResult> = Vec::with_capacity(nodes.len());
     match strategy {
         Strategy::Rolling => {
-            for node in &nodes {
-                results.push(run_one(ctl.as_ref(), verb, node).await);
+            let last = nodes.len().saturating_sub(1);
+            for (i, node) in nodes.iter().enumerate() {
+                let result = run_one(ctl.as_ref(), verb, node).await;
+                let ok = result.ok;
+                results.push(result);
+                // For restart, gate between nodes on readiness so a rolling
+                // restart of validators doesn't bounce the next one before
+                // the previous has re-synced (rating-loss protection). No
+                // wait after the last node, on a failed restart, or for
+                // start/stop.
+                if matches!(verb, Verb::Restart) && ok && i < last {
+                    if let Some(full) = state.nodes.iter().find(|n| n.index == node.index) {
+                        if let Err(e) =
+                            crate::commands::upgrade::wait_for_node_ready(&state, full).await
+                        {
+                            eprintln!(
+                                "warn: node-{} did not reach ready state ({e}); stopping the rolling restart so later nodes keep serving",
+                                node.index.get(),
+                            );
+                            for remaining in &nodes[i + 1..] {
+                                results.push(NodeResult {
+                                    index: remaining.index,
+                                    unit: remaining.unit.clone(),
+                                    ok: false,
+                                    error: Some(
+                                        "skipped: a prior node did not reach ready state".to_string(),
+                                    ),
+                                    after: ActiveStateView::Unknown,
+                                });
+                            }
+                            break;
+                        }
+                    }
+                }
             }
         }
         Strategy::Parallel => {

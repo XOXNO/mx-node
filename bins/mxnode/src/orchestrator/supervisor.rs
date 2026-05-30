@@ -114,6 +114,10 @@ async fn install_unit_linux(
             ),
         });
     }
+    // systemd caches unit files; reload so the freshly-`mv`'d unit is
+    // visible to `enable`/`start` instead of failing with "unit file
+    // changed on disk" or operating on a stale view.
+    daemon_reload_linux();
     if enable {
         let _ = std::process::Command::new("sudo")
             .arg("--non-interactive")
@@ -125,6 +129,20 @@ async fn install_unit_linux(
             .status();
     }
     Ok(())
+}
+
+/// Best-effort `sudo systemctl daemon-reload` (Linux only). A reload
+/// failure is not itself a reason to abort an install that already wrote
+/// the unit file — the subsequent `enable`/`start` surfaces any real
+/// breakage — so we don't propagate it.
+pub(crate) fn daemon_reload_linux() {
+    let _ = std::process::Command::new("sudo")
+        .arg("--non-interactive")
+        .arg("systemctl")
+        .arg("daemon-reload")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .status();
 }
 
 async fn install_unit_macos(
