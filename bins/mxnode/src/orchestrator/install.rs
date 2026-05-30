@@ -21,7 +21,7 @@ use mxnode_core::{
     Environment, HostInstall, HostState, InstallKind, MigrationLog, NodeIndex, NodeState, Paths,
     ProxyState, Role, Shard, Tag, DEFAULT_PROXY_PORT, SCHEMA_VERSION,
 };
-use mxnode_state::{swap_symlink, BinStore, StateStore};
+use mxnode_state::{swap_symlink, BinStore};
 use mxnode_systemd::{
     apply_overrides, clear_cpu_flags, enable_db_lookup_extensions, flatten_inline_tables,
     render_canonical_node_plist, render_canonical_node_unit, render_canonical_proxy_unit,
@@ -46,8 +46,6 @@ pub enum InstallError {
     Acquire(String),
     #[error("config repo: {0}")]
     ConfigRepo(#[from] ConfigRepoError),
-    #[error("state store: {0}")]
-    HostState(String),
     #[error("zip extract: {0}")]
     Zip(String),
     #[error("toml edit: {0}")]
@@ -817,19 +815,6 @@ pub async fn install_units(units: &[UnitFile], enable: bool) -> Result<(), Insta
     Ok(())
 }
 
-/// Persist the `HostState` produced by [`run_install`] under the lock + atomic
-/// write contract enforced by [`StateStore`].
-pub fn persist_state(paths: &Paths, state: &HostState) -> Result<PathBuf, InstallError> {
-    let store = StateStore::new(&paths.config_dir);
-    let guard = store
-        .lock()
-        .map_err(|e| InstallError::HostState(e.to_string()))?;
-    store
-        .save(state, &guard)
-        .map_err(|e| InstallError::HostState(e.to_string()))?;
-    drop(guard);
-    Ok(store.state_path().to_path_buf())
-}
 
 #[cfg(test)]
 mod tests {

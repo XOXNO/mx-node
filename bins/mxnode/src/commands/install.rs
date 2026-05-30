@@ -20,7 +20,7 @@ use crate::events::global_op;
 use crate::orchestrator::acquirer_factory::build_acquirer;
 use crate::orchestrator::config_repo::{acquire_config_repo, read_go_version_from_repo};
 use crate::orchestrator::install::{
-    install_units, persist_state, run_install, ConfigEdits, InstallPlan, NodeSpec,
+    install_units, run_install, ConfigEdits, InstallPlan, NodeSpec,
 };
 use crate::orchestrator::runtime::{CliErrorExt, Runtime};
 use crate::orchestrator::tag_resolver::{
@@ -291,8 +291,27 @@ pub async fn run(mut args: InstallArgs, global: &GlobalArgs) -> Result<(), CliEr
         .await
         .map_err(|e| install_err(e, global))?;
 
-    let state_path =
-        persist_state(&runtime.paths, &outcome.state).map_err(|e| install_err(e, global))?;
+    let new_host = outcome.state.clone();
+    store
+        .try_transaction(|host| -> Result<(), String> {
+            if host.install.is_some() || !host.nodes.is_empty() {
+                return Err(
+                    "an install already exists on this host (created concurrently); aborting"
+                        .to_string(),
+                );
+            }
+            *host = new_host;
+            Ok(())
+        })
+        .map_err(|e| {
+            CliError::new(
+                "could not persist install",
+                e.to_string(),
+                "another mxnode op may be running, or an install already exists — run `mxnode status`",
+            )
+            .json_if(global.json)
+        })?;
+    let state_path = store.state_path().to_path_buf();
 
     emit_success(global, &outcome, &state_path, &runtime.paths.node_keys)
 }
@@ -783,10 +802,6 @@ pub(super) fn install_err(
         E::Io { .. } => (
             "io error during install",
             "ensure the configured paths are writable by the current user",
-        ),
-        E::HostState(_) => (
-            "could not persist mxnode.toml",
-            "another mxnode op may be running; wait for it to finish",
         ),
         E::Zip(_) => (
             "key zip extraction failed",
