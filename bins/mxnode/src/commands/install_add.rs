@@ -280,27 +280,23 @@ pub async fn run(args: InstallAddArgs, global: &GlobalArgs) -> Result<(), CliErr
     // build I/O), and merging into it would silently clobber any write that
     // landed in between. We hold the lock only for the short read-modify-
     // write, never across the long acquire above.
-    let guard = store.lock().map_err(|e| lock_err(e.to_string(), global))?;
-    let mut fresh = store
-        .load()
-        .map_err(|e| lock_err(e.to_string(), global))?
-        .ok_or_else(|| {
-            CliError::new(
-                "mxnode.toml vanished mid add",
-                "expected the file we loaded at the start of the command",
-                "re-run `mxnode install` to rebuild state, then retry",
-            )
-            .json_if(global.json)
-        })?;
-    fresh.nodes.extend(outcome.state.nodes.clone());
-    if let Some(install_mut) = fresh.install.as_mut() {
-        install_mut.node_count = install_mut.node_count.saturating_add(count);
-        install_mut.binaries = new_install.binaries;
-    }
+    let new_nodes = outcome.state.nodes.clone();
+    let new_binaries = new_install.binaries.clone();
     store
-        .save(&fresh, &guard)
+        .try_transaction(|host| -> Result<(), String> {
+            if host.install.is_none() {
+                return Err(
+                    "install was removed concurrently; nothing to extend".to_string(),
+                );
+            }
+            host.nodes.extend(new_nodes);
+            if let Some(install) = host.install.as_mut() {
+                install.node_count = install.node_count.saturating_add(count);
+                install.binaries = new_binaries;
+            }
+            Ok(())
+        })
         .map_err(|e| lock_err(e.to_string(), global))?;
-    drop(guard);
     let state_path = store.state_path().to_path_buf();
 
     emit_success(global, &outcome, &state_path, &runtime.paths.node_keys)
