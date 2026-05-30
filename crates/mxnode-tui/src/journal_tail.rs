@@ -117,8 +117,10 @@ fn push_line(snap: &mut NodeSnapshot, raw: String) {
 fn detect_level(line: &str) -> LogLevel {
     // Same heuristic as log_tail: the node logger writes the level as
     // the first whitespace-delimited token. journald `--output=cat`
-    // preserves that exactly.
-    let head = &line[..line.len().min(12)];
+    // preserves that exactly. Take the first 12 chars (not bytes) so a
+    // multi-byte glyph in the line never splits mid-codepoint.
+    let head: String = line.chars().take(12).collect();
+    let head = head.as_str();
     if head.contains("ERROR") {
         LogLevel::Error
     } else if head.contains("WARN") {
@@ -187,5 +189,13 @@ mod tests {
     fn strip_ansi_removes_csi() {
         assert_eq!(strip_ansi("\x1b[31mERR\x1b[0m hello"), "ERR hello");
         assert_eq!(strip_ansi("plain"), "plain");
+    }
+
+    #[test]
+    fn detect_level_handles_multibyte_at_head_boundary() {
+        // "INFO " is 5 bytes; each ✅ is 3, so byte index 12 lands inside the
+        // third glyph — a byte slice would panic. Char-based head must not.
+        assert_eq!(detect_level("INFO ✅✅✅✅ done"), LogLevel::Info);
+        assert_eq!(detect_level("日本語のログ行"), LogLevel::Other);
     }
 }

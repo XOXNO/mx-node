@@ -10,6 +10,7 @@
 //! the next tick tries again. The poller never gives up; the operator
 //! sees the failure surface in the UI as `unreachable`.
 
+use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -18,6 +19,25 @@ use tokio::sync::Mutex;
 use tokio::time;
 
 use crate::metrics::{NodeSnapshot, SyncState};
+
+/// Lower bound on each per-poll request budget, matching the 2s probe
+/// timeout `mxnode status` and the metrics exporter use. A wedged node
+/// that accepts the TCP connection but never answers must not stall the
+/// whole panel for the client's full request timeout, three times over.
+const PROBE_TIMEOUT_FLOOR: Duration = Duration::from_secs(2);
+
+/// Await `fut` with a hard deadline. A timeout is surfaced as
+/// [`RpcError::Timeout`] (the same no-data path as a transport error) — it
+/// is never collapsed into a fake success.
+async fn with_budget<T>(
+    budget: Duration,
+    fut: impl Future<Output = Result<T, RpcError>>,
+) -> Result<T, RpcError> {
+    match time::timeout(budget, fut).await {
+        Ok(result) => result,
+        Err(_) => Err(RpcError::Timeout(budget)),
+    }
+}
 
 pub struct Poller {
     pub client: NodeClient,
@@ -47,14 +67,17 @@ impl Poller {
     }
 
     async fn poll_once(&self) {
-        let status_res = self.client.status_raw().await;
-        let bootstrap_res = self.client.bootstrap_status_raw().await;
-        // Multikey nodes manage many validator keys via a single
-        // observer process. The count rarely changes (only when the
-        // operator updates the keys file) but it's the headline
-        // number on the dashboard, so we re-pull it every cycle —
-        // the request body is one integer.
-        let managed_res = self.client.managed_keys_count().await;
+        // Run the three reads concurrently, each under a per-call budget, so
+        // one hung endpoint neither serializes behind the others nor stalls
+        // the panel past the poll interval. Multikey nodes manage many
+        // validator keys via a single observer process; the count rarely
+        // changes but it's a headline number, so we re-pull it every cycle.
+        let budget = self.interval.max(PROBE_TIMEOUT_FLOOR);
+        let (status_res, bootstrap_res, managed_res) = tokio::join!(
+            with_budget(budget, self.client.status_raw()),
+            with_budget(budget, self.client.bootstrap_status_raw()),
+            with_budget(budget, self.client.managed_keys_count()),
+        );
 
         // Decide whether to opportunistically hit the gateway for
         // trie-statistics. Two sources can tell us our shard id:

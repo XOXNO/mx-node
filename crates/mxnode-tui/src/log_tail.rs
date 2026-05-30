@@ -193,8 +193,10 @@ fn detect_level(line: &str) -> LogLevel {
     // — with the level as the first whitespace-delimited token. Some
     // logs (e.g. those routed via stdout) prefix with a level-coloured
     // ANSI escape we already stripped, so we just look for the literal
-    // word in the first 12 chars.
-    let head = &line[..line.len().min(12)];
+    // word in the first 12 chars (not bytes, so a multi-byte glyph never
+    // splits mid-codepoint and panics the tail task).
+    let head: String = line.chars().take(12).collect();
+    let head = head.as_str();
     if head.contains("ERROR") {
         LogLevel::Error
     } else if head.contains("WARN") {

@@ -31,6 +31,9 @@ pub enum RpcError {
 
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+
+    #[error("request timed out after {0:?}")]
+    Timeout(std::time::Duration),
 }
 
 #[derive(Debug, Clone, Deserialize)]

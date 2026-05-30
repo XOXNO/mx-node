@@ -568,6 +568,20 @@ fn val_strong<'a>(text: impl Into<String>) -> Span<'a> {
 
 // ── Instance panel ───────────────────────────────────────────────────
 
+/// `head…tail` abbreviation of `s` that respects UTF-8 char boundaries.
+/// Returns `s` unchanged when it has `head + tail` chars or fewer. Slicing
+/// by char (not byte) keeps a non-ASCII metric value from panicking the
+/// frame inside `terminal.draw`.
+fn abbrev_middle(s: &str, head: usize, tail: usize) -> String {
+    let count = s.chars().count();
+    if count <= head + tail {
+        return s.to_string();
+    }
+    let head_s: String = s.chars().take(head).collect();
+    let tail_s: String = s.chars().skip(count - tail).collect();
+    format!("{head_s}…{tail_s}")
+}
+
 fn draw_instance(
     frame: &mut Frame,
     area: Rect,
@@ -590,11 +604,7 @@ fn draw_instance(
     };
     let app_version = m.get_str("erd_app_version").unwrap_or("?");
     let pubkey = m.get_str("erd_public_key_block_sign").unwrap_or("");
-    let pubkey_short = if pubkey.len() > 14 {
-        format!("{}…{}", &pubkey[..8], &pubkey[pubkey.len() - 6..])
-    } else {
-        pubkey.to_string()
-    };
+    let pubkey_short = abbrev_middle(pubkey, 8, 6);
     let signed = m.get_u64("erd_count_consensus").unwrap_or(0);
     let accepted = m
         .get_u64("erd_count_consensus_accepted_blocks")
@@ -959,11 +969,7 @@ fn draw_block_info(frame: &mut Frame, area: Rect, snap: &NodeSnapshot) {
     let final_nonce = m.get_u64("erd_highest_final_nonce");
     let round_ts = m.get_u64("erd_current_round_timestamp");
 
-    let hash_short = if hash.len() > 18 {
-        format!("{}…{}", &hash[..10], &hash[hash.len() - 8..])
-    } else {
-        hash.to_string()
-    };
+    let hash_short = abbrev_middle(hash, 10, 8);
 
     let mut rows = vec![
         Row::new(vec![
@@ -1756,7 +1762,10 @@ fn filter_chip(app: &App) -> Vec<Span<'static>> {
                 .add_modifier(Modifier::BOLD),
         )
     } else if let Some(f) = app.log_text_filter.as_deref() {
-        let display = if f.len() > 18 { &f[..18] } else { f };
+        // Truncate by char, not byte: the filter is operator-typed and may
+        // contain multi-byte glyphs that would otherwise split mid-codepoint
+        // and panic the whole dashboard inside `terminal.draw`.
+        let display: String = f.chars().take(18).collect();
         Span::styled(
             format!("\"{}\"", display),
             Style::default()
