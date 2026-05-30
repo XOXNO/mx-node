@@ -42,6 +42,9 @@ async-trait = "0.1"
 libc        = { workspace = true }
 # Wizard-style init prompts: arrow-key Select, validated Input, etc.
 
+[dev-dependencies]
+mxnode-systemd = { workspace = true, features = ["testing"] }
+
 [features]
 # Adds the hidden `bench-render` subcommand used by `cargo xtask bench-size`.
 # Off by default — the shipping binary does not carry it.

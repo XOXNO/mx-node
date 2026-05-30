@@ -455,7 +455,7 @@ extern "C" {
     fn libc_getuid() -> u32;
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 pub mod testing {
     //! Public test helper: an in-memory [`Ctl`] that records calls and
     //! lets tests dictate what `is_active` returns. Marked `pub` so

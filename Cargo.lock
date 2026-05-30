@@ -1085,6 +1085,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "dirs",
+ "futures-util",
  "libc",
  "mxnode-build",
  "mxnode-config",

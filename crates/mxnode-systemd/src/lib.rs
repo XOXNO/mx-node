@@ -25,5 +25,5 @@ pub use tomledit::{
     ObserverEntry, TomlEditError,
 };
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 pub use ctl::testing as ctl_testing;

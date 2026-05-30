@@ -784,26 +784,33 @@ fn install_validator_keys(
 /// Write rendered units (or plists) into the platform-appropriate
 /// supervisor directory and (optionally) enable them.
 ///
-/// On Linux: `sudo mv` into `/etc/systemd/system` + `sudo systemctl
-/// enable`. On macOS: plain `cp` into `~/Library/LaunchAgents` +
-/// `launchctl bootstrap`. The branch lives in
-/// [`crate::orchestrator::supervisor::install_one_unit`]; we just
+/// On Linux: moves the unit file into `/etc/systemd/system` via the Ctl
+/// trait, then reloads and (optionally) enables. On macOS: installs the
+/// plist via the Ctl trait and (optionally) bootstraps. The branch lives
+/// in [`crate::orchestrator::supervisor::install_one_unit`]; we just
 /// translate `InstallError` for each per-unit failure.
 pub async fn install_units(units: &[UnitFile], enable: bool) -> Result<(), InstallError> {
     use crate::orchestrator::supervisor::{install_one_unit, InstallUnitError};
     use mxnode_core::Platform;
     let platform = Platform::current();
+    let ctl = crate::orchestrator::supervisor::build_supervisor();
     for unit in units {
         // Render the on-disk filename per platform; the caller already
         // produced the right *contents* via render_canonical_node_unit
         // (Linux) or render_canonical_node_plist (macOS), so we only
         // need to make sure the file ends up at the right path.
-        if let Err(e) = install_one_unit(platform, &unit.name, &unit.contents, enable).await {
+        if let Err(e) =
+            install_one_unit(ctl.as_ref(), platform, &unit.name, &unit.contents, enable).await
+        {
             return Err(match e {
                 InstallUnitError::Io { path, source } => InstallError::Io { path, source },
                 InstallUnitError::UnsupportedPlatform => {
                     InstallError::Invalid(format!("platform {:?} is not yet supported", platform,))
                 }
+                InstallUnitError::Privileged(msg) => InstallError::Io {
+                    path: "<privileged>".into(),
+                    source: std::io::Error::other(msg),
+                },
             });
         }
     }

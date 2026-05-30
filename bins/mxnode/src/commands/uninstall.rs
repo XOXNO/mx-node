@@ -93,13 +93,8 @@ pub async fn run(args: UninstallArgs, global: &GlobalArgs) -> Result<(), CliErro
     // any lingering failed state from stopping them. Best-effort: a reload
     // failure does not undo the removals already performed.
     if matches!(Platform::current(), Platform::Linux) {
-        crate::orchestrator::supervisor::daemon_reload_linux();
-        let _ = Command::new("sudo")
-            .args(["--non-interactive", "systemctl", "reset-failed"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .stdin(Stdio::null())
-            .status();
+        let _ = ctl.daemon_reload().await;
+        let _ = ctl.reset_failed().await;
     }
 
     if had_error {

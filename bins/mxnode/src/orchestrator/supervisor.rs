@@ -55,140 +55,77 @@ pub fn unit_filename(platform: Platform, unit: &str) -> String {
 
 /// Install one rendered unit file into the platform's supervisor dir.
 ///
-/// Linux uses `sudo --non-interactive mv` (matches the bash) and then
-/// `sudo systemctl enable`. macOS just `cp`s the plist into the per-user
-/// LaunchAgents dir and calls `launchctl bootstrap` — both run as the
-/// operator, no privilege escalation.
+/// Routes all privileged side-effects through the `Ctl` trait so callers
+/// can inject a `FakeCtl` in tests and so failures propagate instead of
+/// being swallowed. The dest-path resolution (unit dir + filename
+/// translation) is unchanged from the previous implementation.
 pub async fn install_one_unit(
+    ctl: &dyn mxnode_systemd::Ctl,
     platform: Platform,
     unit_name: &str,
     contents: &str,
     enable: bool,
-) -> Result<PathBuf, InstallUnitError> {
+) -> Result<(), InstallUnitError> {
     let dir = unit_dir_for_platform(platform).ok_or(InstallUnitError::UnsupportedPlatform)?;
-    fs::create_dir_all(&dir).map_err(|e| InstallUnitError::Io {
-        path: dir.display().to_string(),
-        source: e,
-    })?;
     let dest = dir.join(unit_filename(platform, unit_name));
 
     match platform {
-        Platform::Linux => install_unit_linux(&dest, contents, unit_name, enable).await,
-        Platform::Macos => install_unit_macos(&dest, contents, unit_name, enable).await,
+        Platform::Linux => install_unit_linux(ctl, &dest, contents, unit_name, enable).await,
+        Platform::Macos => install_unit_macos(ctl, &dest, contents, unit_name, enable).await,
         Platform::Unsupported => Err(InstallUnitError::UnsupportedPlatform),
     }
-    .map(|_| dest)
 }
 
 async fn install_unit_linux(
+    ctl: &dyn mxnode_systemd::Ctl,
     dest: &Path,
     contents: &str,
     unit_name: &str,
     enable: bool,
 ) -> Result<(), InstallUnitError> {
-    use std::process::Stdio;
     let tmp = std::env::temp_dir().join(unit_name);
     fs::write(&tmp, contents).map_err(|e| InstallUnitError::Io {
         path: tmp.display().to_string(),
         source: e,
     })?;
-    let status = std::process::Command::new("sudo")
-        .arg("--non-interactive")
-        .arg("mv")
-        .arg(&tmp)
-        .arg(dest)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .status()
-        .map_err(|e| InstallUnitError::Io {
-            path: dest.display().to_string(),
-            source: e,
-        })?;
-    if !status.success() {
-        return Err(InstallUnitError::Io {
-            path: dest.display().to_string(),
-            source: std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                format!("sudo mv exited {:?}", status.code()),
-            ),
-        });
-    }
-    // systemd caches unit files; reload so the freshly-`mv`'d unit is
+    ctl.install_unit_file(&tmp, dest)
+        .await
+        .map_err(|e| InstallUnitError::Privileged(format!("install unit {}: {e}", dest.display())))?;
+    // systemd caches unit files; reload so the freshly-installed unit is
     // visible to `enable`/`start` instead of failing with "unit file
     // changed on disk" or operating on a stale view.
-    daemon_reload_linux();
+    ctl.daemon_reload()
+        .await
+        .map_err(|e| InstallUnitError::Privileged(format!("daemon-reload: {e}")))?;
     if enable {
-        let _ = std::process::Command::new("sudo")
-            .arg("--non-interactive")
-            .arg("systemctl")
-            .arg("enable")
-            .arg(unit_name)
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .status();
+        ctl.enable(unit_name)
+            .await
+            .map_err(|e| InstallUnitError::Privileged(format!("enable {unit_name}: {e}")))?;
     }
     Ok(())
-}
-
-/// Best-effort `sudo systemctl daemon-reload` (Linux only). A reload
-/// failure is not itself a reason to abort an install that already wrote
-/// the unit file — the subsequent `enable`/`start` surfaces any real
-/// breakage — so we don't propagate it.
-pub(crate) fn daemon_reload_linux() {
-    let _ = std::process::Command::new("sudo")
-        .arg("--non-interactive")
-        .arg("systemctl")
-        .arg("daemon-reload")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .status();
 }
 
 async fn install_unit_macos(
+    ctl: &dyn mxnode_systemd::Ctl,
     dest: &Path,
     contents: &str,
-    _unit_name: &str,
+    unit_name: &str,
     enable: bool,
 ) -> Result<(), InstallUnitError> {
-    fs::write(dest, contents).map_err(|e| InstallUnitError::Io {
-        path: dest.display().to_string(),
+    let tmp = std::env::temp_dir().join(unit_name);
+    fs::write(&tmp, contents).map_err(|e| InstallUnitError::Io {
+        path: tmp.display().to_string(),
         source: e,
     })?;
+    ctl.install_unit_file(&tmp, dest)
+        .await
+        .map_err(|e| InstallUnitError::Privileged(format!("install plist {}: {e}", dest.display())))?;
     if enable {
-        // launchd doesn't have a separate "enable" verb; bootstrap is
-        // the equivalent of "load this plist into the operator's gui
-        // domain". `launchctl bootstrap` is idempotent for our purposes
-        // because mxnode never installs the same plist twice without a
-        // `cleanup` step in between.
-        use std::process::Stdio;
-        let uid = current_uid();
-        let _ = std::process::Command::new("launchctl")
-            .arg("bootstrap")
-            .arg(format!("gui/{uid}"))
-            .arg(dest)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .status();
+        ctl.enable(unit_name)
+            .await
+            .map_err(|e| InstallUnitError::Privileged(format!("bootstrap {unit_name}: {e}")))?;
     }
     Ok(())
-}
-
-fn current_uid() -> u32 {
-    // SAFETY: getuid has no preconditions.
-    #[cfg(unix)]
-    unsafe {
-        extern "C" {
-            #[link_name = "getuid"]
-            fn libc_getuid() -> u32;
-        }
-        libc_getuid()
-    }
-    #[cfg(not(unix))]
-    {
-        0
-    }
 }
 
 /// Errors install paths surface to the operator.
@@ -202,11 +139,14 @@ pub enum InstallUnitError {
     },
     #[error("this platform is not yet supported by mxnode")]
     UnsupportedPlatform,
+    #[error("privileged op failed: {0}")]
+    Privileged(String),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mxnode_systemd::ctl_testing::FakeCtl;
 
     #[test]
     fn unit_filename_linux_passthrough() {
@@ -251,5 +191,23 @@ mod tests {
     #[test]
     fn unit_dir_unsupported_returns_none() {
         assert!(unit_dir_for_platform(Platform::Unsupported).is_none());
+    }
+
+    #[tokio::test]
+    async fn linux_install_reloads_before_enable_and_propagates_failure() {
+        let ctl = FakeCtl::new();
+        install_one_unit(&ctl, Platform::Linux, "elrond-node-0.service", "[Unit]\n", true)
+            .await
+            .expect("install should succeed");
+        let verbs: Vec<String> = ctl.calls().into_iter().map(|(v, _)| v).collect();
+        let reload = verbs.iter().position(|v| v == "daemon-reload").unwrap();
+        let enable = verbs.iter().position(|v| v == "enable").unwrap();
+        assert!(verbs.contains(&"install-unit".to_string()));
+        assert!(reload < enable, "daemon-reload must precede enable: {verbs:?}");
+
+        let ctl = FakeCtl::new();
+        ctl.fail_on("enable");
+        let err = install_one_unit(&ctl, Platform::Linux, "elrond-node-0.service", "[Unit]\n", true).await;
+        assert!(err.is_err(), "enable failure must propagate");
     }
 }

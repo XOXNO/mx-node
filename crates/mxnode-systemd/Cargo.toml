@@ -18,5 +18,10 @@ toml_edit   = { workspace = true }
 dirs        = { workspace = true }
 async-trait = "0.1"
 
+[features]
+# Exports FakeCtl and other in-memory test doubles so downstream crates
+# (e.g. bins/mxnode) can use them in their own test builds.
+testing = []
+
 [dev-dependencies]
 tempfile    = { workspace = true }
