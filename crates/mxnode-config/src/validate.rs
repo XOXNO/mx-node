@@ -38,6 +38,10 @@ pub fn validate(cfg: &MxnodeFile) -> ValidationReport {
             report
                 .errors
                 .push("paths.custom_user is set but empty".to_string());
+        } else if let Some(reason) = invalid_user_name(user) {
+            report
+                .errors
+                .push(format!("paths.custom_user is invalid: {reason}"));
         }
     }
 
@@ -77,6 +81,11 @@ pub fn validate(cfg: &MxnodeFile) -> ValidationReport {
             .errors
             .push(format!("node.extra_flags is invalid: {reason}"));
     }
+    if let Some(reason) = invalid_unit_text(&cfg.node.name_template) {
+        report
+            .errors
+            .push(format!("node.name_template is invalid: {reason}"));
+    }
     if let Some(mode) = cfg.node.operation_mode.as_deref() {
         if !is_valid_operation_mode(mode) {
             report.errors.push(format!(
@@ -91,11 +100,24 @@ pub fn validate(cfg: &MxnodeFile) -> ValidationReport {
             );
         }
     }
+    let mut seen_indices: Vec<u16> = Vec::with_capacity(cfg.nodes.len());
     for node in &cfg.nodes {
+        let idx = node.index.get();
+        if seen_indices.contains(&idx) {
+            report.errors.push(format!(
+                "nodes[index={idx}] is declared more than once; each node index renders to the same node-{idx} workdir and unit",
+            ));
+        } else {
+            seen_indices.push(idx);
+        }
         if let Some(reason) = invalid_extra_flags(&node.extra_flags) {
             report.errors.push(format!(
-                "nodes[index={}].extra_flags is invalid: {reason}",
-                node.index.get(),
+                "nodes[index={idx}].extra_flags is invalid: {reason}",
+            ));
+        }
+        if let Some(reason) = invalid_unit_text(&node.display_name) {
+            report.errors.push(format!(
+                "nodes[index={idx}].display_name is invalid: {reason}",
             ));
         }
         if let Some(mode) = node.operation_mode.as_deref() {
@@ -153,6 +175,33 @@ fn invalid_extra_flags(flags: &str) -> Option<String> {
     let quote_count = flags.matches('"').count();
     if !quote_count.is_multiple_of(2) {
         return Some("contains an unbalanced double-quote".to_string());
+    }
+    None
+}
+
+/// Returns `Some(reason)` if `name` is an unusable systemd `User=` value.
+/// Account names must be a single token — whitespace, newlines, or NUL
+/// either break the rendered unit or never match a real account.
+fn invalid_user_name(name: &str) -> Option<String> {
+    if name.contains('\0') {
+        return Some("must not contain NUL".to_string());
+    }
+    if name.chars().any(char::is_whitespace) {
+        return Some("must not contain whitespace".to_string());
+    }
+    None
+}
+
+/// Returns `Some(reason)` if `text` would break the rendered unit when used
+/// as a display name / `Description=`. Newlines split the unit file; NUL is
+/// rejected by the kernel. Spaces are allowed (display names commonly have
+/// them).
+fn invalid_unit_text(text: &str) -> Option<String> {
+    if text.contains('\n') || text.contains('\r') {
+        return Some("must not contain newlines (would split the unit file)".to_string());
+    }
+    if text.contains('\0') {
+        return Some("must not contain NUL".to_string());
     }
     None
 }
@@ -294,5 +343,55 @@ mod tests {
         let r = validate(&cfg);
         assert!(!r.ok());
         assert!(r.errors.iter().any(|e| e.contains("operation_mode")));
+    }
+
+    #[test]
+    fn duplicate_node_index_is_rejected() {
+        use mxnode_core::NodeOverride;
+        use mxnode_core::{NodeIndex, Role, Shard};
+        let mut cfg = MxnodeFile::default();
+        cfg.network.environment = Some(mxnode_core::Environment::Mainnet);
+        let dup = |index| NodeOverride {
+            index: NodeIndex::new(index),
+            role: Role::Validator,
+            shard: Shard::Auto,
+            display_name: String::new(),
+            extra_flags: String::new(),
+            operation_mode: None,
+        };
+        cfg.nodes.push(dup(1));
+        cfg.nodes.push(dup(1));
+        let r = validate(&cfg);
+        assert!(!r.ok());
+        assert!(r
+            .errors
+            .iter()
+            .any(|e| e.contains("nodes[index=1]") && e.contains("more than once")));
+    }
+
+    #[test]
+    fn custom_user_with_whitespace_rejected() {
+        let mut cfg = MxnodeFile::default();
+        cfg.network.environment = Some(mxnode_core::Environment::Mainnet);
+        cfg.paths.custom_user = Some("el rond".to_string());
+        let r = validate(&cfg);
+        assert!(!r.ok());
+        assert!(r
+            .errors
+            .iter()
+            .any(|e| e.contains("custom_user") && e.contains("whitespace")));
+    }
+
+    #[test]
+    fn name_template_with_newline_rejected() {
+        let mut cfg = MxnodeFile::default();
+        cfg.network.environment = Some(mxnode_core::Environment::Mainnet);
+        cfg.node.name_template = "node-{index}\nExecStart=/bin/sh".to_string();
+        let r = validate(&cfg);
+        assert!(!r.ok());
+        assert!(r
+            .errors
+            .iter()
+            .any(|e| e.contains("name_template") && e.contains("newlines")));
     }
 }

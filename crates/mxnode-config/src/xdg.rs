@@ -51,6 +51,31 @@ pub fn xdg_runtime_dir() -> Result<PathBuf, ConfigError> {
     Ok(xdg_state_home()?.join("run"))
 }
 
+/// `$XDG_STATE_HOME` only when it is explicitly set and non-empty.
+///
+/// Unlike [`xdg_state_home`], this does NOT fall back to `$HOME/.local/state`.
+/// The resolver uses it to keep state anchored to the install owner
+/// (`custom_home`) rather than the invoking user's home — running the same
+/// install via `sudo` (which rewrites `$HOME`) must not silently relocate
+/// `state.toml`. When the operator opts in by exporting `$XDG_STATE_HOME`,
+/// that choice is honored.
+pub fn xdg_state_home_explicit() -> Option<PathBuf> {
+    env_path("XDG_STATE_HOME")
+}
+
+/// `$XDG_RUNTIME_DIR` only when explicitly set and non-empty. See
+/// [`xdg_state_home_explicit`] for the rationale.
+pub fn xdg_runtime_dir_explicit() -> Option<PathBuf> {
+    env_path("XDG_RUNTIME_DIR")
+}
+
+fn env_path(var: &str) -> Option<PathBuf> {
+    match std::env::var(var) {
+        Ok(s) if !s.is_empty() => Some(PathBuf::from(s)),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

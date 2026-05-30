@@ -2,7 +2,9 @@ use std::path::PathBuf;
 
 use mxnode_core::{MxnodeFile, Paths};
 
-use crate::xdg::{home_dir, xdg_config_home, xdg_runtime_dir, xdg_state_home};
+use crate::xdg::{
+    home_dir, xdg_config_home, xdg_runtime_dir_explicit, xdg_state_home_explicit,
+};
 use crate::ConfigError;
 
 /// Resolve the path-shaped strings in `MxnodeFile::paths` into a typed
@@ -32,8 +34,13 @@ pub fn resolve_paths(cfg: &MxnodeFile) -> Result<Paths, ConfigError> {
     // `custom_home` in shared-deploy layouts where the operator chose
     // a non-HOME path. Falls back to `custom_home` if HOME is unset.
     let home = home_dir().unwrap_or_else(|_| custom_home.clone());
-    let xdg_state = xdg_state_home().unwrap_or_else(|_| home.join(".local/state"));
-    let xdg_runtime = xdg_runtime_dir().unwrap_or_else(|_| xdg_state.join("run"));
+    // State and runtime anchor to the install owner (`custom_home`), not the
+    // invoking user's home. Running the same install under `sudo` rewrites
+    // `$HOME`, which would otherwise point `{XDG_STATE_HOME}` at a different
+    // `state.toml` + lock and silently fork the install's state. An operator
+    // who explicitly exports `$XDG_STATE_HOME` / `$XDG_RUNTIME_DIR` still wins.
+    let xdg_state = xdg_state_home_explicit().unwrap_or_else(|| custom_home.join(".local/state"));
+    let xdg_runtime = xdg_runtime_dir_explicit().unwrap_or_else(|| xdg_state.join("run"));
     let xdg_config = xdg_config_home().unwrap_or_else(|_| home.join(".config"));
 
     let interp = |raw: &str| -> PathBuf {

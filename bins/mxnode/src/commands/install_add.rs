@@ -13,7 +13,7 @@ use crate::events::global_op;
 use crate::orchestrator::acquirer_factory::build_acquirer;
 use crate::orchestrator::config_repo::{acquire_config_repo, read_go_version_from_repo};
 use crate::orchestrator::install::{
-    install_units, persist_state, run_install, ConfigEdits, InstallPlan, NodeSpec,
+    install_units, run_install, ConfigEdits, InstallPlan, NodeSpec,
 };
 use crate::orchestrator::runtime::{CliErrorExt, Runtime};
 
@@ -39,7 +39,7 @@ fn existing_multikey_keys(runtime: &Runtime) -> Option<PathBuf> {
 pub async fn run(args: InstallAddArgs, global: &GlobalArgs) -> Result<(), CliError> {
     let runtime = Runtime::from_global(global)?;
     let store = StateStore::new(&runtime.paths.config_dir);
-    let mut state = store
+    let state = store
         .load()
         .map_err(|e| {
             CliError::new(
@@ -106,6 +106,31 @@ pub async fn run(args: InstallAddArgs, global: &GlobalArgs) -> Result<(), CliErr
     } else {
         highest_existing + 1
     };
+
+    // The new nodes occupy indices `start..start+count`, each binding
+    // `api_port_base + index`. Refuse before any provisioning if either the
+    // index or the derived API port would exceed `u16`.
+    let api_port_base = runtime.loaded.file.node.api_port_base;
+    let highest_index = start as u32 + count as u32 - 1;
+    if highest_index > u16::MAX as u32 {
+        return Err(CliError::new(
+            "node index range overflows u16",
+            format!("adding {count} node(s) starting at index {start} would exceed index {}", u16::MAX),
+            "uninstall and reinstall with fewer nodes, or pick a host with spare index headroom",
+        )
+        .json_if(global.json));
+    }
+    if api_port_base as u32 + highest_index > u16::MAX as u32 {
+        return Err(CliError::new(
+            "API port range overflows u16",
+            format!(
+                "api_port_base {api_port_base} + highest new index {highest_index} exceeds {}",
+                u16::MAX,
+            ),
+            "lower node.api_port_base or reduce the node count",
+        )
+        .json_if(global.json));
+    }
 
     // Resolve per-node display names. Interactive when stdin is a TTY
     // and the operator did not pass `--non-interactive`; mirrors the
@@ -243,22 +268,49 @@ pub async fn run(args: InstallAddArgs, global: &GlobalArgs) -> Result<(), CliErr
         .await
         .map_err(|e| install_err(e, global))?;
 
-    // Merge the new nodes into the existing state.
-    let mut merged = state.clone();
     let new_install = outcome
         .state
         .install
         .as_ref()
         .expect("install populated by orchestrator")
         .clone();
-    merged.nodes.extend(outcome.state.nodes.clone());
-    if let Some(install_mut) = merged.install.as_mut() {
+
+    // Re-read state under the lock before merging: the snapshot loaded at
+    // the top of this command is stale by now (run_install does network +
+    // build I/O), and merging into it would silently clobber any write that
+    // landed in between. We hold the lock only for the short read-modify-
+    // write, never across the long acquire above.
+    let guard = store.lock().map_err(|e| lock_err(e.to_string(), global))?;
+    let mut fresh = store
+        .load()
+        .map_err(|e| lock_err(e.to_string(), global))?
+        .ok_or_else(|| {
+            CliError::new(
+                "mxnode.toml vanished mid add",
+                "expected the file we loaded at the start of the command",
+                "re-run `mxnode install` to rebuild state, then retry",
+            )
+            .json_if(global.json)
+        })?;
+    fresh.nodes.extend(outcome.state.nodes.clone());
+    if let Some(install_mut) = fresh.install.as_mut() {
         install_mut.node_count = install_mut.node_count.saturating_add(count);
         install_mut.binaries = new_install.binaries;
     }
-    state = merged;
-
-    let state_path = persist_state(&runtime.paths, &state).map_err(|e| install_err(e, global))?;
+    store
+        .save(&fresh, &guard)
+        .map_err(|e| lock_err(e.to_string(), global))?;
+    drop(guard);
+    let state_path = store.state_path().to_path_buf();
 
     emit_success(global, &outcome, &state_path, &runtime.paths.node_keys)
+}
+
+fn lock_err(cause: String, global: &GlobalArgs) -> CliError {
+    CliError::new(
+        "could not persist mxnode.toml",
+        cause,
+        "another mxnode op may be running; wait for it to finish and retry",
+    )
+    .json_if(global.json)
 }
