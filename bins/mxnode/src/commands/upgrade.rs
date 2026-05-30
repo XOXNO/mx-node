@@ -1081,90 +1081,73 @@ fn persist_migration(
     global: &GlobalArgs,
 ) -> Result<(), CliError> {
     let keep = binary_keep.max(1);
-    let guard = store.lock().map_err(|e| {
-        CliError::new(
-            "failed to lock state",
-            e.to_string(),
-            "another mxnode op may be running",
-        )
-        .json_if(global.json)
-    })?;
-    let mut state = match store.load() {
-        Ok(Some(s)) => s,
-        Ok(None) => {
-            drop(guard);
-            return Err(CliError::new(
-                "mxnode.toml went missing mid-upgrade",
-                "expected the file we loaded earlier",
-                "hand-edit mxnode.toml or re-run `mxnode install` to refresh",
-            )
-            .json_if(global.json));
-        }
-        Err(e) => {
-            drop(guard);
-            return Err(CliError::new(
-                "failed to reload mxnode.toml",
-                e.to_string(),
-                "remove the file manually if it's corrupt",
-            )
-            .json_if(global.json));
-        }
-    };
-    let from_config = state
-        .install
-        .as_ref()
-        .and_then(|i| i.versions.config_tag.clone());
-    let from_binary = state
-        .install
-        .as_ref()
-        .and_then(|i| i.versions.binary_tag.clone());
-    let entry = MigrationEntry {
-        at: outcome.started_at,
-        from_config,
-        to_config: outcome.config_tag.clone(),
-        from_binary,
-        to_binary: Some(outcome.binary_tag.clone()),
-        strategy: outcome.strategy.clone(),
-        trigger: "cli".to_string(),
-        result: if outcome.rolled_back {
-            MigrationResult::RolledBack
-        } else if outcome.nodes_failed.is_empty() {
-            MigrationResult::Ok
-        } else {
-            MigrationResult::Partial
-        },
-        duration_secs: outcome.duration_secs,
-        nodes_done: outcome.nodes_done.clone(),
-        nodes_failed: outcome.nodes_failed.clone(),
-    };
-    state.migrations.entries.push(entry);
-    if !outcome.nodes_done.is_empty() {
-        // Bump the recorded binary tag so `mxnode status` reflects what's
-        // actually deployed. `nodes_failed` stay on the previous tag —
-        // `from_binary` of a future entry will read it from disk.
-        if let Some(install) = state.install.as_mut() {
-            install.versions.binary_tag = Some(outcome.binary_tag.clone());
-            if let Some(config_tag) = &outcome.config_tag {
-                install.versions.config_tag = Some(config_tag.clone());
+    store
+        .try_transaction(|host| -> Result<(), String> {
+            if host.install.is_none() && host.nodes.is_empty() {
+                return Err(CliError::new(
+                    "mxnode.toml went missing mid-upgrade",
+                    "expected the file we loaded earlier",
+                    "hand-edit mxnode.toml or re-run `mxnode install` to refresh",
+                )
+                .json_if(global.json)
+                .to_string());
             }
-            record_kept_tag(&mut install.binaries.node, &outcome.binary_tag, keep);
-            record_kept_tag(
-                &mut install.binaries.keygenerator,
-                &outcome.binary_tag,
-                keep,
-            );
-            record_kept_tag(&mut install.binaries.seednode, &outcome.binary_tag, keep);
-        }
-    }
-    store.save(&state, &guard).map_err(|e| {
-        CliError::new(
-            "failed to write mxnode.toml",
-            e.to_string(),
-            "ensure the state directory is writable",
-        )
-        .json_if(global.json)
-    })?;
-    drop(guard);
+            let from_config = host
+                .install
+                .as_ref()
+                .and_then(|i| i.versions.config_tag.clone());
+            let from_binary = host
+                .install
+                .as_ref()
+                .and_then(|i| i.versions.binary_tag.clone());
+            let entry = MigrationEntry {
+                at: outcome.started_at,
+                from_config,
+                to_config: outcome.config_tag.clone(),
+                from_binary,
+                to_binary: Some(outcome.binary_tag.clone()),
+                strategy: outcome.strategy.clone(),
+                trigger: "cli".to_string(),
+                result: if outcome.rolled_back {
+                    MigrationResult::RolledBack
+                } else if outcome.nodes_failed.is_empty() {
+                    MigrationResult::Ok
+                } else {
+                    MigrationResult::Partial
+                },
+                duration_secs: outcome.duration_secs,
+                nodes_done: outcome.nodes_done.clone(),
+                nodes_failed: outcome.nodes_failed.clone(),
+            };
+            host.migrations.entries.push(entry);
+            if !outcome.nodes_done.is_empty() {
+                // Bump the recorded binary tag so `mxnode status` reflects what's
+                // actually deployed. `nodes_failed` stay on the previous tag —
+                // `from_binary` of a future entry will read it from disk.
+                if let Some(install) = host.install.as_mut() {
+                    install.versions.binary_tag = Some(outcome.binary_tag.clone());
+                    if let Some(config_tag) = &outcome.config_tag {
+                        install.versions.config_tag = Some(config_tag.clone());
+                    }
+                    record_kept_tag(&mut install.binaries.node, &outcome.binary_tag, keep);
+                    record_kept_tag(
+                        &mut install.binaries.keygenerator,
+                        &outcome.binary_tag,
+                        keep,
+                    );
+                    record_kept_tag(&mut install.binaries.seednode, &outcome.binary_tag, keep);
+                }
+            }
+            Ok(())
+        })
+        .map_err(|e| {
+            CliError::new(
+                "failed to write mxnode.toml",
+                e.to_string(),
+                "ensure the state directory is writable",
+            )
+            .json_if(global.json)
+        })?;
 
     // Clear inflight.toml on terminal completion (success OR partial — the
     // operator can resume by running upgrade again with the same flags).
@@ -1224,7 +1207,7 @@ async fn upgrade_proxy(
 ) -> Result<(), CliError> {
     let runtime = Runtime::from_global(global)?;
     let store = StateStore::new(&runtime.paths.config_dir);
-    let mut state = store
+    let state = store
         .load()
         .map_err(|e| {
             CliError::new(
@@ -1366,44 +1349,38 @@ async fn upgrade_proxy(
 
     node_op_end("upgrade.proxy", NodeIndex::new(0), &proxy.unit, Outcome::Ok);
 
-    state.migrations.entries.push(MigrationEntry {
-        at: started,
-        from_config: None,
-        to_config: None,
-        from_binary: state
-            .install
-            .as_ref()
-            .and_then(|i| i.versions.proxy_tag.clone()),
-        to_binary: Some(target_tag.clone()),
-        strategy: "proxy".to_string(),
-        trigger: "cli".to_string(),
-        result: MigrationResult::Ok,
-        duration_secs: (time::OffsetDateTime::now_utc() - started)
-            .whole_seconds()
-            .max(0) as u64,
-        nodes_done: Vec::new(),
-        nodes_failed: Vec::new(),
-    });
-    if let Some(install) = state.install.as_mut() {
-        install.versions.proxy_tag = Some(target_tag.clone());
-    }
-    let guard = store.lock().map_err(|e| {
-        CliError::new(
-            "failed to lock state",
-            e.to_string(),
-            "another mxnode op may be running",
-        )
-        .json_if(global.json)
-    })?;
-    store.save(&state, &guard).map_err(|e| {
-        CliError::new(
-            "failed to write mxnode.toml",
-            e.to_string(),
-            "ensure the state directory is writable",
-        )
-        .json_if(global.json)
-    })?;
-    drop(guard);
+    store
+        .transaction(|host| {
+            host.migrations.entries.push(MigrationEntry {
+                at: started,
+                from_config: None,
+                to_config: None,
+                from_binary: host
+                    .install
+                    .as_ref()
+                    .and_then(|i| i.versions.proxy_tag.clone()),
+                to_binary: Some(target_tag.clone()),
+                strategy: "proxy".to_string(),
+                trigger: "cli".to_string(),
+                result: MigrationResult::Ok,
+                duration_secs: (time::OffsetDateTime::now_utc() - started)
+                    .whole_seconds()
+                    .max(0) as u64,
+                nodes_done: Vec::new(),
+                nodes_failed: Vec::new(),
+            });
+            if let Some(install) = host.install.as_mut() {
+                install.versions.proxy_tag = Some(target_tag.clone());
+            }
+        })
+        .map_err(|e| {
+            CliError::new(
+                "failed to write mxnode.toml",
+                e.to_string(),
+                "ensure the state directory is writable",
+            )
+            .json_if(global.json)
+        })?;
 
     if global.json {
         println!(
