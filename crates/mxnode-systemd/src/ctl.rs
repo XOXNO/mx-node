@@ -107,48 +107,34 @@ impl SystemctlCtl {
         self
     }
 
-    fn build_command(&self, mutating: bool, args: &[&str]) -> Command {
-        let cmd = if mutating && self.sudo {
+    /// Build a `Command` for `program`, prefixed with `sudo
+    /// --non-interactive` when `privileged` and `self.sudo`. The single
+    /// place the sudo-prefix decision lives, shared by mutations,
+    /// privileged file ops, and (non-privileged) reads.
+    fn command(&self, privileged: bool, program: &str) -> Command {
+        if privileged && self.sudo {
             let mut c = Command::new("sudo");
-            c.arg("--non-interactive").arg("systemctl");
-            for a in args {
-                c.arg(a);
-            }
+            c.arg("--non-interactive").arg(program);
             c
         } else {
-            let mut c = Command::new("systemctl");
-            for a in args {
-                c.arg(a);
-            }
-            c
-        };
-        cmd
+            Command::new(program)
+        }
     }
 
     async fn run_mutation(&self, args: &[&str]) -> Result<(), CtlError> {
-        let mut cmd = self.build_command(true, args);
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let output = cmd.output().await.map_err(CtlError::Spawn)?;
-        if output.status.success() {
-            return Ok(());
+        let mut cmd = self.command(true, "systemctl");
+        for a in args {
+            cmd.arg(a);
         }
-        match output.status.code() {
-            Some(code) => Err(CtlError::NonZero {
-                code,
-                stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-            }),
-            None => Err(CtlError::Signaled),
-        }
+        classify_output(self.capture(cmd).await?)
     }
 
     async fn run_read(&self, args: &[&str]) -> Result<String, CtlError> {
-        let mut cmd = self.build_command(false, args);
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let output = cmd.output().await.map_err(CtlError::Spawn)?;
+        let mut cmd = self.command(false, "systemctl");
+        for a in args {
+            cmd.arg(a);
+        }
+        let output = self.capture(cmd).await?;
         // `systemctl is-active` exits non-zero for inactive/failed units;
         // we still want the stdout text so the caller can classify. Treat
         // exit codes as informational here — only spawn errors propagate.
@@ -156,30 +142,36 @@ impl SystemctlCtl {
     }
 
     async fn run_privileged(&self, program: &str, args: &[&OsStr]) -> Result<(), CtlError> {
-        let mut cmd = if self.sudo {
-            let mut c = Command::new("sudo");
-            c.arg("--non-interactive").arg(program);
-            c
-        } else {
-            Command::new(program)
-        };
+        let mut cmd = self.command(true, program);
         for a in args {
             cmd.arg(a);
         }
+        classify_output(self.capture(cmd).await?)
+    }
+
+    /// Wire up the standard stdio (null stdin, captured stdout/stderr) and
+    /// run the command to completion. Spawn failures map to [`CtlError::Spawn`].
+    async fn capture(&self, mut cmd: Command) -> Result<std::process::Output, CtlError> {
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let output = cmd.output().await.map_err(CtlError::Spawn)?;
-        if output.status.success() {
-            return Ok(());
-        }
-        match output.status.code() {
-            Some(code) => Err(CtlError::NonZero {
-                code,
-                stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-            }),
-            None => Err(CtlError::Signaled),
-        }
+        cmd.output().await.map_err(CtlError::Spawn)
+    }
+}
+
+/// Map a finished process's exit status onto the success/[`CtlError`]
+/// contract shared by every mutating command (`systemctl` verbs and the
+/// privileged `mv`/`rm` file ops).
+fn classify_output(output: std::process::Output) -> Result<(), CtlError> {
+    if output.status.success() {
+        return Ok(());
+    }
+    match output.status.code() {
+        Some(code) => Err(CtlError::NonZero {
+            code,
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        }),
+        None => Err(CtlError::Signaled),
     }
 }
 
@@ -434,11 +426,11 @@ impl Ctl for LaunchdCtl {
         Ok(())
     }
     async fn install_unit_file(&self, src: &Path, dest: &Path) -> Result<(), CtlError> {
-        std::fs::copy(src, dest)?;
+        tokio::fs::copy(src, dest).await?;
         Ok(())
     }
     async fn remove_file(&self, path: &Path) -> Result<(), CtlError> {
-        match std::fs::remove_file(path) {
+        match tokio::fs::remove_file(path).await {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(e.into()),
