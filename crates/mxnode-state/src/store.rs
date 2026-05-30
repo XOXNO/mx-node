@@ -51,6 +51,23 @@ pub enum StateError {
     },
 }
 
+/// Error from [`StateStore::try_transaction`]: the store failed to
+/// lock/load/save, or the caller's closure returned an error.
+#[derive(Debug)]
+pub enum TxError<E> {
+    Store(StateError),
+    Body(E),
+}
+
+impl<E: std::fmt::Display> std::fmt::Display for TxError<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TxError::Store(e) => write!(f, "{e}"),
+            TxError::Body(e) => write!(f, "{e}"),
+        }
+    }
+}
+
 /// File-system-backed `mxnode.toml` manager. Owns lock acquisition and
 /// atomic writes on the unified document. Callers acquire a `LockGuard`
 /// via `lock()`, then `load()` the current document, mutate the
@@ -235,6 +252,33 @@ impl StateStore {
         Ok(())
     }
 
+    /// Exclusive lock + fresh load + atomic commit, as one unit. The closure
+    /// receives the current `[host]` inventory (empty when the file is absent
+    /// or host-empty) and mutates it in place; the whole `MxnodeFile` is then
+    /// persisted atomically, preserving operator sections. The flock spans the
+    /// entire load->mutate->commit, so concurrent writers cannot interleave
+    /// (no lost updates) and the caller cannot forget to save.
+    pub fn transaction<R>(&self, f: impl FnOnce(&mut HostState) -> R) -> Result<R, StateError> {
+        let guard = self.lock()?;
+        let mut file = self.load_file()?.unwrap_or_default();
+        let r = f(&mut file.host);
+        self.save_file(&file, &guard)?;
+        Ok(r)
+    }
+
+    /// Like [`Self::transaction`] but the closure may fail. On `Err(body)`
+    /// nothing is written.
+    pub fn try_transaction<R, E>(
+        &self,
+        f: impl FnOnce(&mut HostState) -> Result<R, E>,
+    ) -> Result<R, TxError<E>> {
+        let guard = self.lock().map_err(TxError::Store)?;
+        let mut file = self.load_file().map_err(TxError::Store)?.unwrap_or_default();
+        let r = f(&mut file.host).map_err(TxError::Body)?;
+        self.save_file(&file, &guard).map_err(TxError::Store)?;
+        Ok(r)
+    }
+
     /// Save a timestamped backup of the live file before destructive
     /// operations. Crash-durable: tempfile + rename + fsync the parent
     /// dir, mode 0600 on the result. Returns the path created.
@@ -359,7 +403,7 @@ impl Drop for LockGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mxnode_core::MxnodeFile;
+    use mxnode_core::{MxnodeFile, NodeState, Role, Shard};
     use tempfile::TempDir;
 
     fn fresh_store(dir: &TempDir) -> StateStore {
@@ -549,6 +593,79 @@ mod tests {
             matches!(err, StateError::SchemaTooNew { .. }),
             "got {err:?}"
         );
+    }
+
+    // ── transaction helpers ───────────────────────────────────────────
+
+    fn test_install() -> mxnode_core::HostInstall {
+        use mxnode_core::{Environment, HostInstall, InstallKind};
+        HostInstall::observed(InstallKind::Validators, Environment::Devnet, "multiversx", 1)
+    }
+
+    fn test_node(idx: u16) -> NodeState {
+        NodeState {
+            index: mxnode_core::NodeIndex::new(idx),
+            role: Role::Validator,
+            shard: Shard::Auto,
+            display_name: format!("node-{idx}"),
+            api_port: 8080 + idx,
+            unit: format!("mxnode-{idx}.service"),
+            unit_override: String::new(),
+            workdir: std::path::PathBuf::from(format!("/tmp/node-{idx}")),
+            last_known_pubkey: String::new(),
+            last_action: String::new(),
+            last_action_at: None,
+        }
+    }
+
+    fn seed_minimal_install(store: &StateStore) {
+        let guard = store.lock().unwrap();
+        let mut file = MxnodeFile::default();
+        file.host.install = Some(test_install());
+        store.save_file(&file, &guard).unwrap();
+    }
+
+    // ── transaction tests ─────────────────────────────────────────────
+
+    #[test]
+    fn transaction_persists_mutation_and_is_visible_on_reload() {
+        let dir = TempDir::new().unwrap();
+        let store = StateStore::new(dir.path());
+        seed_minimal_install(&store);
+        store.transaction(|host| host.nodes.push(test_node(7))).unwrap();
+        let reloaded = store.load().unwrap().unwrap();
+        assert!(reloaded.nodes.iter().any(|n| n.index.get() == 7));
+    }
+
+    #[test]
+    fn try_transaction_rolls_back_on_closure_error() {
+        let dir = TempDir::new().unwrap();
+        let store = StateStore::new(dir.path());
+        seed_minimal_install(&store);
+        let before = store.load().unwrap().unwrap().nodes.len();
+        let res: Result<(), TxError<&str>> = store.try_transaction(|host| {
+            host.nodes.push(test_node(9));
+            Err("boom")
+        });
+        assert!(matches!(res, Err(TxError::Body("boom"))));
+        let after = store.load().unwrap().unwrap().nodes.len();
+        assert_eq!(before, after, "closure error must not persist the mutation");
+    }
+
+    #[test]
+    fn transaction_preserves_operator_sections() {
+        let dir = TempDir::new().unwrap();
+        let store = StateStore::new(dir.path());
+        let mut file = MxnodeFile::default();
+        file.host.install = Some(test_install());
+        file.network.github_org = "acme".to_string();
+        let guard = store.lock().unwrap();
+        store.save_file(&file, &guard).unwrap();
+        drop(guard);
+        store.transaction(|host| host.nodes.push(test_node(1))).unwrap();
+        let reloaded = store.load_file().unwrap().unwrap();
+        assert_eq!(reloaded.network.github_org, "acme");
+        assert_eq!(reloaded.host.nodes.len(), 1);
     }
 
     #[test]

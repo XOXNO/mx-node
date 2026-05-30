@@ -13,4 +13,4 @@ mod store;
 pub use binstore::{read_symlink, swap_symlink, BinStore, BinStoreError};
 pub use inflight::{inflight_path, Inflight, InflightCheck, InflightStep, OpKind};
 pub use process::{classify, Liveness, ProcessIdentity};
-pub use store::{StateError, StateStore};
+pub use store::{StateError, StateStore, TxError};
