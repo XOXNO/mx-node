@@ -1152,23 +1152,19 @@ pub fn run(args: ImportBashArgs, global: &GlobalArgs) -> Result<(), CliError> {
         )
         .json_if(global.json));
     }
-    let guard = store.lock().map_err(|e| {
-        CliError::new(
-            "failed to acquire mxnode.toml lock",
-            e.to_string(),
-            "ensure no other mxnode invocation is running, then retry",
-        )
-        .json_if(global.json)
-    })?;
-    store.save(&plan.state, &guard).map_err(|e| {
-        CliError::new(
-            "failed to write mxnode.toml",
-            e.to_string(),
-            "ensure mxnode has write access to the state directory",
-        )
-        .json_if(global.json)
-    })?;
-    drop(guard);
+    let imported = plan.state.clone();
+    store
+        .transaction(|host| {
+            *host = imported;
+        })
+        .map_err(|e| {
+            CliError::new(
+                "failed to write mxnode.toml",
+                e.to_string(),
+                "ensure mxnode has write access to the state directory",
+            )
+            .json_if(global.json)
+        })?;
 
     // ── apply config + secrets patches (best-effort, non-fatal) ──
     // The unified mxnode.toml now holds the operator sections AND the

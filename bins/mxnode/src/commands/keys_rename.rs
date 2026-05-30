@@ -36,7 +36,7 @@ pub async fn run(args: KeysRenameArgs, global: &GlobalArgs) -> Result<(), CliErr
 
     let runtime = Runtime::from_global(global)?;
     let store = StateStore::new(&runtime.paths.config_dir);
-    let mut state = store
+    let state = store
         .load()
         .map_err(|e| {
             CliError::new(
@@ -122,25 +122,20 @@ pub async fn run(args: KeysRenameArgs, global: &GlobalArgs) -> Result<(), CliErr
             .json_if(global.json)
         })?;
 
-        // Persist the new name on the in-memory state, then save under
-        // the normal lock + atomic-rename path.
-        state.nodes[pos].display_name = new_name.clone();
-        let guard = store.lock().map_err(|e| {
-            CliError::new(
-                "failed to acquire mxnode.toml lock",
-                e.to_string(),
-                "ensure no other mxnode invocation is running",
-            )
-            .json_if(global.json)
-        })?;
-        store.save(&state, &guard).map_err(|e| {
-            CliError::new(
-                "failed to write mxnode.toml",
-                e.to_string(),
-                "ensure mxnode has write access to the state directory",
-            )
-            .json_if(global.json)
-        })?;
+        // Persist the new name via a locked transaction so the file is
+        // never left in a half-written state.
+        store
+            .transaction(|host| {
+                host.nodes[pos].display_name = new_name.clone();
+            })
+            .map_err(|e| {
+                CliError::new(
+                    "failed to write mxnode.toml",
+                    e.to_string(),
+                    "ensure mxnode has write access to the state directory",
+                )
+                .json_if(global.json)
+            })?;
         Ok(())
     })();
 
