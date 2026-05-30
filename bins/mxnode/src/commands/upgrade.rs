@@ -192,6 +192,9 @@ struct Plan {
     /// the other two tags. `execute_upgrade` reuses the same path.
     config_repo_path: Option<std::path::PathBuf>,
     strategy: Strategy,
+    /// Concurrency bound for `Strategy::Parallel`. Ignored by the rolling
+    /// (serial) path. Always at least 1.
+    max_parallel: u16,
     skip_validators: bool,
     /// Start each node after the binary + config swap. Off by default
     /// — operators run `mxnode start --all` once they're satisfied.
@@ -438,6 +441,7 @@ async fn build_plan(
         proxy_tag,
         config_repo_path,
         strategy: args.strategy,
+        max_parallel: args.max_parallel.max(1),
         skip_validators: args.skip_validators,
         start: args.start,
         is_squad: false,
@@ -499,6 +503,9 @@ struct UpgradeOutcome {
     nodes_failed: Vec<NodeIndex>,
     rolled_back: bool,
     per_node: Vec<NodeResult>,
+    /// The strategy actually executed (`rolling` | `parallel`), recorded
+    /// verbatim in the migration log.
+    strategy: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -568,54 +575,121 @@ async fn execute_upgrade(
     let mut nodes_failed: Vec<NodeIndex> = Vec::new();
     let mut per_node: Vec<NodeResult> = Vec::new();
 
-    for idx in &plan.selected {
-        let Some(node) = state.nodes.iter().find(|n| n.index == *idx) else {
-            nodes_failed.push(*idx);
-            per_node.push(NodeResult {
-                index: idx.get(),
-                unit: format!("elrond-node-{}.service", idx.get()),
-                ok: false,
-                error: Some("node not found in state".to_string()),
-            });
-            continue;
-        };
-        inflight.current = Some(node.index);
-        inflight.current_step = InflightStep::Resolving;
-        let _ = inflight.save(inflight_loc);
-
-        let node_ctx = UpgradeNodeContext {
-            ctl: &ctl,
-            state,
-            installed_binary: &installed_path,
-            inflight_loc,
-            is_squad: plan.is_squad,
-            config_repo: config_repo.as_deref(),
-            runtime,
-            start_after_swap: plan.start,
-        };
-
-        match upgrade_one_node(node_ctx, node, inflight).await {
-            Ok(()) => {
-                nodes_done.push(node.index);
-                per_node.push(NodeResult {
-                    index: node.index.get(),
-                    unit: node.unit.clone(),
-                    ok: true,
-                    error: None,
-                });
-                inflight.completed.push(node.index);
+    match plan.strategy {
+        // Rolling (default): one node at a time, with inflight breadcrumbs,
+        // the per-node readiness gate inside `upgrade_one_node`, and a
+        // first-failure stop so a broken upgrade doesn't take the whole
+        // fleet down.
+        Strategy::Rolling => {
+            for idx in &plan.selected {
+                let Some(node) = state.nodes.iter().find(|n| n.index == *idx) else {
+                    nodes_failed.push(*idx);
+                    per_node.push(NodeResult {
+                        index: idx.get(),
+                        unit: format!("elrond-node-{}.service", idx.get()),
+                        ok: false,
+                        error: Some("node not found in state".to_string()),
+                    });
+                    continue;
+                };
+                inflight.current = Some(node.index);
+                inflight.current_step = InflightStep::Resolving;
                 let _ = inflight.save(inflight_loc);
+
+                let node_ctx = UpgradeNodeContext {
+                    ctl: &ctl,
+                    state,
+                    installed_binary: &installed_path,
+                    inflight_loc,
+                    is_squad: plan.is_squad,
+                    config_repo: config_repo.as_deref(),
+                    runtime,
+                    start_after_swap: plan.start,
+                };
+
+                match upgrade_one_node(node_ctx, node, Some(&mut *inflight)).await {
+                    Ok(()) => {
+                        nodes_done.push(node.index);
+                        per_node.push(NodeResult {
+                            index: node.index.get(),
+                            unit: node.unit.clone(),
+                            ok: true,
+                            error: None,
+                        });
+                        inflight.completed.push(node.index);
+                        let _ = inflight.save(inflight_loc);
+                    }
+                    Err(e) => {
+                        nodes_failed.push(node.index);
+                        per_node.push(NodeResult {
+                            index: node.index.get(),
+                            unit: node.unit.clone(),
+                            ok: false,
+                            error: Some(e),
+                        });
+                        // First-failure stops the rolling sequence per plan §"Upgrade flow".
+                        break;
+                    }
+                }
             }
-            Err(e) => {
-                nodes_failed.push(node.index);
-                per_node.push(NodeResult {
-                    index: node.index.get(),
-                    unit: node.unit.clone(),
-                    ok: false,
-                    error: Some(e),
-                });
-                // First-failure stops the rolling sequence per plan §"Upgrade flow".
-                break;
+        }
+        // Parallel: operator opted out of rolling — upgrade up to
+        // `max_parallel` nodes concurrently, no inter-node readiness gate
+        // and no first-failure stop. Per-node inflight breadcrumbs are
+        // skipped (a single inflight.toml can't track concurrent nodes);
+        // crash recovery falls back to re-running the idempotent upgrade.
+        Strategy::Parallel => {
+            use futures_util::stream::{self, StreamExt};
+            let max = (plan.max_parallel as usize).max(1);
+            let installed = &installed_path;
+            let config_repo_ref = &config_repo;
+            let ctl_ref = &ctl;
+            let mut results: Vec<NodeResult> = stream::iter(plan.selected.iter().copied())
+                .map(|idx| async move {
+                    let Some(node) = state.nodes.iter().find(|n| n.index == idx) else {
+                        return NodeResult {
+                            index: idx.get(),
+                            unit: format!("elrond-node-{}.service", idx.get()),
+                            ok: false,
+                            error: Some("node not found in state".to_string()),
+                        };
+                    };
+                    let node_ctx = UpgradeNodeContext {
+                        ctl: ctl_ref,
+                        state,
+                        installed_binary: installed,
+                        inflight_loc,
+                        is_squad: plan.is_squad,
+                        config_repo: config_repo_ref.as_deref(),
+                        runtime,
+                        start_after_swap: plan.start,
+                    };
+                    match upgrade_one_node(node_ctx, node, None).await {
+                        Ok(()) => NodeResult {
+                            index: node.index.get(),
+                            unit: node.unit.clone(),
+                            ok: true,
+                            error: None,
+                        },
+                        Err(e) => NodeResult {
+                            index: node.index.get(),
+                            unit: node.unit.clone(),
+                            ok: false,
+                            error: Some(e),
+                        },
+                    }
+                })
+                .buffer_unordered(max)
+                .collect()
+                .await;
+            results.sort_by_key(|r| r.index);
+            for r in results {
+                if r.ok {
+                    nodes_done.push(NodeIndex::new(r.index));
+                } else {
+                    nodes_failed.push(NodeIndex::new(r.index));
+                }
+                per_node.push(r);
             }
         }
     }
@@ -633,11 +707,13 @@ async fn execute_upgrade(
         nodes_failed,
         rolled_back: false,
         per_node,
+        strategy: strategy_label(plan.strategy),
     }
 }
 
 fn failure_outcome(plan: &Plan, started: time::OffsetDateTime, error: String) -> UpgradeOutcome {
     UpgradeOutcome {
+        strategy: strategy_label(plan.strategy),
         binary_tag: plan.binary_tag.clone(),
         config_tag: plan.config_tag.clone(),
         started_at: started,
@@ -715,10 +791,14 @@ struct UpgradeNodeContext<'a> {
 async fn upgrade_one_node(
     ctx: UpgradeNodeContext<'_>,
     node: &NodeState,
-    inflight: &mut Inflight,
+    mut inflight: Option<&mut Inflight>,
 ) -> Result<(), String> {
     use InflightStep::*;
     node_op_start("upgrade", node.index, &node.unit);
+
+    // Breadcrumb writes are skipped on the parallel path (`inflight: None`):
+    // multiple nodes are in flight at once, so a single inflight.toml can't
+    // track a per-node `current_step`. The rolling path passes `Some(..)`.
 
     // Each step writes its label into inflight.toml before running so a
     // crashed run leaves a "where did we die" breadcrumb on disk for
@@ -726,8 +806,10 @@ async fn upgrade_one_node(
     // `systemctl stop` on an already-stopped unit, symlink swap to the
     // same target).
 
-    inflight.current_step = Stopped;
-    let _ = inflight.save(ctx.inflight_loc);
+    if let Some(i) = &mut inflight {
+        i.current_step = Stopped;
+        let _ = i.save(ctx.inflight_loc);
+    }
     if let Err(e) = ctx.ctl.stop(&node.unit).await {
         let cause = e.to_string();
         node_op_end(
@@ -739,8 +821,10 @@ async fn upgrade_one_node(
         return Err(format!("systemctl stop failed: {cause}"));
     }
 
-    inflight.current_step = ConfigApplied;
-    let _ = inflight.save(ctx.inflight_loc);
+    if let Some(i) = &mut inflight {
+        i.current_step = ConfigApplied;
+        let _ = i.save(ctx.inflight_loc);
+    }
     if let Some(config_repo) = ctx.config_repo {
         apply_upstream_config_update(node, config_repo, ctx.runtime, ctx.is_squad).map_err(
             |e| {
@@ -767,8 +851,10 @@ async fn upgrade_one_node(
         })?;
     }
 
-    inflight.current_step = BinaryReplaced;
-    let _ = inflight.save(ctx.inflight_loc);
+    if let Some(i) = &mut inflight {
+        i.current_step = BinaryReplaced;
+        let _ = i.save(ctx.inflight_loc);
+    }
     let symlink = node.workdir.join("node");
     if let Err(e) = swap_symlink(&symlink, ctx.installed_binary) {
         let cause = e.to_string();
@@ -786,8 +872,10 @@ async fn upgrade_one_node(
     // consensus back. mxnode mirrors that by default; `--start` opts
     // back into the rolling restart + readiness probe.
     if ctx.start_after_swap {
-        inflight.current_step = Started;
-        let _ = inflight.save(ctx.inflight_loc);
+        if let Some(i) = &mut inflight {
+            i.current_step = Started;
+            let _ = i.save(ctx.inflight_loc);
+        }
         if let Err(e) = ctx.ctl.start(&node.unit).await {
             let cause = e.to_string();
             node_op_end(
@@ -799,8 +887,10 @@ async fn upgrade_one_node(
             return Err(format!("systemctl start failed: {cause}"));
         }
 
-        inflight.current_step = NonceVerified;
-        let _ = inflight.save(ctx.inflight_loc);
+        if let Some(i) = &mut inflight {
+            i.current_step = NonceVerified;
+            let _ = i.save(ctx.inflight_loc);
+        }
         // Readiness probe: wait for the node's nonce to be within K of
         // the highest known network nonce among siblings, OR for the
         // node to report `erd_is_syncing == 0` with a non-zero nonce.
@@ -907,7 +997,7 @@ const NONCE_LAG_TOLERANCE: u64 = 5;
 const NONCE_PROBE_TIMEOUT_SECS: u64 = 5 * 60;
 const NONCE_POLL_INTERVAL_SECS: u64 = 3;
 
-async fn wait_for_node_ready(state: &HostState, node: &NodeState) -> Result<(), String> {
+pub(crate) async fn wait_for_node_ready(state: &HostState, node: &NodeState) -> Result<(), String> {
     let deadline = std::time::Instant::now() + Duration::from_secs(NONCE_PROBE_TIMEOUT_SECS);
     let target =
         NodeClient::new("127.0.0.1", node.api_port).map_err(|e| format!("rpc client init: {e}"))?;
@@ -1034,7 +1124,7 @@ fn persist_migration(
         to_config: outcome.config_tag.clone(),
         from_binary,
         to_binary: Some(outcome.binary_tag.clone()),
-        strategy: "rolling".to_string(),
+        strategy: outcome.strategy.clone(),
         trigger: "cli".to_string(),
         result: if outcome.rolled_back {
             MigrationResult::RolledBack
