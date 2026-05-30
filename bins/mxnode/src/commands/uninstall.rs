@@ -8,7 +8,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 use mxnode_core::{NodeState, Platform, HostState};
 use mxnode_state::StateStore;
@@ -189,16 +188,16 @@ fn cleanup_with_no_state(
     Ok(())
 }
 
-/// One step in the cleanup plan. The platform-specific behaviour lives on
-/// `RemoveUnitFile` (where the deletion path differs and macOS doesn't need
-/// sudo). `DisableUnit` is Linux-only — launchd has no `disable` verb;
-/// `bootout` (which `Step::StopUnit` triggers via the supervisor on macOS)
-/// already takes the unit out of the agent domain.
+/// One step in the cleanup plan. `DisableUnit` is Linux-only — launchd has
+/// no `disable` verb; `bootout` (which `Step::StopUnit` triggers via the
+/// supervisor on macOS) already takes the unit out of the agent domain.
+/// Platform-specific privilege for `RemoveUnitFile` is owned by the `Ctl`
+/// impl (`SystemctlCtl` uses `sudo rm -f`; `LaunchdCtl` uses fs remove).
 #[derive(Debug)]
 enum Step {
     StopUnit { unit: String },
     DisableUnit { unit: String },
-    RemoveUnitFile { path: PathBuf, sudo: bool },
+    RemoveUnitFile { path: PathBuf },
     RemoveDir { path: PathBuf },
 }
 
@@ -207,13 +206,7 @@ impl Step {
         match self {
             Step::StopUnit { unit } => format!("stop {unit}"),
             Step::DisableUnit { unit } => format!("disable {unit}"),
-            Step::RemoveUnitFile { path, sudo } => {
-                if *sudo {
-                    format!("sudo rm {}", path.display())
-                } else {
-                    format!("rm {}", path.display())
-                }
-            }
+            Step::RemoveUnitFile { path } => format!("rm {}", path.display()),
             Step::RemoveDir { path } => format!("rm -rf {}", path.display()),
         }
     }
@@ -225,48 +218,11 @@ impl Step {
                 Ok(())
             }
             Step::DisableUnit { unit } => {
-                // We don't have an explicit `disable` in the trait yet —
-                // shell out via a one-off systemctl call. Failure here is
-                // typically harmless (unit was never enabled) so we
-                // surface it as a warning, not an error.
-                let _ = Command::new("sudo")
-                    .args(["--non-interactive", "systemctl", "disable", unit])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .stdin(Stdio::null())
-                    .status();
-                Ok(())
+                // Idempotent in the SystemctlCtl impl (not-enabled => Ok).
+                ctl.disable(unit).await.map_err(|e| e.to_string())
             }
-            Step::RemoveUnitFile { path, sudo } => {
-                if *sudo {
-                    let status = Command::new("sudo")
-                        .args([
-                            "--non-interactive",
-                            "rm",
-                            "-f",
-                            path.to_string_lossy().as_ref(),
-                        ])
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .stdin(Stdio::null())
-                        .status()
-                        .map_err(|e| e.to_string())?;
-                    // A non-zero exit (e.g. passwordless sudo not configured)
-                    // must surface — otherwise the unit file is left on disk
-                    // while uninstall reports success.
-                    if !status.success() {
-                        return Err(format!(
-                            "sudo rm {} exited {:?}",
-                            path.display(),
-                            status.code(),
-                        ));
-                    }
-                } else if let Err(e) = fs::remove_file(path) {
-                    if e.kind() != std::io::ErrorKind::NotFound {
-                        return Err(e.to_string());
-                    }
-                }
-                Ok(())
+            Step::RemoveUnitFile { path } => {
+                ctl.remove_file(path).await.map_err(|e| e.to_string())
             }
             Step::RemoveDir { path } => remove_dir_idempotent(path),
         }
@@ -287,9 +243,6 @@ fn remove_dir_idempotent(path: &Path) -> Result<(), String> {
 
 fn build_plan(state: &HostState, paths: &mxnode_core::Paths, args: &UninstallArgs) -> Vec<Step> {
     let platform = Platform::current();
-    // macOS LaunchAgents live in the operator's home, no sudo needed.
-    // Linux systemd units live in /etc/systemd/system, removal needs sudo.
-    let needs_sudo = !matches!(platform, Platform::Macos);
     let unit_dir = unit_dir_for_platform(platform);
 
     let mut plan: Vec<Step> = Vec::new();
@@ -306,7 +259,6 @@ fn build_plan(state: &HostState, paths: &mxnode_core::Paths, args: &UninstallArg
         if let Some(dir) = &unit_dir {
             plan.push(Step::RemoveUnitFile {
                 path: dir.join(unit_filename(platform, &node.unit)),
-                sudo: needs_sudo,
             });
         }
         plan.push(Step::RemoveDir {
@@ -325,7 +277,6 @@ fn build_plan(state: &HostState, paths: &mxnode_core::Paths, args: &UninstallArg
         if let Some(dir) = &unit_dir {
             plan.push(Step::RemoveUnitFile {
                 path: dir.join(unit_filename(platform, &proxy.unit)),
-                sudo: needs_sudo,
             });
         }
         plan.push(Step::RemoveDir {
@@ -377,4 +328,30 @@ fn workdir_for(node: &NodeState) -> PathBuf {
 struct CleanupReport {
     mode: &'static str,
     steps: Vec<String>,
+}
+
+#[cfg(test)]
+mod step_tests {
+    use super::Step;
+    use mxnode_systemd::ctl_testing::FakeCtl;
+    use std::path::PathBuf;
+
+    #[tokio::test]
+    async fn disable_and_remove_go_through_the_gate() {
+        let ctl = FakeCtl::new();
+        Step::DisableUnit { unit: "elrond-node-0.service".into() }.apply(&ctl).await.unwrap();
+        Step::RemoveUnitFile { path: PathBuf::from("/etc/systemd/system/elrond-node-0.service") }
+            .apply(&ctl).await.unwrap();
+        let verbs: Vec<String> = ctl.calls().into_iter().map(|(v, _)| v).collect();
+        assert_eq!(verbs, vec!["disable", "remove-file"]);
+    }
+
+    #[tokio::test]
+    async fn remove_failure_is_not_swallowed() {
+        let ctl = FakeCtl::new();
+        ctl.fail_on("remove-file");
+        let res = Step::RemoveUnitFile { path: PathBuf::from("/etc/systemd/system/x.service") }
+            .apply(&ctl).await;
+        assert!(res.is_err(), "a failed unit-file removal must surface");
+    }
 }
