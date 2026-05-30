@@ -126,7 +126,9 @@ pub async fn run(args: KeysRenameArgs, global: &GlobalArgs) -> Result<(), CliErr
         // never left in a half-written state.
         store
             .transaction(|host| {
-                host.nodes[pos].display_name = new_name.clone();
+                if let Some(node) = host.nodes.iter_mut().find(|n| n.index == node_index) {
+                    node.display_name = new_name.clone();
+                }
             })
             .map_err(|e| {
                 CliError::new(
