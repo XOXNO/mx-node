@@ -959,14 +959,16 @@ fn apply_upstream_config_update(
 /// Mirrors the bash `observers()` flow: enable `[DbLookupExtensions]` in
 /// `mxnode.toml` and pin `DestinationShardAsObserver` in `prefs.toml`.
 fn apply_squad_config_edits(node: &NodeState) -> Result<(), String> {
-    use mxnode_systemd::{enable_db_lookup_extensions, set_destination_shard};
+    use mxnode_systemd::{enable_db_lookup_extensions, flatten_inline_tables, set_destination_shard};
     use toml_edit::DocumentMut;
 
+    // Upstream configs ship multi-line inline tables that `toml_edit`
+    // rejects; flatten before parsing — same as the install orchestrator.
     let config_path = node.workdir.join("config/mxnode.toml");
     if config_path.exists() {
         let body = std::fs::read_to_string(&config_path)
             .map_err(|e| format!("read {}: {e}", config_path.display()))?;
-        let mut doc: DocumentMut = body
+        let mut doc: DocumentMut = flatten_inline_tables(&body)
             .parse()
             .map_err(|e| format!("parse {}: {e}", config_path.display()))?;
         enable_db_lookup_extensions(&mut doc).map_err(|e| e.to_string())?;
@@ -978,7 +980,7 @@ fn apply_squad_config_edits(node: &NodeState) -> Result<(), String> {
     if prefs_path.exists() {
         let body = std::fs::read_to_string(&prefs_path)
             .map_err(|e| format!("read {}: {e}", prefs_path.display()))?;
-        let mut doc: DocumentMut = body
+        let mut doc: DocumentMut = flatten_inline_tables(&body)
             .parse()
             .map_err(|e| format!("parse {}: {e}", prefs_path.display()))?;
         set_destination_shard(&mut doc, node.shard).map_err(|e| e.to_string())?;

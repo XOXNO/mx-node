@@ -13,7 +13,7 @@ use std::fs;
 use std::sync::Arc;
 
 use mxnode_state::StateStore;
-use mxnode_systemd::{set_node_display_name, Ctl};
+use mxnode_systemd::{flatten_inline_tables, set_node_display_name, Ctl, TomlEditError};
 use toml_edit::DocumentMut;
 
 use crate::cli::{GlobalArgs, KeysRenameArgs};
@@ -97,23 +97,20 @@ pub async fn run(args: KeysRenameArgs, global: &GlobalArgs) -> Result<(), CliErr
             )
             .json_if(global.json)
         })?;
-        let mut doc: DocumentMut = body.parse().map_err(|e: toml_edit::TomlError| {
-            CliError::new(
-                format!("failed to parse {}", prefs_path.display()),
-                e.to_string(),
-                "fix the file by hand or restore from the upstream config repo",
-            )
-            .json_if(global.json)
+        let new_body = rewrite_prefs_display_name(&body, &new_name).map_err(|e| {
+            let (summary, hint): (String, &str) = match &e {
+                TomlEditError::Parse(_) => (
+                    format!("failed to parse {}", prefs_path.display()),
+                    "fix the file by hand or restore from the upstream config repo",
+                ),
+                _ => (
+                    "failed to set NodeDisplayName".to_string(),
+                    "report this as an mxnode bug",
+                ),
+            };
+            CliError::new(summary, e.to_string(), hint).json_if(global.json)
         })?;
-        set_node_display_name(&mut doc, &new_name).map_err(|e| {
-            CliError::new(
-                "failed to set NodeDisplayName",
-                e.to_string(),
-                "report this as an mxnode bug",
-            )
-            .json_if(global.json)
-        })?;
-        fs::write(&prefs_path, doc.to_string()).map_err(|e| {
+        fs::write(&prefs_path, new_body).map_err(|e| {
             CliError::new(
                 format!("failed to write {}", prefs_path.display()),
                 e.to_string(),
@@ -185,8 +182,24 @@ pub async fn run(args: KeysRenameArgs, global: &GlobalArgs) -> Result<(), CliErr
     Ok(())
 }
 
+/// Rewrite a node's `prefs.toml` body, returning the serialised document
+/// with `NodeDisplayName` set to `new_name`. The persisted `display_name`
+/// is the source of truth; this only keeps the on-disk file in step.
+fn rewrite_prefs_display_name(body: &str, new_name: &str) -> Result<String, TomlEditError> {
+    // Mainnet prefs.toml ships `OverridableConfigTomlValues` as multi-line
+    // inline tables (`{\n key = …,\n }`) which Go's TOML parser tolerates
+    // but `toml_edit` rejects with `invalid inline table / expected }`.
+    // Flatten up front — same as the install/upgrade paths — so an
+    // operator's preserved prefs.toml parses.
+    let mut doc: DocumentMut = flatten_inline_tables(body).parse()?;
+    set_node_display_name(&mut doc, new_name)?;
+    Ok(doc.to_string())
+}
+
 #[cfg(test)]
 mod tests {
+    use super::rewrite_prefs_display_name;
+
     /// Mirror the trim-and-reject step from `run` so it stays testable
     /// without dragging in `Runtime`. The full command is exercised end
     /// to end by the integration test in `bins/mxnode/tests/cli.rs`.
@@ -217,5 +230,31 @@ mod tests {
     #[test]
     fn validate_accepts_internal_spaces() {
         assert_eq!(validate_new_name("my validator").unwrap(), "my validator");
+    }
+
+    #[test]
+    fn rewrite_prefs_display_name_handles_multiline_inline_table() {
+        // Mainnet prefs.toml ships `OverridableConfigTomlValues` as
+        // multi-line inline tables (`{\n … }`), which Go's TOML parser
+        // tolerates but `toml_edit` rejects with `invalid inline table /
+        // expected }`. `keys rename` parses the operator's existing
+        // prefs.toml, so it must flatten before parsing — same as the
+        // install/upgrade paths.
+        let body = "[Preferences]\n\
+             NodeDisplayName = \"old-name\"\n\
+             DestinationShardAsObserver = \"disabled\"\n\
+             OverridableConfigTomlValues = [\n    \
+                 {\n    \
+                 File = \"config.toml\",\n    \
+                 Path = \"StoragePruning.NumActivePersisters\",\n    \
+                 Value = \"8\",\n    \
+                 },\n\
+             ]\n";
+
+        let out = rewrite_prefs_display_name(body, "new-name").unwrap();
+
+        assert!(out.contains("NodeDisplayName = \"new-name\""));
+        // The override survives, collapsed onto a single line.
+        assert!(out.contains("Path = \"StoragePruning.NumActivePersisters\""));
     }
 }

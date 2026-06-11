@@ -625,7 +625,13 @@ pub(crate) fn apply_node_tomledit(input: NodeTomlEdit<'_>) -> Result<(), Install
             path: prefs_path.display().to_string(),
             source: e,
         })?;
-        let mut doc: DocumentMut = body
+        // Mainnet prefs.toml ships `OverridableConfigTomlValues` as
+        // multi-line inline tables (`{\n key = …,\n }`) which Go's TOML
+        // parser tolerates but `toml_edit` rejects with `invalid inline
+        // table / expected }`. Flatten up front — same as the mxnode.toml
+        // branch below — so the preserved-prefs upgrade path parses.
+        let normalised = flatten_inline_tables(&body);
+        let mut doc: DocumentMut = normalised
             .parse()
             .map_err(|e| InstallError::Toml(format!("parse {}: {e}", prefs_path.display())))?;
         set_node_display_name(&mut doc, display_name)
@@ -895,6 +901,50 @@ mod tests {
         // Validator + redundancy 0 must NOT stamp RedundancyLevel —
         // only multikey installs are load-bearing for that knob.
         assert!(!body.contains("RedundancyLevel"));
+    }
+
+    #[test]
+    fn apply_node_tomledit_prefs_with_multiline_inline_table_parses() {
+        // Mainnet prefs.toml ships `OverridableConfigTomlValues` as
+        // multi-line inline tables (`{\n … }`), which Go's TOML parser
+        // tolerates but `toml_edit` rejects with `invalid inline table /
+        // expected }`. The preserved-prefs upgrade path feeds exactly
+        // this file back through apply_node_tomledit, so it must flatten
+        // before parsing — same as the mxnode.toml branch already does.
+        let dir = tempfile::tempdir().unwrap();
+        let workdir = dir.path().join("node-0");
+        std::fs::create_dir_all(workdir.join("config")).unwrap();
+        std::fs::write(
+            workdir.join("config/prefs.toml"),
+            "[Preferences]\n\
+             NodeDisplayName = \"\"\n\
+             DestinationShardAsObserver = \"disabled\"\n\
+             OverridableConfigTomlValues = [\n    \
+                 {\n    \
+                 File = \"config.toml\",\n    \
+                 Path = \"StoragePruning.NumActivePersisters\",\n    \
+                 Value = \"8\",\n    \
+                 },\n\
+             ]\n",
+        )
+        .unwrap();
+
+        apply_node_tomledit(NodeTomlEdit {
+            workdir: &workdir,
+            display_name: "test-name",
+            shard: Shard::Auto,
+            edits: ConfigEdits::Validator,
+            role: Role::Validator,
+            redundancy_level: Some(0),
+            prefs_overrides: &BTreeMap::new(),
+            config_overrides: &BTreeMap::new(),
+        })
+        .unwrap();
+
+        let body = std::fs::read_to_string(workdir.join("config/prefs.toml")).unwrap();
+        assert!(body.contains("NodeDisplayName = \"test-name\""));
+        // The override survives, collapsed onto a single line.
+        assert!(body.contains("Path = \"StoragePruning.NumActivePersisters\""));
     }
 
     #[test]
